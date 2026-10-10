@@ -1,0 +1,593 @@
+"use client"
+export const dynamic = "force-dynamic"
+
+import { Suspense } from 'react'
+import { useEffect, useState, useRef, type FormEvent } from 'react'
+import { useRouter } from 'next/navigation'
+import { getAppUser, supabase } from '@/lib/supabase'
+import DashboardLayout from '@/components/DashboardLayout'
+import { useLanguage } from '@/lib/LanguageContext'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Card, CardContent } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Textarea } from '@/components/ui/textarea'
+import { 
+  Save, ArrowLeft, ImagePlus, X, Car, Gauge, Palette, Fuel, Settings, 
+  MapPin, Tag, DollarSign, Building2, Truck, Percent, Banknote, 
+  CreditCard, Hash, Calendar, Wrench, Shield, FileText, ChevronDown,
+  Camera, Upload
+} from 'lucide-react'
+
+function Section({ 
+  icon: Icon, 
+  title, 
+  titleAr, 
+  color, 
+  children, 
+  defaultOpen = true 
+}: { 
+  icon: any, 
+  title: string, 
+  titleAr: string, 
+  color: string, 
+  children: React.ReactNode,
+  defaultOpen?: boolean
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const { isRTL } = useLanguage()
+  
+  const colors: Record<string, string> = {
+    slate: 'from-slate-700 to-slate-800 border-slate-200',
+    emerald: 'from-emerald-600 to-emerald-700 border-emerald-200',
+    blue: 'from-blue-700 to-blue-800 border-blue-200',
+    amber: 'from-amber-600 to-amber-700 border-amber-200',
+    purple: 'from-purple-700 to-purple-800 border-purple-200',
+    rose: 'from-rose-600 to-rose-700 border-rose-200',
+  }
+
+  return (
+    <Card className="overflow-hidden border-0 shadow-lg">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={`w-full bg-gradient-to-r ${colors[color]} text-white p-4 flex items-center justify-between`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-sm">
+            <Icon className="w-5 h-5" />
+          </div>
+          <div className="text-left">
+            <h3 className="font-bold text-lg">{isRTL ? titleAr : title}</h3>
+          </div>
+        </div>
+        <ChevronDown className={`w-5 h-5 transition-transform duration-300 ${open ? 'rotate-180' : ''}`} />
+      </button>
+      
+      <div className={`transition-all duration-300 overflow-hidden ${open ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0'}`}>
+        <CardContent className="p-6 bg-white dark:bg-slate-900">
+          {children}
+        </CardContent>
+      </div>
+    </Card>
+  )
+}
+
+function Field({ label, labelAr, icon: Icon, children }: { label: string, labelAr: string, icon: any, children: React.ReactNode }) {
+  const { isRTL } = useLanguage()
+  return (
+    <div className="space-y-2">
+      <Label className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-300">
+        <Icon className="w-4 h-4 text-slate-400" />
+        {isRTL ? labelAr : label}
+      </Label>
+      {children}
+    </div>
+  )
+}
+
+function NewCarForm() {
+  const { isRTL } = useLanguage()
+  const router = useRouter()
+  const [loading, setLoading] = useState(false)
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [bankAccounts, setBankAccounts] = useState<any[]>([])
+  const [suppliers, setSuppliers] = useState<any[]>([])
+  const [carImages, setCarImages] = useState<File[]>([])
+  const [imagePreviews, setImagePreviews] = useState<string[]>([])
+  const imageInputRef = useRef<HTMLInputElement>(null)
+
+  const [formData, setFormData] = useState({
+    plate_number: '',
+    make: '',
+    model: '',
+    year: String(new Date().getFullYear()),
+    color: '',
+    vin: '',
+    mileage: '',
+    fuel_type: 'petrol',
+    transmission: 'automatic',
+    seats: '5',
+    status: 'available',
+    location: 'amwaj',
+    category: 'rental',
+    tire_condition: 'good',
+    daily_rate: '',
+    weekly_rate: '',
+    monthly_rate: '',
+    sale_price: '',
+    chassis_number: '',
+    engine_number: '',
+    purchase_price: '',
+    purchase_date: '',
+    purchase_source: '',
+    purchase_costs: '',
+    salvage_value: '',
+    supplier_id: '',
+    maintenance_costs: '',
+    next_service_date: '',
+    service_interval_km: '',
+    down_payment: '',
+    monthly_installment: '',
+    total_installments: '',
+    remaining_installments: '',
+    bank_name: '',
+    interest_rate: '',
+    insurance_company: '',
+    insurance_policy_number: '',
+    insurance_expiry: '',
+    registration_expiry: '',
+    notes: '',
+    battery_capacity_kwh: '',
+    battery_range_km: '',
+    battery_health_percent: '',
+  })
+
+  // Auto-calculations
+  const purchasePrice = parseFloat(formData.purchase_price) || 0
+  const downPayment = parseFloat(formData.down_payment) || 0
+  const totalInstallments = parseInt(formData.total_installments) || 0
+  const interestRate = parseFloat(formData.interest_rate) || 0
+  
+  const loanAmount = Math.max(0, purchasePrice - downPayment)
+  const monthlyInterest = interestRate / 100 / 12
+  
+  // Auto-calculate monthly installment
+  useEffect(() => {
+    if (loanAmount > 0 && totalInstallments > 0 && interestRate > 0) {
+      const emi = loanAmount * monthlyInterest * Math.pow(1 + monthlyInterest, totalInstallments) / (Math.pow(1 + monthlyInterest, totalInstallments) - 1)
+      setFormData(prev => ({ ...prev, monthly_installment: emi.toFixed(3) }))
+    }
+  }, [formData.purchase_price, formData.down_payment, formData.total_installments, formData.interest_rate])
+
+  // Auto-calculate remaining installments
+  useEffect(() => {
+    const paid = parseFloat(formData.down_payment) || 0
+    const monthly = parseFloat(formData.monthly_installment) || 0
+    if (paid > 0 && monthly > 0 && loanAmount > 0) {
+      const remaining = Math.ceil(loanAmount / monthly)
+      setFormData(prev => ({ ...prev, remaining_installments: String(Math.max(0, remaining)) }))
+    }
+  }, [formData.monthly_installment])
+
+  useEffect(() => {
+    const checkAdmin = async () => {
+      const user = await getAppUser()
+      if (user) setIsAdmin(true)
+    }
+    checkAdmin()
+    supabase.from("accounts").select("code,name_en").like("code","11%").neq("code","11000").neq("code","11002").neq("code","11003").order("code").then(({data})=>setBankAccounts(data||[]))
+    supabase.from("suppliers").select("id,name").order("name").then(({data})=>setSuppliers(data||[]))
+  }, [])
+
+  const handleImagesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    const newImages = [...carImages, ...files].slice(0, 5)
+    setCarImages(newImages)
+    
+    const previews = newImages.map(file => URL.createObjectURL(file))
+    setImagePreviews(previews)
+  }
+
+  const removeImage = (index: number) => {
+    const newImages = carImages.filter((_, i) => i !== index)
+    const newPreviews = imagePreviews.filter((_, i) => i !== index)
+    setCarImages(newImages)
+    setImagePreviews(newPreviews)
+  }
+
+  const uploadImages = async (): Promise<string[]> => {
+    const urls: string[] = []
+    for (const image of carImages) {
+      const ext = image.name.split('.').pop()
+      const fileName = `cars/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
+      const { error } = await supabase.storage.from('documents').upload(fileName, image, { upsert: true })
+      if (!error) {
+        const { data } = supabase.storage.from('documents').getPublicUrl(fileName)
+        urls.push(data.publicUrl)
+      }
+    }
+    return urls
+  }
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      const imageUrls = carImages.length > 0 ? await uploadImages() : []
+      
+      const payload: any = {
+        plate_number: formData.plate_number,
+        make: formData.make,
+        model: formData.model,
+        year: parseInt(formData.year),
+        color: formData.color || null,
+        vin: formData.vin || null,
+        mileage: formData.mileage ? parseInt(formData.mileage) : null,
+        fuel_type: formData.fuel_type,
+        transmission: formData.transmission,
+        seats: parseInt(formData.seats),
+        status: formData.status,
+        location: formData.location,
+        category: formData.category,
+        tire_condition: formData.tire_condition,
+        daily_rate: formData.daily_rate ? parseFloat(formData.daily_rate) : null,
+        weekly_rate: formData.weekly_rate ? parseFloat(formData.weekly_rate) : null,
+        monthly_rate: formData.monthly_rate ? parseFloat(formData.monthly_rate) : null,
+        sale_price: formData.sale_price ? parseFloat(formData.sale_price) : null,
+        notes: formData.notes || null,
+        image_url: imageUrls[0] || null,
+        battery_capacity_kwh: formData.battery_capacity_kwh ? parseFloat(formData.battery_capacity_kwh) : null,
+        battery_range_km: formData.battery_range_km ? parseInt(formData.battery_range_km) : null,
+        battery_health_percent: formData.battery_health_percent ? parseFloat(formData.battery_health_percent) : null,
+      }
+
+      if (isAdmin) {
+        payload.chassis_number = formData.chassis_number || null
+        payload.engine_number = formData.engine_number || null
+        payload.purchase_price = formData.purchase_price ? parseFloat(formData.purchase_price) : null
+        payload.purchase_date = formData.purchase_date || null
+        payload.purchase_source = formData.purchase_source || null
+        payload.purchase_costs = formData.purchase_costs ? parseFloat(formData.purchase_costs) : null
+        payload.salvage_value = formData.salvage_value ? parseFloat(formData.salvage_value) : null
+        payload.supplier_id = formData.supplier_id || null
+        payload.maintenance_costs = formData.maintenance_costs ? parseFloat(formData.maintenance_costs) : null
+        payload.next_service_date = formData.next_service_date || null
+        payload.service_interval_km = formData.service_interval_km ? parseInt(formData.service_interval_km) : null
+        payload.down_payment = formData.down_payment ? parseFloat(formData.down_payment) : null
+        payload.monthly_installment = formData.monthly_installment ? parseFloat(formData.monthly_installment) : null
+        payload.total_installments = formData.total_installments ? parseInt(formData.total_installments) : null
+        payload.remaining_installments = formData.remaining_installments ? parseInt(formData.remaining_installments) : null
+        payload.bank_name = formData.bank_name || null
+        payload.interest_rate = formData.interest_rate ? parseFloat(formData.interest_rate) : null
+        payload.insurance_company = formData.insurance_company || null
+        payload.insurance_policy_number = formData.insurance_policy_number || null
+        payload.insurance_expiry = formData.insurance_expiry || null
+        payload.registration_expiry = formData.registration_expiry || null
+      }
+
+      const { error } = await supabase.from('cars').insert([payload])
+      if (error) { console.error('Error adding car:', error); throw error }
+      router.push('/cars')
+    } catch (error) {
+      console.error('Error adding car (full details):', error)
+      alert(isRTL ? 'خطأ في إضافة السيارة' : 'Error adding car')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const f = formData
+  const set = (key: string, val: string) => setFormData(prev => ({ ...prev, [key]: val }))
+  const inputClass = "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-600 focus:ring-2 focus:ring-cyan-500"
+
+  return (
+    <DashboardLayout>
+      <div className="max-w-6xl mx-auto space-y-6 pb-20">
+        {/* Header */}
+        <div className="flex items-center justify-between bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm">
+          <div className="flex items-center gap-4">
+            <Button variant="outline" size="icon" onClick={() => router.push('/cars')} className="rounded-xl h-12 w-12">
+              <ArrowLeft className="w-5 h-5" />
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{isRTL ? 'إضافة مركبة جديدة' : 'Add New Vehicle'}</h1>
+              <p className="text-sm text-slate-500">{isRTL ? 'أدخل بيانات المركبة الكاملة' : 'Enter complete vehicle details'}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Image Upload */}
+        <Card className="border-0 shadow-lg overflow-hidden">
+          <div className="p-6 bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-900">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-12 h-12 rounded-xl bg-cyan-100 dark:bg-cyan-900 flex items-center justify-center">
+                <Camera className="w-6 h-6 text-cyan-600 dark:text-cyan-400" />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg text-slate-900 dark:text-white">{isRTL ? 'صور المركبة' : 'Vehicle Images'}</h3>
+                <p className="text-sm text-slate-500">{isRTL ? 'أضف حتى 5 صور' : 'Add up to 5 images'}</p>
+              </div>
+            </div>
+            
+            <div className="flex flex-wrap gap-4">
+              {imagePreviews.map((preview, idx) => (
+                <div key={idx} className="relative w-32 h-32 rounded-xl overflow-hidden shadow-md group">
+                  <img src={preview} alt="" className="w-full h-full object-cover" />
+                  <button
+                    type="button"
+                    onClick={() => removeImage(idx)}
+                    className="absolute top-2 right-2 w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+              
+              {imagePreviews.length < 5 && (
+                <button
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  className="w-32 h-32 rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-600 flex flex-col items-center justify-center gap-2 hover:border-cyan-500 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 transition-colors"
+                >
+                  <Upload className="w-8 h-8 text-slate-400" />
+                  <span className="text-xs text-slate-500">{isRTL ? 'إضافة صورة' : 'Add Image'}</span>
+                </button>
+              )}
+            </div>
+            <input ref={imageInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImagesChange} />
+          </div>
+        </Card>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Section 1: Basic Information */}
+          <Section icon={Car} title="Basic Information" titleAr="المعلومات الأساسية" color="slate">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              <Field label="Plate Number" labelAr="رقم اللوحة" icon={Hash}>
+                <Input required value={f.plate_number} onChange={e => set('plate_number', e.target.value)} className={inputClass} placeholder="12345" />
+              </Field>
+              <Field label="Make" labelAr="الشركة المصنعة" icon={Car}>
+                <Input required value={f.make} onChange={e => set('make', e.target.value)} className={inputClass} placeholder="Toyota" />
+              </Field>
+              <Field label="Model" labelAr="الموديل" icon={Car}>
+                <Input required value={f.model} onChange={e => set('model', e.target.value)} className={inputClass} placeholder="Camry" />
+              </Field>
+              <Field label="Year" labelAr="السنة" icon={Calendar}>
+                <Input required type="number" value={f.year} onChange={e => set('year', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Color" labelAr="اللون" icon={Palette}>
+                <Input value={f.color} onChange={e => set('color', e.target.value)} className={inputClass} placeholder="White" />
+              </Field>
+              <Field label="Mileage (km)" labelAr="المسافة المقطوعة (كم)" icon={Gauge}>
+                <Input type="number" value={f.mileage} onChange={e => set('mileage', e.target.value)} className={inputClass} placeholder="0" />
+              </Field>
+              <Field label="Fuel Type" labelAr="نوع الوقود" icon={Fuel}>
+                <Select value={f.fuel_type} onValueChange={v => set('fuel_type', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="petrol">{isRTL ? 'بنزين' : 'Petrol'}</SelectItem>
+                    <SelectItem value="diesel">{isRTL ? 'ديزل' : 'Diesel'}</SelectItem>
+                    <SelectItem value="hybrid">{isRTL ? 'هجين' : 'Hybrid'}</SelectItem>
+                    <SelectItem value="electric">{isRTL ? 'كهربائي' : 'Electric'}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Transmission" labelAr="ناقل الحركة" icon={Settings}>
+                <Select value={f.transmission} onValueChange={v => set('transmission', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="automatic">{isRTL ? 'أوتوماتيك' : 'Automatic'}</SelectItem>
+                    <SelectItem value="manual">{isRTL ? 'عادي' : 'Manual'}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Seats" labelAr="عدد المقاعد" icon={Tag}>
+                <Input type="number" value={f.seats} onChange={e => set('seats', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Location" labelAr="الموقع" icon={MapPin}>
+                <Select value={f.location} onValueChange={v => set('location', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="amwaj">{isRTL ? 'أمواج' : 'Amwaj'}</SelectItem>
+                    <SelectItem value="airport">{isRTL ? 'المطار' : 'Airport'}</SelectItem>
+                    <SelectItem value="city">{isRTL ? 'المدينة' : 'City'}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Category" labelAr="الفئة" icon={Tag}>
+                <Select value={f.category} onValueChange={v => set('category', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="rental">{isRTL ? 'إيجار' : 'Rental'}</SelectItem>
+                    <SelectItem value="sale">{isRTL ? 'بيع' : 'Sale'}</SelectItem>
+                    <SelectItem value="both">{isRTL ? 'الإثنان' : 'Both'}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Tire Condition" labelAr="حالة الإطارات" icon={Tag}>
+                <Select value={f.tire_condition} onValueChange={v => set('tire_condition', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="excellent">{isRTL ? 'ممتازة' : 'Excellent'}</SelectItem>
+                    <SelectItem value="good">{isRTL ? 'جيدة' : 'Good'}</SelectItem>
+                    <SelectItem value="fair">{isRTL ? 'متوسطة' : 'Fair'}</SelectItem>
+                    <SelectItem value="poor">{isRTL ? 'سيئة' : 'Poor'}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+          </Section>
+
+          {/* Section 2: Pricing */}
+          <Section icon={DollarSign} title="Pricing" titleAr="الأسعار" color="emerald">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+              <Field label="Daily Rate (BHD)" labelAr="سعر اليوم (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.daily_rate} onChange={e => set('daily_rate', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Weekly Rate (BHD)" labelAr="سعر الأسبوع (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.weekly_rate} onChange={e => set('weekly_rate', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Monthly Rate (BHD)" labelAr="سعر الشهر (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.monthly_rate} onChange={e => set('monthly_rate', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Sale Price (BHD)" labelAr="سعر البيع (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.sale_price} onChange={e => set('sale_price', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+            </div>
+          </Section>
+
+          {/* Section 3: Purchase & Accounting */}
+          <Section icon={Building2} title="Purchase & Accounting" titleAr="الشراء والمحاسبة" color="blue">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              <Field label="Purchase Price (BHD)" labelAr="سعر الشراء (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.purchase_price} onChange={e => set('purchase_price', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Purchase Date" labelAr="تاريخ الشراء" icon={Calendar}>
+                <Input type="date" value={f.purchase_date} onChange={e => set('purchase_date', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Purchase Source" labelAr="مصدر الشراء" icon={Truck}>
+                <Input value={f.purchase_source} onChange={e => set('purchase_source', e.target.value)} className={inputClass} placeholder="Supplier name" />
+              </Field>
+              <Field label="Additional Costs (BHD)" labelAr="تكاليف إضافية (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.purchase_costs} onChange={e => set('purchase_costs', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Salvage Value (BHD)" labelAr="القيمة التخريدية (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.salvage_value} onChange={e => set('salvage_value', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Supplier" labelAr="المورد" icon={Building2}>
+                <Select value={f.supplier_id} onValueChange={v => set('supplier_id', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue placeholder={isRTL ? 'اختر المورد' : 'Select supplier'} /></SelectTrigger>
+                  <SelectContent>
+                    {suppliers.map(s => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Down Payment (BHD)" labelAr="الدفعة الأولى (BHD)" icon={Banknote}>
+                <Input type="number" step="0.001" value={f.down_payment} onChange={e => set('down_payment', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Bank" labelAr="البنك" icon={Building2}>
+                <Select value={f.bank_name} onValueChange={v => set('bank_name', v)}>
+                  <SelectTrigger className={inputClass}><SelectValue placeholder={isRTL ? 'اختر البنك' : 'Select bank'} /></SelectTrigger>
+                  <SelectContent>
+                    {bankAccounts.map(b => <SelectItem key={b.code} value={b.name_en}>{b.name_en}</SelectItem>)}
+                    <SelectItem value="__new__">+ {isRTL ? 'بنك جديد' : 'New Bank'}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Interest Rate (%)" labelAr="نسبة الفائدة (%)" icon={Percent}>
+                <Input type="number" step="0.01" value={f.interest_rate} onChange={e => set('interest_rate', e.target.value)} className={inputClass} placeholder="0.00" />
+              </Field>
+              <Field label="Total Installments" labelAr="عدد الأقساط الكلي" icon={Hash}>
+                <Input type="number" value={f.total_installments} onChange={e => set('total_installments', e.target.value)} className={inputClass} placeholder="0" />
+              </Field>
+              <Field label="Monthly Installment (BHD)" labelAr="القسط الشهري (BHD)" icon={CreditCard}>
+                <Input type="number" step="0.001" value={f.monthly_installment} onChange={e => set('monthly_installment', e.target.value)} className={`${inputClass} bg-cyan-50 dark:bg-cyan-900/20 font-semibold`} placeholder="Auto-calculated" readOnly={!!(loanAmount && totalInstallments && interestRate)} />
+              </Field>
+              <Field label="Remaining Installments" labelAr="الأقساط المتبقية" icon={Hash}>
+                <Input type="number" value={f.remaining_installments} onChange={e => set('remaining_installments', e.target.value)} className={`${inputClass} bg-emerald-50 dark:bg-emerald-900/20 font-semibold`} placeholder="Auto-calculated" />
+              </Field>
+            </div>
+            
+            {/* Summary Box */}
+            <div className="mt-6 p-4 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+              <h4 className="font-bold text-sm text-slate-700 dark:text-slate-300 mb-3">{isRTL ? 'ملخص القرض' : 'Loan Summary'}</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <p className="text-slate-500">{isRTL ? 'سعر الشراء' : 'Purchase Price'}</p>
+                  <p className="font-bold text-lg text-slate-900 dark:text-white">{purchasePrice.toFixed(3)} BHD</p>
+                </div>
+                <div>
+                  <p className="text-slate-500">{isRTL ? 'الدفعة الأولى' : 'Down Payment'}</p>
+                  <p className="font-bold text-lg text-emerald-600">{downPayment.toFixed(3)} BHD</p>
+                </div>
+                <div>
+                  <p className="text-slate-500">{isRTL ? 'مبلغ القرض' : 'Loan Amount'}</p>
+                  <p className="font-bold text-lg text-blue-600">{loanAmount.toFixed(3)} BHD</p>
+                </div>
+                <div>
+                  <p className="text-slate-500">{isRTL ? 'القسط الشهري' : 'Monthly EMI'}</p>
+                  <p className="font-bold text-lg text-cyan-600">{(parseFloat(f.monthly_installment) || 0).toFixed(3)} BHD</p>
+                </div>
+              </div>
+            </div>
+          </Section>
+
+          {/* Section 4: Maintenance */}
+          <Section icon={Wrench} title="Maintenance Schedule" titleAr="الصيانة الدورية" color="amber">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              <Field label="Maintenance Costs (BHD)" labelAr="تكاليف الصيانة (BHD)" icon={DollarSign}>
+                <Input type="number" step="0.001" value={f.maintenance_costs} onChange={e => set('maintenance_costs', e.target.value)} className={inputClass} placeholder="0.000" />
+              </Field>
+              <Field label="Next Service Date" labelAr="تاريخ الصيانة القادمة" icon={Calendar}>
+                <Input type="date" value={f.next_service_date} onChange={e => set('next_service_date', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Service Interval (km)" labelAr="فترة الصيانة (كم)" icon={Gauge}>
+                <Input type="number" value={f.service_interval_km} onChange={e => set('service_interval_km', e.target.value)} className={inputClass} placeholder="5000" />
+              </Field>
+            </div>
+          </Section>
+
+          {/* Section 5: Chassis, Insurance & Registration */}
+          <Section icon={Shield} title="Chassis, Insurance & Registration" titleAr="الشاصي والتأمين والتسجيل" color="purple">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              <Field label="VIN / Chassis Number" labelAr="رقم الشاصي (VIN)" icon={Hash}>
+                <Input value={f.vin} onChange={e => set('vin', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Chassis Number" labelAr="رقم الشاصي الإضافي" icon={Hash}>
+                <Input value={f.chassis_number} onChange={e => set('chassis_number', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Engine Number" labelAr="رقم المحرك" icon={Hash}>
+                <Input value={f.engine_number} onChange={e => set('engine_number', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Insurance Company" labelAr="شركة التأمين" icon={Shield}>
+                <Input value={f.insurance_company} onChange={e => set('insurance_company', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Policy Number" labelAr="رقم بوليصة التأمين" icon={FileText}>
+                <Input value={f.insurance_policy_number} onChange={e => set('insurance_policy_number', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Insurance Expiry" labelAr="انتهاء التأمين" icon={Calendar}>
+                <Input type="date" value={f.insurance_expiry} onChange={e => set('insurance_expiry', e.target.value)} className={inputClass} />
+              </Field>
+              <Field label="Registration Expiry" labelAr="انتهاء التسجيل" icon={Calendar}>
+                <Input type="date" value={f.registration_expiry} onChange={e => set('registration_expiry', e.target.value)} className={inputClass} />
+              </Field>
+            </div>
+          </Section>
+
+          {/* Section 6: Notes */}
+          <Section icon={FileText} title="Notes" titleAr="ملاحظات" color="rose" defaultOpen={false}>
+            <Textarea 
+              value={f.notes} 
+              onChange={e => set('notes', e.target.value)} 
+              className={inputClass} 
+              placeholder={isRTL ? 'أي ملاحظات إضافية...' : 'Any additional notes...'} 
+              rows={4} 
+            />
+          </Section>
+
+          {/* Submit */}
+          <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 p-4 z-50">
+            <div className="max-w-6xl mx-auto flex gap-4">
+              <Button type="submit" className="flex-1 h-12 text-lg rounded-xl bg-cyan-600 hover:bg-cyan-700 shadow-lg" disabled={loading}>
+                <Save className="w-5 h-5 mr-2" />
+                {loading ? (isRTL ? 'جاري الحفظ...' : 'Saving...') : (isRTL ? 'حفظ بيانات المركبة' : 'Save Vehicle')}
+              </Button>
+              <Button type="button" variant="outline" onClick={() => router.push('/cars')} className="h-12 px-8 rounded-xl">
+                {isRTL ? 'إلغاء' : 'Cancel'}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default function NewCarPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <NewCarForm />
+    </Suspense>
+  )
+}

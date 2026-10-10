@@ -1,0 +1,350 @@
+"use client"
+import { Suspense, useState, useEffect } from 'react'
+export const dynamic = "force-dynamic"
+import { supabase } from '@/lib/supabase'
+import DashboardLayout from '@/components/DashboardLayout'
+import { useLanguage } from '@/lib/LanguageContext'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Badge } from '@/components/ui/badge'
+import { Banknote, Download, Calendar, ArrowLeft, ArrowUpRight, ArrowDownRight, Wallet } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import * as XLSX from 'xlsx'
+
+interface CashFlowRow {
+  date: string
+  description: string
+  description_ar: string
+  type: 'inflow' | 'outflow'
+  amount: number
+  category: string
+  reference: string
+}
+
+function CashFlowContent() {
+  const { isRTL } = useLanguage()
+  const router = useRouter()
+  const [inflows, setInflows] = useState<CashFlowRow[]>([])
+  const [outflows, setOutflows] = useState<CashFlowRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [fromDate, setFromDate] = useState(new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0])
+  const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0])
+
+  useEffect(() => {
+    loadData()
+  }, [fromDate, toDate])
+
+  async function loadData() {
+    setLoading(true)
+    try {
+      // Get payments (cash inflows from customers)
+      const { data: payments } = await supabase
+        .from('payments')
+        .select('*')
+        .gte('payment_date', fromDate)
+        .lte('payment_date', toDate)
+        .eq('status', 'completed')
+
+      // Get supplier payments (cash outflows)
+      const { data: supplierPayments } = await supabase
+        .from('supplier_payments')
+        .select('*')
+        .gte('payment_date', fromDate)
+        .lte('payment_date', toDate)
+
+      // Get expenses
+      const { data: expenses } = await supabase
+        .from('expenses')
+        .select('*')
+        .gte('date', fromDate)
+        .lte('date', toDate)
+
+      const inflowRows: CashFlowRow[] = []
+      const outflowRows: CashFlowRow[] = []
+
+      // Customer payments = inflow
+      ;(payments || []).forEach((p: any) => {
+        inflowRows.push({
+          date: p.payment_date,
+          description: `Payment received - ${p.receipt_number || ''}`,
+          description_ar: `استلام دفعة - ${p.receipt_number || ''}`,
+          type: 'inflow',
+          amount: Number(p.amount || 0),
+          category: 'operating',
+          reference: p.receipt_number || ''
+        })
+      })
+
+      // Supplier payments = outflow
+      ;(supplierPayments || []).forEach((p: any) => {
+        outflowRows.push({
+          date: p.payment_date,
+          description: `Supplier payment - ${p.reference || ''}`,
+          description_ar: `دفع لمورد - ${p.reference || ''}`,
+          type: 'outflow',
+          amount: Number(p.amount || 0),
+          category: 'operating',
+          reference: p.reference || ''
+        })
+      })
+
+      // Expenses = outflow
+      ;(expenses || []).forEach((e: any) => {
+        outflowRows.push({
+          date: e.date,
+          description: e.description || 'Expense',
+          description_ar: e.description || 'مصروف',
+          type: 'outflow',
+          amount: Number(e.amount || 0),
+          category: 'operating',
+          reference: e.reference || ''
+        })
+      })
+
+      // Sort by date
+      inflowRows.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+      outflowRows.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+      setInflows(inflowRows)
+      setOutflows(outflowRows)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const totalInflows = inflows.reduce((s, r) => s + r.amount, 0)
+  const totalOutflows = outflows.reduce((s, r) => s + r.amount, 0)
+  const netCashFlow = totalInflows - totalOutflows
+
+  function exportExcel() {
+    const exportData = [
+      { Type: 'CASH INFLOWS', Date: '', Description: '', Reference: '', Amount: '' },
+      ...inflows.map(r => ({
+        Type: '',
+        Date: r.date,
+        Description: isRTL ? r.description_ar : r.description,
+        Reference: r.reference,
+        Amount: r.amount
+      })),
+      { Type: '', Date: '', Description: 'TOTAL INFLOWS', Reference: '', Amount: totalInflows },
+      { Type: '', Date: '', Description: '', Reference: '', Amount: '' },
+      { Type: 'CASH OUTFLOWS', Date: '', Description: '', Reference: '', Amount: '' },
+      ...outflows.map(r => ({
+        Type: '',
+        Date: r.date,
+        Description: isRTL ? r.description_ar : r.description,
+        Reference: r.reference,
+        Amount: r.amount
+      })),
+      { Type: '', Date: '', Description: 'TOTAL OUTFLOWS', Reference: '', Amount: totalOutflows },
+      { Type: '', Date: '', Description: '', Reference: '', Amount: '' },
+      { Type: '', Date: '', Description: 'NET CASH FLOW', Reference: '', Amount: netCashFlow }
+    ]
+    const ws = XLSX.utils.json_to_sheet(exportData)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, 'Cash Flow')
+    XLSX.writeFile(wb, `Cash_Flow_${fromDate}_to_${toDate}.xlsx`)
+  }
+
+  return (
+    <DashboardLayout>
+      <div className="min-h-screen bg-[#f0f2f5]" dir={isRTL ? "rtl" : "ltr"}>
+        <div className="p-6 max-w-5xl mx-auto space-y-6">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Button variant="outline" size="icon" onClick={() => router.back()} className="rounded-lg">
+                <ArrowLeft className={isRTL ? 'rotate-180' : ''} />
+              </Button>
+              <div>
+                <h1 className="text-2xl font-black text-slate-900">
+                  {isRTL ? 'قائمة التدفقات النقدية' : 'Cash Flow Statement'}
+                </h1>
+                <p className="text-sm text-slate-500">
+                  {isRTL ? 'الحركات النقدية الداخلة والخارجة' : 'Cash inflows and outflows'}
+                </p>
+              </div>
+            </div>
+            <Button onClick={exportExcel} className="bg-emerald-600 hover:bg-emerald-700 rounded-xl">
+              <Download className="w-4 h-4 mr-2" />
+              {isRTL ? 'تصدير Excel' : 'Export Excel'}
+            </Button>
+          </div>
+
+          {/* Date Filter */}
+          <Card className="border-0 shadow-md">
+            <CardContent className="p-4">
+              <div className="flex flex-col md:flex-row gap-4">
+                <div className="flex-1">
+                  <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'من' : 'From'}</Label>
+                  <div className="relative">
+                    <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="pl-10 rounded-lg" />
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'إلى' : 'To'}</Label>
+                  <div className="relative">
+                    <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="pl-10 rounded-lg" />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Card className="border-0 shadow-md bg-gradient-to-br from-emerald-50 to-white">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                    <ArrowDownRight className="w-5 h-5 text-emerald-600" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'التدفقات الداخلة' : 'Total Inflows'}</p>
+                    <p className="text-xl font-black text-emerald-600">{totalInflows.toFixed(3)} BHD</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="border-0 shadow-md bg-gradient-to-br from-red-50 to-white">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
+                    <ArrowUpRight className="w-5 h-5 text-red-600" />
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'التدفقات الخارجة' : 'Total Outflows'}</p>
+                    <p className="text-xl font-black text-red-600">{totalOutflows.toFixed(3)} BHD</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className={`border-0 shadow-md ${netCashFlow >= 0 ? 'bg-gradient-to-br from-blue-50 to-white' : 'bg-gradient-to-br from-amber-50 to-white'}`}>
+              <CardContent className="p-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${netCashFlow >= 0 ? 'bg-blue-100' : 'bg-amber-100'}`}>
+                    <Wallet className={`w-5 h-5 ${netCashFlow >= 0 ? 'text-blue-600' : 'text-amber-600'}`} />
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'صافي التدفق النقدي' : 'Net Cash Flow'}</p>
+                    <p className={`text-xl font-black ${netCashFlow >= 0 ? 'text-blue-600' : 'text-amber-600'}`}>{netCashFlow.toFixed(3)} BHD</p>
+                    <Badge className={`mt-1 text-[10px] ${netCashFlow >= 0 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {netCashFlow >= 0 ? (isRTL ? 'فائض' : 'Surplus') : (isRTL ? 'عجز' : 'Deficit')}
+                    </Badge>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Cash Flow Details */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Inflows */}
+            <Card className="border-0 shadow-md overflow-hidden">
+              <CardHeader className="bg-gradient-to-r from-emerald-600 to-emerald-700 text-white">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ArrowDownRight className="w-5 h-5" />
+                  {isRTL ? 'التدفقات الداخلة' : 'CASH INFLOWS'}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                {loading ? (
+                  <div className="p-8 text-center text-slate-400">{isRTL ? 'جاري التحميل...' : 'Loading...'}</div>
+                ) : inflows.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">{isRTL ? 'لا توجد تدفقات داخلة' : 'No inflows'}</div>
+                ) : (
+                  <div className="p-4 space-y-1">
+                    {inflows.map((r, i) => (
+                      <div key={i} className="flex justify-between items-center py-2 px-3 rounded-lg hover:bg-slate-50">
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-slate-800">{isRTL ? r.description_ar : r.description}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-xs text-slate-400 font-mono">{r.date}</p>
+                            {r.reference && <Badge variant="outline" className="text-[10px]">{r.reference}</Badge>}
+                          </div>
+                        </div>
+                        <p className="text-sm font-bold text-emerald-600 font-mono ml-4">+{r.amount.toFixed(3)}</p>
+                      </div>
+                    ))}
+                    <div className="flex justify-between items-center py-3 px-3 bg-emerald-50 rounded-xl mt-3 border-t-2 border-emerald-200">
+                      <p className="text-sm font-bold text-emerald-800">{isRTL ? 'إجمالي الداخلة' : 'Total Inflows'}</p>
+                      <p className="text-lg font-black text-emerald-700 font-mono">{totalInflows.toFixed(3)} BHD</p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Outflows */}
+            <Card className="border-0 shadow-md overflow-hidden">
+              <CardHeader className="bg-gradient-to-r from-red-600 to-red-700 text-white">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ArrowUpRight className="w-5 h-5" />
+                  {isRTL ? 'التدفقات الخارجة' : 'CASH OUTFLOWS'}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                {loading ? (
+                  <div className="p-8 text-center text-slate-400">{isRTL ? 'جاري التحميل...' : 'Loading...'}</div>
+                ) : outflows.length === 0 ? (
+                  <div className="p-8 text-center text-slate-400">{isRTL ? 'لا توجد تدفقات خارجة' : 'No outflows'}</div>
+                ) : (
+                  <div className="p-4 space-y-1">
+                    {outflows.map((r, i) => (
+                      <div key={i} className="flex justify-between items-center py-2 px-3 rounded-lg hover:bg-slate-50">
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-slate-800">{isRTL ? r.description_ar : r.description}</p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <p className="text-xs text-slate-400 font-mono">{r.date}</p>
+                            {r.reference && <Badge variant="outline" className="text-[10px]">{r.reference}</Badge>}
+                          </div>
+                        </div>
+                        <p className="text-sm font-bold text-red-600 font-mono ml-4">-{r.amount.toFixed(3)}</p>
+                      </div>
+                    ))}
+                    <div className="flex justify-between items-center py-3 px-3 bg-red-50 rounded-xl mt-3 border-t-2 border-red-200">
+                      <p className="text-sm font-bold text-red-800">{isRTL ? 'إجمالي الخارجة' : 'Total Outflows'}</p>
+                      <p className="text-lg font-black text-red-700 font-mono">{totalOutflows.toFixed(3)} BHD</p>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Net Summary */}
+          <div className={`p-6 rounded-2xl ${netCashFlow >= 0 ? 'bg-gradient-to-r from-emerald-50 via-blue-50 to-emerald-50 border-2 border-emerald-300' : 'bg-gradient-to-r from-red-50 via-amber-50 to-red-50 border-2 border-red-300'}`}>
+            <div className="flex justify-between items-center">
+              <div>
+                <p className="text-lg font-bold text-slate-800">{isRTL ? 'صافي التدفق النقدي' : 'Net Cash Flow'}</p>
+                <p className="text-sm text-slate-500">{isRTL ? 'الداخلة - الخارجة' : 'Inflows - Outflows'}</p>
+              </div>
+              <div className="text-right">
+                <p className={`text-3xl font-black font-mono ${netCashFlow >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {netCashFlow >= 0 ? '+' : ''}{netCashFlow.toFixed(3)} BHD
+                </p>
+                <Badge className={`mt-1 ${netCashFlow >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}`}>
+                  {netCashFlow >= 0 ? (isRTL ? 'فائض نقدي' : 'Cash Surplus') : (isRTL ? 'عجز نقدي' : 'Cash Deficit')}
+                </Badge>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default function CashFlowPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#f0f2f5] flex items-center justify-center"><div className="w-10 h-10 bg-slate-800 rounded-xl animate-pulse" /></div>}>
+      <CashFlowContent />
+    </Suspense>
+  )
+}

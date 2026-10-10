@@ -1,0 +1,190 @@
+import { test, describe } from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  ApiError,
+  badRequest,
+  forbidden,
+  invalidReference,
+  notFound,
+  toErrorResponse,
+  unauthorized,
+} from "../src/lib/auth/errors.ts";
+import {
+  assertBranchAccess,
+  assertDateInOpenFinancialYear,
+  assertWritableTenant,
+  canAccessBranch,
+  sanitizeMetadata,
+} from "../src/lib/auth/policy.ts";
+import type { AuthContext, FinancialYear } from "../src/lib/auth/types.ts";
+
+function context(overrides: Partial<AuthContext> = {}): AuthContext {
+  return {
+    authUserId: "00000000-0000-0000-0000-000000000001",
+    email: "user@example.com",
+    fullName: "Test User",
+    role: "staff",
+    tenantId: null,
+    customerId: null,
+    branchIds: null,
+    financialYearId: null,
+    permissions: {},
+    isAdmin: false,
+    ...overrides,
+  };
+}
+
+const TENANT_A = "aaaaaaaa-0000-0000-0000-00000000000a";
+const TENANT_B = "bbbbbbbb-0000-0000-0000-00000000000b";
+const BRANCH_1 = "11111111-0000-0000-0000-000000000001";
+const BRANCH_2 = "22222222-0000-0000-0000-000000000002";
+
+describe("error contract", () => {
+  test("each error carries a status and a stable code", () => {
+    assert.equal(unauthorized().status, 401);
+    assert.equal(unauthorized().code, "unauthenticated");
+    assert.equal(forbidden().status, 403);
+    assert.equal(forbidden().code, "forbidden");
+    assert.equal(notFound().status, 404);
+    assert.equal(badRequest("x").status, 400);
+    assert.equal(invalidReference("customer_id").status, 422);
+    assert.equal(invalidReference("customer_id").code, "invalid_reference");
+  });
+
+  test("toErrorResponse never leaks internal error detail", () => {
+    const leaky = new Error("duplicate key value violates unique constraint \"customers_pkey\"");
+    const { status, body } = toErrorResponse(leaky);
+    assert.equal(status, 500);
+    assert.equal(body.code, "internal_error");
+    assert.equal(body.error, "Internal server error");
+    assert.equal(JSON.stringify(body).includes("customers_pkey"), false);
+  });
+
+  test("toErrorResponse passes ApiError through untouched", () => {
+    const { status, body } = toErrorResponse(forbidden("nope"));
+    assert.equal(status, 403);
+    assert.equal(body.error, "nope");
+    assert.equal(body.code, "forbidden");
+  });
+
+  test("ApiError is an Error subclass", () => {
+    assert.ok(unauthorized() instanceof ApiError);
+    assert.ok(unauthorized() instanceof Error);
+  });
+});
+
+describe("tenant write isolation", () => {
+  test("a tenant-less caller keeps writing tenant-less rows", () => {
+    assert.equal(assertWritableTenant(context(), undefined), null);
+    assert.equal(assertWritableTenant(context(), null), null);
+  });
+
+  test("a caller cannot plant a row in another tenant", () => {
+    const ctx = context({ tenantId: TENANT_A });
+    assert.throws(() => assertWritableTenant(ctx, TENANT_B), (e: ApiError) => {
+      assert.equal(e.status, 403);
+      return true;
+    });
+  });
+
+  test("a caller may write into its own tenant", () => {
+    const ctx = context({ tenantId: TENANT_A });
+    assert.equal(assertWritableTenant(ctx, TENANT_A), TENANT_A);
+    // Omitting the value defaults to the caller's tenant.
+    assert.equal(assertWritableTenant(ctx, undefined), TENANT_A);
+  });
+});
+
+describe("branch isolation", () => {
+  test("multi-branch administrators (branchIds = null) reach every branch", () => {
+    const ctx = context({ branchIds: null });
+    assert.equal(canAccessBranch(ctx, BRANCH_1), true);
+    assert.equal(canAccessBranch(ctx, BRANCH_2), true);
+    assert.equal(canAccessBranch(ctx, null), true);
+    assert.doesNotThrow(() => assertBranchAccess(ctx, BRANCH_2));
+  });
+
+  test("a branch-restricted user only reaches its own branch", () => {
+    const ctx = context({ branchIds: [BRANCH_1] });
+    assert.equal(canAccessBranch(ctx, BRANCH_1), true);
+    assert.equal(canAccessBranch(ctx, BRANCH_2), false);
+    assert.doesNotThrow(() => assertBranchAccess(ctx, BRANCH_1));
+    assert.throws(() => assertBranchAccess(ctx, BRANCH_2), (e: ApiError) => {
+      assert.equal(e.status, 403);
+      return true;
+    });
+  });
+
+  test("an unrestricted field value is always accepted", () => {
+    const ctx = context({ branchIds: [BRANCH_1] });
+    assert.equal(canAccessBranch(ctx, null), true);
+    assert.equal(canAccessBranch(ctx, undefined), true);
+    assert.equal(canAccessBranch(ctx, ""), true);
+  });
+});
+
+describe("financial year context", () => {
+  const year: FinancialYear = {
+    id: "year-2026",
+    name: "2026",
+    start_date: "2026-01-01",
+    end_date: "2026-12-31",
+    is_current: true,
+    status: "active",
+  };
+
+  test("no financial year configured means no restriction", () => {
+    assert.doesNotThrow(() => assertDateInOpenFinancialYear(null, "1999-01-01"));
+    assert.doesNotThrow(() => assertDateInOpenFinancialYear(null, null));
+  });
+
+  test("dates inside the active year are accepted", () => {
+    assert.doesNotThrow(() => assertDateInOpenFinancialYear(year, "2026-01-01"));
+    assert.doesNotThrow(() => assertDateInOpenFinancialYear(year, "2026-12-31"));
+  });
+
+  test("dates outside the active year are rejected", () => {
+    assert.throws(() => assertDateInOpenFinancialYear(year, "2025-12-31"), (e: ApiError) => {
+      assert.equal(e.status, 403);
+      return true;
+    });
+    assert.throws(() => assertDateInOpenFinancialYear(year, "2027-01-01"));
+  });
+
+  test("posting into a closed year is rejected", () => {
+    const closed: FinancialYear = { ...year, status: "closed" };
+    assert.throws(() => assertDateInOpenFinancialYear(closed, "2026-06-01"), (e: ApiError) => {
+      assert.equal(e.status, 403);
+      assert.match(e.message, /closed/i);
+      return true;
+    });
+  });
+});
+
+describe("audit metadata sanitisation", () => {
+  test("credentials are stripped before an audit row is written", () => {
+    const clean = sanitizeMetadata({
+      email: "user@example.com",
+      password: "hunter2",
+      apiKey: "sk-live-xxx",
+      api_key: "sk-live-yyy",
+      access_token: "tok",
+      authorization: "Bearer abc",
+      nested: { secret: "s", invoice_number: "INV-1" },
+    });
+    assert.deepEqual(clean, {
+      email: "user@example.com",
+      nested: { invoice_number: "INV-1" },
+    });
+  });
+
+  test("non-scalar values are reduced to safe placeholders", () => {
+    const clean = sanitizeMetadata({ rows: [{ a: 1 }, "ok", 3] });
+    assert.deepEqual(clean, { rows: ["[object]", "ok", 3] });
+  });
+
+  test("undefined values are dropped", () => {
+    assert.deepEqual(sanitizeMetadata({ a: undefined, b: 1 }), { b: 1 });
+  });
+});

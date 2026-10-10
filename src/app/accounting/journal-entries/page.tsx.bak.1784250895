@@ -1,0 +1,995 @@
+"use client"
+export const dynamic = "force-dynamic"
+import { Suspense, useState, useEffect, useRef, useCallback } from "react"
+import { useRouter } from "next/navigation"
+import DashboardLayout from "@/components/DashboardLayout"
+import { useLanguage } from "@/lib/LanguageContext"
+import { supabase } from "@/lib/supabase"
+import { formatCurrency } from "@/lib/utils"
+import {
+  Receipt, Save, ArrowLeft, Plus, Trash2, Calculator, CheckCircle, AlertCircle,
+  Calendar, Printer, FileText, RotateCcw, Copy, ChevronDown, Search, Upload,
+  Building2, Car, User, Users, MapPin, Briefcase, FileSpreadsheet, X
+} from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+
+const COST_CENTERS = [
+  { id: "manama", name: "Branch Manama" },
+  { id: "muharraq", name: "Branch Muharraq" },
+  { id: "airport", name: "Airport Rentals" },
+  { id: "riffa", name: "Branch Riffa" },
+  { id: "corporate", name: "Corporate Rentals" },
+]
+
+const BRANCHES = [
+  { id: "manama", name: "Manama" },
+  { id: "airport", name: "Airport" },
+  { id: "muharraq", name: "Muharraq" },
+  { id: "riffa", name: "Riffa" },
+]
+
+const JOURNAL_TEMPLATES = [
+  {
+    id: "rental_income",
+    name: "Rental Income",
+    lines: [
+      { account_id: "", account_name: "Cash / Bank", description: "Rental income received", debit: 0, credit: 500 },
+      { account_id: "", account_name: "Rental Revenue", description: "Rental income", debit: 500, credit: 0 },
+    ]
+  },
+  {
+    id: "fuel_expense",
+    name: "Fuel Expense",
+    lines: [
+      { account_id: "", account_name: "Fuel Expense", description: "Vehicle fuel", debit: 50, credit: 0 },
+      { account_id: "", account_name: "Cash / Bank", description: "Fuel payment", debit: 0, credit: 50 },
+    ]
+  },
+  {
+    id: "maintenance",
+    name: "Vehicle Maintenance",
+    lines: [
+      { account_id: "", account_name: "Maintenance Expense", description: "Vehicle maintenance", debit: 200, credit: 0 },
+      { account_id: "", account_name: "Cash / Bank", description: "Maintenance payment", debit: 0, credit: 200 },
+    ]
+  },
+  {
+    id: "insurance",
+    name: "Insurance Premium",
+    lines: [
+      { account_id: "", account_name: "Insurance Expense", description: "Vehicle insurance", debit: 300, credit: 0 },
+      { account_id: "", account_name: "Cash / Bank", description: "Insurance payment", debit: 0, credit: 300 },
+    ]
+  },
+  {
+    id: "salary",
+    name: "Salary Payment",
+    lines: [
+      { account_id: "", account_name: "Salaries Expense", description: "Monthly salary", debit: 1000, credit: 0 },
+      { account_id: "", account_name: "Cash / Bank", description: "Salary payment", debit: 0, credit: 1000 },
+    ]
+  },
+  {
+    id: "loan_given",
+    name: "Loan Given to Employee",
+    lines: [
+      { account_id: "", account_name: "Loans Receivable", description: "Loan to employee", debit: 500, credit: 0 },
+      { account_id: "", account_name: "Cash / Bank", description: "Loan disbursement", debit: 0, credit: 500 },
+    ]
+  },
+  {
+    id: "loan_received",
+    name: "Loan Received",
+    lines: [
+      { account_id: "", account_name: "Cash / Bank", description: "Loan received", debit: 10000, credit: 0 },
+      { account_id: "", account_name: "Loans Payable", description: "Loan liability", debit: 0, credit: 10000 },
+    ]
+  },
+]
+
+type Account = {
+  id: string
+  name: string
+  name_ar?: string
+  code: string
+  parent_id: string | null
+  type: string
+}
+
+type Vehicle = { id: string; make: string; model: string; plate_number: string; year?: number }
+type Customer = { id: string; name: string; phone?: string }
+type Supplier = { id: string; name: string; phone?: string }
+type Driver = { id: string; name: string; phone?: string; license_number?: string }
+type RentalContract = { id: string; contract_number: string; customer_name?: string; vehicle_plate?: string }
+
+type JournalLine = {
+  id: string
+  account_id: string
+  description: string
+  vehicle_id: string
+  customer_id: string
+  supplier_id: string
+  driver_id: string
+  rental_contract_id: string
+  cost_center: string
+  branch: string
+  debit: string
+  credit: string
+}
+
+function generateJournalNumber(): string {
+  const now = new Date()
+  const year = now.getFullYear()
+  const random = Math.floor(1000 + Math.random() * 9000)
+  return `JV-${year}-${random}`
+}
+
+function JournalPageContent() {
+  const router = useRouter()
+  const { isRTL } = useLanguage()
+  const [mounted, setMounted] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [vehicles, setVehicles] = useState<Vehicle[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [drivers, setDrivers] = useState<Driver[]>([])
+  const [rentalContracts, setRentalContracts] = useState<RentalContract[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const [journalNumber, setJournalNumber] = useState(generateJournalNumber())
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0])
+  const [reference, setReference] = useState("")
+  const [description, setDescription] = useState("")
+
+  const [lines, setLines] = useState<JournalLine[]>([
+    { id: "1", account_id: "", description: "", vehicle_id: "", customer_id: "", supplier_id: "", driver_id: "", rental_contract_id: "", cost_center: "", branch: "", debit: "", credit: "" }
+  ])
+
+  const [attachments, setAttachments] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
+
+  const [showTemplateModal, setShowTemplateModal] = useState(false)
+  const [searchAccount, setSearchAccount] = useState("")
+  const [activeAccountDropdown, setActiveAccountDropdown] = useState<string | null>(null)
+  const accountDropdownRefs = useRef<{ [key: string]: HTMLDivElement | null }>({})
+
+  useEffect(() => {
+    setMounted(true)
+    fetchData()
+  }, [])
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node
+      let clickedInside = false
+      Object.values(accountDropdownRefs.current).forEach(ref => {
+        if (ref && ref.contains(target)) clickedInside = true
+      })
+      if (!clickedInside) setActiveAccountDropdown(null)
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
+  async function fetchData() {
+    setLoading(true)
+    try {
+      const [
+        { data: accData },
+        { data: vehData },
+        { data: custData },
+        { data: supData },
+        { data: drvData },
+        { data: rentData }
+      ] = await Promise.all([
+        supabase.from("accounts").select("*").order("code"),
+        supabase.from("cars").select("id, make, model, plate_number, year").order("make"),
+        supabase.from("customers").select("id, name, phone").order("name"),
+        supabase.from("suppliers").select("id, name, phone").order("name"),
+        supabase.from("drivers").select("id, name, phone, license_number").order("name"),
+        supabase.from("rental_contracts").select("id, contract_number, customer:customers(name), car:cars(plate_number)").order("contract_number", { ascending: false }).limit(100),
+      ])
+
+      if (accData) setAccounts(accData)
+      if (vehData) setVehicles(vehData)
+      if (custData) setCustomers(custData)
+      if (supData) setSuppliers(supData)
+      if (drvData) setDrivers(drvData)
+      if (rentData) {
+        const formatted = rentData.map((r: any) => ({
+          id: r.id,
+          contract_number: r.contract_number,
+          customer_name: r.customer?.name,
+          vehicle_plate: r.car?.plate_number
+        }))
+        setRentalContracts(formatted)
+      }
+    } catch (e) {
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  function getParentAccounts() {
+    return accounts.filter(a => !a.parent_id)
+  }
+
+  function getChildAccounts(parentId: string) {
+    return accounts.filter(a => a.parent_id === parentId)
+  }
+
+  function getAccountById(id: string) {
+    return accounts.find(a => a.id === id)
+  }
+
+  function getAccountLabel(id: string) {
+    const acc = getAccountById(id)
+    if (!acc) return "Select Account..."
+    const parent = acc.parent_id ? getAccountById(acc.parent_id) : null
+    if (parent) return `${parent.code} -> ${acc.code} - ${acc.name}`
+    return `${acc.code} - ${acc.name}`
+  }
+
+  function buildAccountTree() {
+    const parents = getParentAccounts()
+    if (parents.length === 0) {
+      return accounts.map(acc => ({
+        type: "item" as const,
+        id: acc.id,
+        label: `${acc.code} - ${acc.name}`,
+      }))
+    }
+    const tree: { type: "header" | "item"; id: string; label: string }[] = []
+    parents.forEach(parent => {
+      tree.push({ type: "header", id: `hdr-${parent.id}`, label: `${parent.code} - ${parent.name}` })
+      const children = getChildAccounts(parent.id)
+      if (children.length > 0) {
+        children.forEach(child => {
+          tree.push({ type: "item", id: child.id, label: `${child.code} - ${child.name}` })
+        })
+      } else {
+        tree.push({ type: "header", id: `empty-${parent.id}`, label: "    (No sub-accounts)" })
+      }
+    })
+    const knownParentIds = new Set(parents.map(p => p.id))
+    const orphans = accounts.filter(a => a.parent_id && !knownParentIds.has(a.parent_id))
+    if (orphans.length > 0) {
+      tree.push({ type: "header", id: "orphan-hdr", label: "Other Accounts" })
+      orphans.forEach(acc => {
+        tree.push({ type: "item", id: acc.id, label: `${acc.code} - ${acc.name}` })
+      })
+    }
+    return tree
+  }
+
+  function addLine() {
+    const newId = (Math.max(...lines.map(l => parseInt(l.id)), 0) + 1).toString()
+    setLines([...lines, {
+      id: newId, account_id: "", description: "", vehicle_id: "", customer_id: "",
+      supplier_id: "", driver_id: "", rental_contract_id: "", cost_center: "",
+      branch: "", debit: "", credit: ""
+    }])
+  }
+
+  function removeLine(id: string) {
+    if (lines.length <= 1) return
+    setLines(lines.filter(l => l.id !== id))
+  }
+
+  function updateLine(id: string, field: keyof JournalLine, value: string) {
+    setLines(lines.map(l => l.id === id ? { ...l, [field]: value } : l))
+  }
+
+  function getTotalDebit() {
+    return lines.reduce((sum, l) => sum + (parseFloat(l.debit) || 0), 0)
+  }
+
+  function getTotalCredit() {
+    return lines.reduce((sum, l) => sum + (parseFloat(l.credit) || 0), 0)
+  }
+
+  function getDifference() {
+    return getTotalDebit() - getTotalCredit()
+  }
+
+  function isBalanced() {
+    return Math.abs(getDifference()) < 0.001
+  }
+
+  function autoBalance() {
+    const diff = getDifference()
+    if (Math.abs(diff) < 0.001) return
+
+    const lastLine = lines[lines.length - 1]
+    if (!lastLine.account_id) {
+      alert("Please select an account for the last line first.")
+      return
+    }
+
+    if (diff > 0) {
+      updateLine(lastLine.id, "credit", diff.toFixed(3))
+    } else {
+      updateLine(lastLine.id, "debit", Math.abs(diff).toFixed(3))
+    }
+  }
+
+  function applyTemplate(templateId: string) {
+    const template = JOURNAL_TEMPLATES.find(t => t.id === templateId)
+    if (!template) return
+
+    const newLines = template.lines.map((line, idx) => ({
+      id: (idx + 1).toString(),
+      account_id: "",
+      description: line.description,
+      vehicle_id: "",
+      customer_id: "",
+      supplier_id: "",
+      driver_id: "",
+      rental_contract_id: "",
+      cost_center: "",
+      branch: "",
+      debit: line.debit.toFixed(3),
+      credit: line.credit.toFixed(3),
+    }))
+
+    setLines(newLines)
+    setDescription(template.name)
+    setShowTemplateModal(false)
+  }
+
+  function handleReverse() {
+    const reversed = lines.map((l, idx) => ({
+      ...l,
+      id: (idx + 1).toString(),
+      debit: l.credit,
+      credit: l.debit,
+    }))
+    setLines(reversed)
+    setDescription(`Reversal: ${description}`)
+  }
+
+  function handleDuplicate() {
+    const duplicated = lines.map((l, idx) => ({
+      ...l,
+      id: (idx + 1).toString(),
+    }))
+    setLines(duplicated)
+    setJournalNumber(generateJournalNumber())
+    setReference("")
+  }
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files) return
+    setUploading(true)
+    const uploaded = [...attachments]
+    for (const file of Array.from(files)) {
+      uploaded.push(file)
+    }
+    setAttachments(uploaded)
+    setUploading(false)
+    e.target.value = ""
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments(attachments.filter((_, i) => i !== index))
+  }
+
+  async function handleSave(saveAndNew = false) {
+    if (!isBalanced()) {
+      alert("Journal is not balanced. Please check debit and credit totals.")
+      return
+    }
+
+    const validLines = lines.filter(l => l.account_id && (parseFloat(l.debit) > 0 || parseFloat(l.credit) > 0))
+    if (validLines.length === 0) {
+      alert("Please add at least one valid line.")
+      return
+    }
+
+    setSaving(true)
+    try {
+      const payload = {
+        journal_number: journalNumber,
+        date,
+        reference,
+        description,
+        total_debit: getTotalDebit(),
+        total_credit: getTotalCredit(),
+        lines: validLines.map(l => ({
+          account_id: l.account_id,
+          description: l.description,
+          vehicle_id: l.vehicle_id || null,
+          customer_id: l.customer_id || null,
+          supplier_id: l.supplier_id || null,
+          driver_id: l.driver_id || null,
+          rental_contract_id: l.rental_contract_id || null,
+          cost_center: l.cost_center || null,
+          branch: l.branch || null,
+          debit: parseFloat(l.debit) || 0,
+          credit: parseFloat(l.credit) || 0,
+        })),
+        attachments: attachments.length,
+      }
+
+      const res = await fetch("/api/journal-entries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert("Error saving: " + (data.error || "Unknown error"))
+        setSaving(false)
+        return
+      }
+
+      alert("Journal entry saved successfully!")
+
+      if (saveAndNew) {
+        setJournalNumber(generateJournalNumber())
+        setReference("")
+        setDescription("")
+        setLines([{ id: "1", account_id: "", description: "", vehicle_id: "", customer_id: "", supplier_id: "", driver_id: "", rental_contract_id: "", cost_center: "", branch: "", debit: "", credit: "" }])
+        setAttachments([])
+      } else {
+        router.push("/accounting/journal-entries")
+      }
+    } catch (e: any) {
+      alert("Error saving: " + (e.message || "Unknown error"))
+      setSaving(false)
+    }
+  }
+
+  function handlePrint() {
+    const printWindow = window.open("", "_blank")
+    if (!printWindow) return
+    const html = `
+      <!DOCTYPE html>
+      <html dir="ltr">
+      <head>
+        <meta charset="UTF-8">
+        <title>Journal Entry - ${journalNumber}</title>
+        <style>
+          @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: "Inter", Arial, sans-serif; padding: 40px; max-width: 900px; margin: 0 auto; background: #fff; color: #1e293b; }
+          .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #4f46e5; padding-bottom: 20px; }
+          .header h1 { font-size: 24px; font-weight: 700; color: #4f46e5; margin-bottom: 8px; }
+          .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+          .info-item { padding: 10px; background: #f8fafc; border-radius: 8px; }
+          .info-item label { font-size: 11px; text-transform: uppercase; color: #64748b; font-weight: 600; }
+          .info-item .value { font-size: 14px; font-weight: 600; color: #1e293b; margin-top: 4px; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th { background: #4f46e5; color: white; padding: 12px; text-align: left; font-size: 12px; text-transform: uppercase; }
+          td { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+          .total-row { font-weight: 700; background: #f8fafc; }
+          .balanced { color: #059669; font-weight: 700; }
+          .footer { margin-top: 30px; text-align: center; color: #94a3b8; font-size: 12px; }
+          .signature { display: flex; justify-content: space-around; margin-top: 40px; }
+          .signature-line { border-top: 1px solid #94a3b8; width: 150px; padding-top: 8px; text-align: center; font-size: 11px; color: #64748b; }
+          @media print { body { padding: 0; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>Journal Voucher</h1>
+          <p>ERP Horizon - Car Rental Management</p>
+        </div>
+        <div class="info-grid">
+          <div class="info-item"><label>Journal No</label><div class="value">${journalNumber}</div></div>
+          <div class="info-item"><label>Date</label><div class="value">${date}</div></div>
+          <div class="info-item"><label>Reference</label><div class="value">${reference || "-"}</div></div>
+        </div>
+        <div style="margin-bottom: 16px;"><label style="font-size: 11px; color: #64748b; font-weight: 600;">Description</label><div style="font-size: 14px; margin-top: 4px;">${description || "-"}</div></div>
+        <table>
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Description</th>
+              <th>Vehicle</th>
+              <th>Customer</th>
+              <th>Supplier</th>
+              <th>Driver</th>
+              <th>Contract</th>
+              <th>Cost Center</th>
+              <th>Branch</th>
+              <th style="text-align: right;">Debit</th>
+              <th style="text-align: right;">Credit</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lines.filter(l => l.account_id).map(l => {
+              const acc = getAccountById(l.account_id)
+              const veh = vehicles.find(v => v.id === l.vehicle_id)
+              const cust = customers.find(c => c.id === l.customer_id)
+              const sup = suppliers.find(s => s.id === l.supplier_id)
+              const drv = drivers.find(d => d.id === l.driver_id)
+              const rent = rentalContracts.find(r => r.id === l.rental_contract_id)
+              return `
+                <tr>
+                  <td>${acc ? `${acc.code} - ${acc.name}` : "-"}</td>
+                  <td>${l.description || "-"}</td>
+                  <td>${veh ? `${veh.make} ${veh.model} ${veh.plate_number}` : "-"}</td>
+                  <td>${cust?.name || "-"}</td>
+                  <td>${sup?.name || "-"}</td>
+                  <td>${drv?.name || "-"}</td>
+                  <td>${rent?.contract_number || "-"}</td>
+                  <td>${l.cost_center || "-"}</td>
+                  <td>${l.branch || "-"}</td>
+                  <td style="text-align: right;">${l.debit ? parseFloat(l.debit).toFixed(3) : "-"}</td>
+                  <td style="text-align: right;">${l.credit ? parseFloat(l.credit).toFixed(3) : "-"}</td>
+                </tr>
+              `
+            }).join("")}
+          </tbody>
+          <tfoot>
+            <tr class="total-row">
+              <td colspan="9"><strong>Totals</strong></td>
+              <td style="text-align: right;"><strong>${getTotalDebit().toFixed(3)}</strong></td>
+              <td style="text-align: right;"><strong>${getTotalCredit().toFixed(3)}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+        <div style="text-align: center; margin-top: 20px; font-size: 16px;" class="${isBalanced() ? "balanced" : ""}">
+          ${isBalanced() ? "✓ BALANCED" : `Difference: ${getDifference().toFixed(3)}`}
+        </div>
+        <div class="signature">
+          <div class="signature-line">Prepared By</div>
+          <div class="signature-line">Reviewed By</div>
+          <div class="signature-line">Approved By</div>
+        </div>
+        <div class="footer">
+          <p>Printed on ${new Date().toLocaleString()}</p>
+          <p>ERP Horizon - Official Journal Voucher</p>
+        </div>
+      </body>
+      </html>
+    `
+    printWindow.document.write(html)
+    printWindow.document.close()
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent, lineId: string, field: string) {
+    if (e.key === "Enter") {
+      e.preventDefault()
+      const fields = ["account_id", "description", "vehicle_id", "customer_id", "supplier_id", "driver_id", "rental_contract_id", "cost_center", "branch", "debit", "credit"]
+      const idx = fields.indexOf(field)
+      if (idx < fields.length - 1) {
+        const nextField = fields[idx + 1]
+        const nextEl = document.querySelector(`[data-line="${lineId}"][data-field="${nextField}"]`) as HTMLElement
+        nextEl?.focus()
+      } else {
+        const nextLine = lines.find(l => parseInt(l.id) > parseInt(lineId))
+        if (nextLine) {
+          const nextEl = document.querySelector(`[data-line="${nextLine.id}"][data-field="account_id"]`) as HTMLElement
+          nextEl?.focus()
+        } else {
+          addLine()
+          setTimeout(() => {
+            const newLineEl = document.querySelector(`[data-line="${Math.max(...lines.map(l => parseInt(l.id))) + 1}"][data-field="account_id"]`) as HTMLElement
+            newLineEl?.focus()
+          }, 100)
+        }
+      }
+    }
+  }
+
+  if (!mounted) return null
+
+  const accountTree = buildAccountTree()
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6 max-w-7xl mx-auto" dir="ltr">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={() => router.push("/accounting/journal-entries")} className="rounded-xl gap-1">
+              <ArrowLeft className="w-4 h-4" /> Back
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
+                <Receipt className="w-7 h-7 text-indigo-500" />
+                Journal Entry
+              </h1>
+              <p className="text-slate-500 dark:text-slate-400 text-sm">Record daily accounting transactions</p>
+            </div>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <Button variant="outline" onClick={handlePrint} className="rounded-xl gap-1">
+              <Printer className="w-4 h-4" /> Print
+            </Button>
+            <Button variant="outline" onClick={() => setShowTemplateModal(true)} className="rounded-xl gap-1">
+              <FileSpreadsheet className="w-4 h-4" /> Templates
+            </Button>
+            <Button variant="outline" onClick={handleReverse} className="rounded-xl gap-1">
+              <RotateCcw className="w-4 h-4" /> Reverse
+            </Button>
+            <Button variant="outline" onClick={handleDuplicate} className="rounded-xl gap-1">
+              <Copy className="w-4 h-4" /> Duplicate
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 space-y-6">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <FileText className="w-3 h-3" /> Journal No
+              </label>
+              <Input value={journalNumber} readOnly className="h-10 rounded-xl bg-slate-50 dark:bg-slate-700 font-mono text-sm" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <Calendar className="w-3 h-3" /> Date *
+              </label>
+              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-10 rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <FileText className="w-3 h-3" /> Reference No
+              </label>
+              <Input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="INV-1005, REC-225..." className="h-10 rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Description</label>
+              <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Journal description..." className="h-10 rounded-xl" />
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-700 text-xs text-slate-500 uppercase">
+                    <th className="text-left py-2 px-2 w-48">Account *</th>
+                    <th className="text-left py-2 px-2 w-40">Description</th>
+                    <th className="text-left py-2 px-2 w-32">Vehicle</th>
+                    <th className="text-left py-2 px-2 w-32">Customer</th>
+                    <th className="text-left py-2 px-2 w-32">Supplier</th>
+                    <th className="text-left py-2 px-2 w-32">Driver</th>
+                    <th className="text-left py-2 px-2 w-32">Contract</th>
+                    <th className="text-left py-2 px-2 w-28">Cost Center</th>
+                    <th className="text-left py-2 px-2 w-24">Branch</th>
+                    <th className="text-right py-2 px-2 w-28">Debit</th>
+                    <th className="text-right py-2 px-2 w-28">Credit</th>
+                    <th className="py-2 px-2 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((line) => (
+                    <tr key={line.id} className="border-b border-slate-100 dark:border-slate-700/50">
+                      <td className="py-1 px-2">
+                        <div
+                          ref={el => { accountDropdownRefs.current[line.id] = el }}
+                          className="relative"
+                        >
+                          <button
+                            type="button"
+                            data-line={line.id}
+                            data-field="account_id"
+                            onClick={() => setActiveAccountDropdown(activeAccountDropdown === line.id ? null : line.id)}
+                            className="w-full h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 flex items-center justify-between text-left"
+                          >
+                            <span className="truncate">{getAccountLabel(line.account_id)}</span>
+                            <ChevronDown className={`w-3 h-3 text-slate-400 transition-transform ${activeAccountDropdown === line.id ? "rotate-180" : ""}`} />
+                          </button>
+                          {activeAccountDropdown === line.id && (
+                            <div className="absolute z-50 w-72 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl max-h-64 overflow-y-auto">
+                              <div className="p-2 border-b border-slate-100 dark:border-slate-700 sticky top-0 bg-white dark:bg-slate-800">
+                                <div className="relative">
+                                  <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+                                  <input
+                                    type="text"
+                                    value={searchAccount}
+                                    onChange={(e) => setSearchAccount(e.target.value)}
+                                    placeholder="Search..."
+                                    className="w-full h-7 pl-7 pr-2 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                </div>
+                              </div>
+                              <div className="py-1">
+                                {accountTree
+                                  .filter(item => item.label.toLowerCase().includes(searchAccount.toLowerCase()))
+                                  .map((item) => (
+                                    item.type === "header" ? (
+                                      <div key={item.id} className="px-3 py-1 text-[10px] font-bold text-slate-400 bg-slate-50 dark:bg-slate-700/50 uppercase tracking-wider select-none pointer-events-none">
+                                        {item.label}
+                                      </div>
+                                    ) : (
+                                      <div
+                                        key={item.id}
+                                        role="button"
+                                        tabIndex={0}
+                                        onMouseDown={(e) => {
+                                          e.preventDefault()
+                                          updateLine(line.id, "account_id", item.id)
+                                          setActiveAccountDropdown(null)
+                                          setSearchAccount("")
+                                        }}
+                                        className={`px-4 py-1.5 text-xs cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors ${line.account_id === item.id ? "bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-semibold" : "text-slate-700 dark:text-slate-300"}`}
+                                      >
+                                        {item.label}
+                                      </div>
+                                    )
+                                  ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-1 px-2">
+                        <input
+                          data-line={line.id}
+                          data-field="description"
+                          type="text"
+                          value={line.description}
+                          onChange={(e) => updateLine(line.id, "description", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "description")}
+                          placeholder="Description..."
+                          className="w-full h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="vehicle_id"
+                          value={line.vehicle_id}
+                          onChange={(e) => updateLine(line.id, "vehicle_id", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "vehicle_id")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Vehicle...</option>
+                          {vehicles.map(v => (
+                            <option key={v.id} value={v.id}>{v.make} {v.model} {v.plate_number}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="customer_id"
+                          value={line.customer_id}
+                          onChange={(e) => updateLine(line.id, "customer_id", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "customer_id")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Customer...</option>
+                          {customers.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="supplier_id"
+                          value={line.supplier_id}
+                          onChange={(e) => updateLine(line.id, "supplier_id", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "supplier_id")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Supplier...</option>
+                          {suppliers.map(s => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="driver_id"
+                          value={line.driver_id}
+                          onChange={(e) => updateLine(line.id, "driver_id", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "driver_id")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Driver...</option>
+                          {drivers.map(d => (
+                            <option key={d.id} value={d.id}>{d.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="rental_contract_id"
+                          value={line.rental_contract_id}
+                          onChange={(e) => updateLine(line.id, "rental_contract_id", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "rental_contract_id")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Contract...</option>
+                          {rentalContracts.map(r => (
+                            <option key={r.id} value={r.id}>{r.contract_number} {r.customer_name ? `(${r.customer_name})` : ""}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="cost_center"
+                          value={line.cost_center}
+                          onChange={(e) => updateLine(line.id, "cost_center", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "cost_center")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Center...</option>
+                          {COST_CENTERS.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <select
+                          data-line={line.id}
+                          data-field="branch"
+                          value={line.branch}
+                          onChange={(e) => updateLine(line.id, "branch", e.target.value)}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "branch")}
+                          className="w-full h-9 px-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          <option value="">Branch...</option>
+                          {BRANCHES.map(b => (
+                            <option key={b.id} value={b.id}>{b.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-1 px-2">
+                        <input
+                          data-line={line.id}
+                          data-field="debit"
+                          type="text"
+                          inputMode="decimal"
+                          value={line.debit}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/[^0-9.]/g, "")
+                            updateLine(line.id, "debit", val)
+                          }}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "debit")}
+                          placeholder="0.000"
+                          className="w-full h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs text-right focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="py-1 px-2">
+                        <input
+                          data-line={line.id}
+                          data-field="credit"
+                          type="text"
+                          inputMode="decimal"
+                          value={line.credit}
+                          onChange={(e) => {
+                            const val = e.target.value.replace(/[^0-9.]/g, "")
+                            updateLine(line.id, "credit", val)
+                          }}
+                          onKeyDown={(e) => handleKeyDown(e, line.id, "credit")}
+                          placeholder="0.000"
+                          className="w-full h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-xs text-right focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </td>
+                      <td className="py-1 px-2">
+                        <button
+                          type="button"
+                          onClick={() => removeLine(line.id)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                          title="Delete line"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between mt-4 flex-wrap gap-3">
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={addLine} className="rounded-lg gap-1">
+                  <Plus className="w-4 h-4" /> Add Line
+                </Button>
+                <Button variant="outline" size="sm" onClick={autoBalance} className="rounded-lg gap-1">
+                  <Calculator className="w-4 h-4" /> Auto Balance
+                </Button>
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <p className="text-xs text-slate-500">Total Debit</p>
+                  <p className="text-lg font-bold text-slate-900 dark:text-white">{formatCurrency(getTotalDebit())}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-xs text-slate-500">Total Credit</p>
+                  <p className="text-lg font-bold text-slate-900 dark:text-white">{formatCurrency(getTotalCredit())}</p>
+                </div>
+                <div className={`text-right px-4 py-2 rounded-lg ${isBalanced() ? "bg-emerald-50 dark:bg-emerald-900/20" : "bg-red-50 dark:bg-red-900/20"}`}>
+                  <p className="text-xs text-slate-500">{isBalanced() ? "Status" : "Difference"}</p>
+                  <p className={`text-lg font-bold flex items-center gap-1 ${isBalanced() ? "text-emerald-600" : "text-red-600"}`}>
+                    {isBalanced() ? (
+                      <><CheckCircle className="w-5 h-5" /> BALANCED</>
+                    ) : (
+                      <><AlertCircle className="w-5 h-5" /> {formatCurrency(Math.abs(getDifference()))}</>
+                    )}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
+            <label className="text-xs font-medium text-slate-500 mb-2 block flex items-center gap-1">
+              <Upload className="w-3 h-3" /> Attachments
+            </label>
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="cursor-pointer">
+                <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileUpload} className="hidden" />
+                <div className="px-4 py-2 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-500 text-sm hover:border-indigo-500 hover:text-indigo-500 transition-colors">
+                  {uploading ? "Uploading..." : "Click to upload files"}
+                </div>
+              </label>
+              {attachments.map((file, idx) => (
+                <div key={idx} className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-700 text-xs text-slate-700 dark:text-slate-300">
+                  <FileText className="w-3 h-3" />
+                  <span className="max-w-[150px] truncate">{file.name}</span>
+                  <button onClick={() => removeAttachment(idx)} className="ml-1 text-slate-400 hover:text-red-500">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => router.push("/accounting/journal-entries")} className="rounded-xl">
+              Cancel
+            </Button>
+            <Button variant="outline" onClick={() => handleSave(true)} disabled={saving} className="rounded-xl gap-1">
+              <Save className="w-4 h-4" /> Save & New
+            </Button>
+            <Button onClick={() => handleSave(false)} disabled={saving} className="rounded-xl gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6">
+              <Save className="w-4 h-4" />
+              {saving ? "Saving..." : "Save Entry"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {showTemplateModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+            <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+              <FileSpreadsheet className="w-5 h-5 text-indigo-500" /> Journal Templates
+            </h3>
+            <div className="space-y-2">
+              {JOURNAL_TEMPLATES.map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => applyTemplate(t.id)}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-slate-200 dark:border-slate-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors"
+                >
+                  <p className="font-semibold text-slate-900 dark:text-white text-sm">{t.name}</p>
+                  <p className="text-xs text-slate-500 mt-1">{t.lines.length} lines</p>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end mt-4">
+              <Button variant="outline" onClick={() => setShowTemplateModal(false)} className="rounded-xl">Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </DashboardLayout>
+  )
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6 text-slate-400">Loading...</div>}>
+      <JournalPageContent />
+    </Suspense>
+  )
+}

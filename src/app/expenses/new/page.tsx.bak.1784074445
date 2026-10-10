@@ -1,0 +1,769 @@
+"use client"
+export const dynamic = "force-dynamic"
+import { Suspense, useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
+import DashboardLayout from "@/components/DashboardLayout"
+import { useLanguage } from "@/lib/LanguageContext"
+import { supabase } from "@/lib/supabase"
+import { formatCurrency } from "@/lib/utils"
+import {
+  Receipt, Save, ArrowLeft, Building2, FolderOpen,
+  Calculator, Percent, CreditCard, Banknote, CheckCircle,
+  Calendar, Printer, MapPin, Wallet, ChevronDown, TreePine,
+  Search, X
+} from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+
+const VAT_RATES = [
+  { value: 0, label: "Not Registered in VAT" },
+  { value: 5, label: "5%" },
+  { value: 10, label: "10%" },
+]
+
+const PAYMENT_TERMS = [
+  { key: "cash", label: "Cash" },
+  { key: "credit", label: "Credit" },
+]
+
+const PAYMENT_METHODS = [
+  { key: "cash", label: "Cash" },
+  { key: "bank_transfer", label: "Bank Transfer" },
+  { key: "card", label: "Card" },
+  { key: "cheque", label: "Cheque" },
+]
+
+type ExpenseAccount = {
+  id: string
+  name: string
+  name_ar?: string
+  code: string
+  parent_id: string | null
+  is_indirect: boolean
+}
+
+type Supplier = { id: string; name: string }
+type Branch = { id: string; name: string }
+
+function NewExpensePageContent() {
+  const router = useRouter()
+  const { isRTL } = useLanguage()
+  const [mounted, setMounted] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [accounts, setAccounts] = useState<ExpenseAccount[]>([])
+  const [branches, setBranches] = useState<Branch[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0])
+  const [supplierId, setSupplierId] = useState("")
+  const [accountId, setAccountId] = useState("")
+  const [description, setDescription] = useState("")
+  const [invoiceNumber, setInvoiceNumber] = useState("")
+  const [branchId, setBranchId] = useState("")
+  const [amount, setAmount] = useState("")
+  const [vatRate, setVatRate] = useState(0)
+  const [discount, setDiscount] = useState("")
+  const [paymentTerm, setPaymentTerm] = useState("cash")
+  const [paymentMethod, setPaymentMethod] = useState("cash")
+  const [cr, setCr] = useState(false)
+
+  const [vatAmount, setVatAmount] = useState(0)
+  const [total, setTotal] = useState(0)
+
+  const [showSupplierModal, setShowSupplierModal] = useState(false)
+  const [newSupplierName, setNewSupplierName] = useState("")
+
+  const [showAccountModal, setShowAccountModal] = useState(false)
+  const [newAccountName, setNewAccountName] = useState("")
+  const [newAccountCode, setNewAccountCode] = useState("")
+  const [newAccountParent, setNewAccountParent] = useState("")
+  const [newAccountIndirect, setNewAccountIndirect] = useState(false)
+
+  // Custom dropdown for accounts
+  const [showAccountDropdown, setShowAccountDropdown] = useState(false)
+  const [accountSearch, setAccountSearch] = useState("")
+  const accountDropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    setMounted(true)
+    fetchData()
+  }, [])
+
+  useEffect(() => {
+    const amt = parseFloat(amount) || 0
+    const disc = parseFloat(discount) || 0
+    const net = Math.max(0, amt - disc)
+    const vat = vatRate > 0 ? net * (vatRate / 100) : 0
+    setVatAmount(vat)
+    setTotal(net + vat)
+  }, [amount, vatRate, discount])
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (accountDropdownRef.current && !accountDropdownRef.current.contains(e.target as Node)) {
+        setShowAccountDropdown(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
+  async function fetchData() {
+    setLoading(true)
+    try {
+      const [{ data: supData }, { data: accData }, { data: branchData }] = await Promise.all([
+        supabase.from("suppliers").select("id, name").order("name"),
+        supabase.from("expense_accounts").select("*").order("code"),
+        supabase.from("branches").select("id, name").order("name"),
+      ])
+      if (supData) setSuppliers(supData)
+      if (accData) setAccounts(accData)
+      if (branchData) setBranches(branchData)
+    } catch (e) {
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  async function addSupplier() {
+    if (!newSupplierName.trim()) return
+    try {
+      const res = await fetch("/api/suppliers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newSupplierName.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert("Error adding supplier: " + (data.error || "Unknown error"))
+        return
+      }
+      setSuppliers([...suppliers, data])
+      setSupplierId(data.id)
+      setNewSupplierName("")
+      setShowSupplierModal(false)
+    } catch (e: any) {
+      alert("Error: " + e.message)
+    }
+  }
+
+  async function addAccount() {
+    if (!newAccountName.trim() || !newAccountCode.trim()) return
+    try {
+      const res = await fetch("/api/expense-accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newAccountName.trim(),
+          name_ar: newAccountName.trim(),
+          code: newAccountCode.trim(),
+          parent_id: newAccountParent || null,
+          is_indirect: newAccountIndirect,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert("Error adding account: " + (data.error || "Unknown error"))
+        return
+      }
+      setAccounts([...accounts, data])
+      setAccountId(data.id)
+      setNewAccountName("")
+      setNewAccountCode("")
+      setNewAccountParent("")
+      setNewAccountIndirect(false)
+      setShowAccountModal(false)
+    } catch (e: any) {
+      alert("Error: " + e.message)
+    }
+  }
+
+  async function handleSave() {
+    if (!supplierId || !accountId || !amount || parseFloat(amount) <= 0) {
+      alert("Please fill Supplier, Expense Account, and Amount.")
+      return
+    }
+
+    setSaving(true)
+    try {
+      const payload = {
+        date,
+        supplier_id: supplierId,
+        expense_account_id: accountId,
+        description,
+        invoice_number: invoiceNumber,
+        branch: branchId,
+        amount: parseFloat(amount) || 0,
+        vat_rate: vatRate,
+        vat_amount: vatAmount,
+        discount: parseFloat(discount) || 0,
+        total,
+        payment_term: paymentTerm,
+        payment_method: paymentMethod,
+        is_credit: paymentTerm === "credit",
+        cr,
+      }
+
+      const res = await fetch("/api/expenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        alert("Error saving: " + (data.error || "Unknown error"))
+        setSaving(false)
+        return
+      }
+
+      alert("Expense saved successfully!")
+      router.push("/expenses")
+    } catch (e: any) {
+      alert("Error saving: " + (e.message || "Unknown error"))
+      setSaving(false)
+    }
+  }
+
+  function getParentAccounts() {
+    return accounts.filter(a => !a.parent_id)
+  }
+
+  function getChildAccounts(parentId: string) {
+    return accounts.filter(a => a.parent_id === parentId)
+  }
+
+  function getAccountById(id: string) {
+    return accounts.find(a => a.id === id)
+  }
+
+  function getSelectedAccountLabel() {
+    const acc = getAccountById(accountId)
+    if (!acc) return "Select Account..."
+    const parent = acc.parent_id ? getAccountById(acc.parent_id) : null
+    if (parent) {
+      return `${parent.code} → ${acc.code} — ${acc.name}`
+    }
+    return `${acc.code} — ${acc.name}`
+  }
+
+  // Build tree: if no parents, show ALL as flat clickable list
+  function buildAccountTree() {
+    const parents = getParentAccounts()
+    
+    // If no real parents exist, show ALL accounts as flat clickable list
+    if (parents.length === 0) {
+      return accounts.map(acc => ({
+        type: 'item' as const,
+        id: acc.id,
+        label: `${acc.code} — ${acc.name}`,
+        is_indirect: acc.is_indirect,
+        parent_id: acc.parent_id
+      }))
+    }
+
+    // Build tree with parents and children
+    const tree: { type: 'header' | 'item'; id: string; label: string; is_indirect?: boolean }[] = []
+    
+    parents.forEach(parent => {
+      tree.push({ type: 'header', id: `hdr-${parent.id}`, label: `${parent.code} — ${parent.name}` })
+      
+      const children = getChildAccounts(parent.id)
+      if (children.length > 0) {
+        children.forEach(child => {
+          tree.push({ 
+            type: 'item', 
+            id: child.id, 
+            label: `${child.code} — ${child.name}`,
+            is_indirect: child.is_indirect 
+          })
+        })
+      } else {
+        tree.push({ type: 'header', id: `empty-${parent.id}`, label: '    (No sub-accounts)' })
+      }
+    })
+
+    // Orphan accounts (parent_id exists but parent not in list)
+    const orphanParentIds = [...new Set(accounts.filter(a => a.parent_id).map(a => a.parent_id!))]
+    const knownParentIds = new Set(parents.map(p => p.id))
+    const trueOrphans = accounts.filter(a => a.parent_id && !knownParentIds.has(a.parent_id))
+    
+    if (trueOrphans.length > 0) {
+      tree.push({ type: 'header', id: 'orphan-hdr', label: 'Other Accounts' })
+      trueOrphans.forEach(acc => {
+        tree.push({ 
+          type: 'item', 
+          id: acc.id, 
+          label: `${acc.code} — ${acc.name}`,
+          is_indirect: acc.is_indirect 
+        })
+      })
+    }
+
+    return tree
+  }
+
+  function handlePrint() {
+    const printWindow = window.open("", "_blank")
+    if (!printWindow) return
+
+    const sup = suppliers.find(s => s.id === supplierId)
+    const acc = getAccountById(accountId)
+    const branch = branches.find(b => b.id === branchId)
+
+    const html = `
+      <!DOCTYPE html>
+      <html dir="ltr">
+      <head>
+        <meta charset="UTF-8">
+        <title>Expense Voucher - ${invoiceNumber || 'N/A'}</title>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body { font-family: 'Inter', Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; background: #fff; color: #1e293b; }
+          .voucher { border: 2px solid #e2e8f0; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
+          .header { background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color: white; padding: 30px; text-align: center; }
+          .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.5px; }
+          .header p { opacity: 0.85; font-size: 14px; }
+          .badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+          .badge-cash { background: #d1fae5; color: #065f46; }
+          .badge-credit { background: #fee2e2; color: #991b1b; }
+          .body { padding: 30px; }
+          .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+          .info-item { padding: 14px; background: #f8fafc; border-radius: 10px; border: 1px solid #f1f5f9; }
+          .info-item label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 6px; font-weight: 600; }
+          .info-item .value { font-size: 15px; font-weight: 600; color: #1e293b; }
+          .amount-section { background: #f8fafc; border-radius: 12px; padding: 24px; margin-top: 20px; border: 1px solid #f1f5f9; }
+          .amount-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+          .amount-row:last-child { border-bottom: none; }
+          .amount-row.total { font-size: 22px; font-weight: 700; color: #4f46e5; padding-top: 16px; margin-top: 8px; border-top: 2px solid #4f46e5; border-bottom: none; }
+          .footer { text-align: center; padding: 20px; color: #94a3b8; font-size: 12px; border-top: 1px solid #f1f5f9; background: #fafafa; }
+          .stamp { position: absolute; top: 30px; right: 30px; width: 120px; height: 120px; border: 3px solid #4f46e5; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #4f46e5; font-weight: 700; font-size: 14px; transform: rotate(-15deg); opacity: 0.15; pointer-events: none; }
+          .signature-line { border-top: 1px solid #cbd5e1; width: 200px; margin-top: 40px; padding-top: 8px; text-align: center; color: #64748b; font-size: 12px; }
+          @media print { body { padding: 0; } .no-print { display: none; } }
+        </style>
+      </head>
+      <body>
+        <div class="voucher" style="position: relative;">
+          <div class="header">
+            <h1>Expense Voucher</h1>
+            <p>ERP Horizon - Car Rental Management System</p>
+          </div>
+          <div class="body">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+              <span class="badge ${paymentTerm === 'cash' ? 'badge-cash' : 'badge-credit'}">${paymentTerm}</span>
+              <span style="color: #64748b; font-size: 14px; font-weight: 500;">${date}</span>
+            </div>
+            <div class="info-grid">
+              <div class="info-item">
+                <label>Supplier</label>
+                <div class="value">${sup?.name || '-'}</div>
+              </div>
+              <div class="info-item">
+                <label>Expense Account</label>
+                <div class="value">${acc ? acc.code + ' - ' + acc.name : '-'}</div>
+              </div>
+              <div class="info-item">
+                <label>Invoice Number</label>
+                <div class="value">${invoiceNumber || '-'}</div>
+              </div>
+              <div class="info-item">
+                <label>Branch</label>
+                <div class="value">${branch?.name || '-'}</div>
+              </div>
+              <div class="info-item">
+                <label>Payment Method</label>
+                <div class="value">${paymentMethod.replace('_', ' ').toUpperCase()}</div>
+              </div>
+              <div class="info-item">
+                <label>CR (Credit)</label>
+                <div class="value">${cr ? 'Yes' : 'No'}</div>
+              </div>
+            </div>
+            ${description ? `<div style="margin-bottom: 20px; padding: 16px; background: #f0f9ff; border-radius: 10px; border-left: 4px solid #0ea5e9;"><label style="display: block; font-size: 11px; text-transform: uppercase; color: #64748b; margin-bottom: 6px; font-weight: 600;">Description</label><div style="font-size: 14px; color: #1e293b; line-height: 1.5;">${description}</div></div>` : ''}
+            <div class="amount-section">
+              <div class="amount-row">
+                <span style="color: #64748b;">Amount</span>
+                <span style="font-weight: 600;">${(parseFloat(amount) || 0).toFixed(3)}</span>
+              </div>
+              <div class="amount-row">
+                <span style="color: #64748b;">Discount</span>
+                <span style="color: #ef4444; font-weight: 600;">-${(parseFloat(discount) || 0).toFixed(3)}</span>
+              </div>
+              <div class="amount-row">
+                <span style="color: #64748b;">Net Amount</span>
+                <span style="font-weight: 600;">${((parseFloat(amount) || 0) - (parseFloat(discount) || 0)).toFixed(3)}</span>
+              </div>
+              <div class="amount-row">
+                <span style="color: #64748b;">VAT (${vatRate}%)</span>
+                <span style="font-weight: 600;">${vatAmount.toFixed(3)}</span>
+              </div>
+              <div class="amount-row total">
+                <span>Grand Total</span>
+                <span>${total.toFixed(3)}</span>
+              </div>
+            </div>
+            <div style="display: flex; justify-content: space-around; margin-top: 40px;">
+              <div class="signature-line">Prepared By</div>
+              <div class="signature-line">Approved By</div>
+              <div class="signature-line">Received By</div>
+            </div>
+          </div>
+          <div class="footer">
+            <p>Printed on ${new Date().toLocaleString()}</p>
+            <p>ERP Horizon - Official Expense Voucher</p>
+          </div>
+        </div>
+        <div class="no-print" style="text-align: center; margin-top: 30px;">
+          <button onclick="window.print()" style="padding: 14px 48px; font-size: 16px; cursor: pointer; background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color: white; border: none; border-radius: 12px; font-weight: 600; box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3);">Print Voucher</button>
+        </div>
+      </body>
+      </html>
+    `
+    printWindow.document.write(html)
+    printWindow.document.close()
+  }
+
+  if (!mounted) return null
+
+  const accountTree = buildAccountTree()
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6 max-w-5xl mx-auto" dir="ltr">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={() => router.push("/expenses")} className="rounded-xl gap-1">
+              <ArrowLeft className="w-4 h-4" /> Back
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
+                <Receipt className="w-7 h-7 text-indigo-500" />
+                Add Expense
+              </h1>
+              <p className="text-slate-500 dark:text-slate-400 text-sm">Enter expense details below</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handlePrint} className="rounded-xl gap-1">
+              <Printer className="w-4 h-4" /> Print Preview
+            </Button>
+            <Button variant="outline" onClick={() => setShowSupplierModal(true)} className="rounded-xl gap-1">
+              <Building2 className="w-4 h-4" /> + Supplier
+            </Button>
+            <Button variant="outline" onClick={() => setShowAccountModal(true)} className="rounded-xl gap-1">
+              <FolderOpen className="w-4 h-4" /> + Account
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 space-y-6">
+          {/* Row 1: Date, Supplier, Account */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <Calendar className="w-3 h-3" /> Date *
+              </label>
+              <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-10 rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <Building2 className="w-3 h-3" /> Supplier *
+              </label>
+              <select
+                value={supplierId}
+                onChange={(e) => setSupplierId(e.target.value)}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Select Supplier...</option>
+                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div ref={accountDropdownRef} className="relative">
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <TreePine className="w-3 h-3" /> Expense Account *
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowAccountDropdown(!showAccountDropdown)}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 flex items-center justify-between text-left"
+              >
+                <span className="truncate">{getSelectedAccountLabel()}</span>
+                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${showAccountDropdown ? 'rotate-180' : ''}`} />
+              </button>
+              
+              {showAccountDropdown && (
+                <div className="absolute z-50 w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-xl shadow-xl max-h-72 overflow-y-auto">
+                  {/* Search */}
+                  <div className="p-2 border-b border-slate-100 dark:border-slate-700 sticky top-0 bg-white dark:bg-slate-800">
+                    <div className="relative">
+                      <Search className="w-4 h-4 absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <input
+                        type="text"
+                        value={accountSearch}
+                        onChange={(e) => setAccountSearch(e.target.value)}
+                        placeholder="Search accounts..."
+                        className="w-full h-8 pl-8 pr-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    </div>
+                  </div>
+                  
+                  {/* Tree structure - using div with onClick */}
+                  <div className="py-1">
+                    {accountTree.map((item) => (
+                      item.type === 'header' ? (
+                        <div 
+                          key={item.id} 
+                          className="px-3 py-1.5 text-xs font-bold text-slate-500 bg-slate-50 dark:bg-slate-700/50 uppercase tracking-wider select-none pointer-events-none"
+                        >
+                          {item.label}
+                        </div>
+                      ) : (
+                        <div
+                          key={item.id}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            e.preventDefault()
+                            setAccountId(item.id)
+                            setShowAccountDropdown(false)
+                            setAccountSearch("")
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation()
+                            e.preventDefault()
+                          }}
+                          className={`px-6 py-2 text-sm cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors flex items-center gap-2 select-none ${
+                            accountId === item.id ? 'bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 font-semibold' : 'text-slate-700 dark:text-slate-300'
+                          }`}
+                        >
+                          <span className="text-slate-400">└</span>
+                          <span>{item.label}</span>
+                          {item.is_indirect && <span className="text-xs text-amber-500 ml-auto">Indirect</span>}
+                        </div>
+                      )
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Row 2: Description, Invoice */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Description</label>
+              <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Enter description..." className="h-10 rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Invoice Number</label>
+              <Input value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} placeholder="INV-001..." className="h-10 rounded-xl" />
+            </div>
+          </div>
+
+          {/* Row 3: Branch, Payment Term, Payment Method */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <MapPin className="w-3 h-3" /> Branch *
+              </label>
+              <select
+                value={branchId}
+                onChange={(e) => setBranchId(e.target.value)}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Select Branch...</option>
+                {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <Banknote className="w-3 h-3" /> Payment Term
+              </label>
+              <select
+                value={paymentTerm}
+                onChange={(e) => setPaymentTerm(e.target.value)}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {PAYMENT_TERMS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                <Wallet className="w-3 h-3" /> Payment Method
+              </label>
+              <select
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {PAYMENT_METHODS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* CR Checkbox */}
+          <div className="flex items-center">
+            <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+              <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${cr ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300'}`} onClick={() => setCr(!cr)}>
+                {cr && <CheckCircle className="w-3.5 h-3.5 text-white" />}
+              </div>
+              <input type="checkbox" checked={cr} onChange={(e) => setCr(e.target.checked)} className="hidden" />
+              <span>CR (Credit)</span>
+            </label>
+          </div>
+
+          {/* Amount Section */}
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-6">
+            <h3 className="font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+              <Calculator className="w-5 h-5 text-indigo-500" /> Amount Details
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Amount *</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={amount}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/[^0-9.]/g, '')
+                    setAmount(val)
+                  }}
+                  className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="0.000"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
+                  <Percent className="w-3 h-3" /> VAT Rate
+                </label>
+                <select
+                  value={vatRate}
+                  onChange={(e) => setVatRate(parseInt(e.target.value))}
+                  className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {VAT_RATES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">Discount</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={discount}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/[^0-9.]/g, '')
+                    setDiscount(val)
+                  }}
+                  className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="0.000"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1 block">VAT Amount</label>
+                <div className="h-10 flex items-center px-3 bg-slate-100 dark:bg-slate-700 rounded-xl text-slate-700 dark:text-slate-300 font-semibold text-sm">
+                  {formatCurrency(vatAmount)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Total + Save */}
+          <div className="bg-indigo-50 dark:bg-indigo-900/20 rounded-xl p-4 flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <p className="text-xs text-slate-500">Grand Total</p>
+              <p className="text-3xl font-bold text-indigo-600">{formatCurrency(total)}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => router.push("/expenses")} className="rounded-xl">
+                Cancel
+              </Button>
+              <Button onClick={handleSave} disabled={saving} className="rounded-xl gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6">
+                <Save className="w-4 h-4" />
+                {saving ? "Saving..." : "Save Expense"}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Supplier Modal */}
+        {showSupplierModal && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-indigo-500" /> Add New Supplier
+              </h3>
+              <Input
+                value={newSupplierName}
+                onChange={(e) => setNewSupplierName(e.target.value)}
+                placeholder="Supplier name..."
+                className="h-10 rounded-xl mb-4"
+                onKeyDown={(e) => e.key === 'Enter' && addSupplier()}
+              />
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setShowSupplierModal(false)} className="rounded-xl">Cancel</Button>
+                <Button onClick={addSupplier} className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Add Supplier</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Account Modal */}
+        {showAccountModal && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-md p-6 shadow-2xl">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white mb-4 flex items-center gap-2">
+                <FolderOpen className="w-5 h-5 text-indigo-500" /> Add Expense Account
+              </h3>
+              <div className="space-y-3">
+                <Input
+                  value={newAccountCode}
+                  onChange={(e) => setNewAccountCode(e.target.value)}
+                  placeholder="Account code (e.g. 61001)..."
+                  className="h-10 rounded-xl"
+                />
+                <Input
+                  value={newAccountName}
+                  onChange={(e) => setNewAccountName(e.target.value)}
+                  placeholder="Account name..."
+                  className="h-10 rounded-xl"
+                />
+                <select
+                  value={newAccountParent}
+                  onChange={(e) => setNewAccountParent(e.target.value)}
+                  className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">Main Account (no parent)</option>
+                  {getParentAccounts().map(a => <option key={a.id} value={a.id}>{a.code} — {a.name}</option>)}
+                </select>
+                <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newAccountIndirect}
+                    onChange={(e) => setNewAccountIndirect(e.target.checked)}
+                    className="w-4 h-4 rounded text-indigo-600"
+                  />
+                  Indirect Expense
+                </label>
+              </div>
+              <div className="flex justify-end gap-2 mt-4">
+                <Button variant="outline" onClick={() => setShowAccountModal(false)} className="rounded-xl">Cancel</Button>
+                <Button onClick={addAccount} className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">Add Account</Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6 text-slate-400">Loading...</div>}>
+      <NewExpensePageContent />
+    </Suspense>
+  )
+}

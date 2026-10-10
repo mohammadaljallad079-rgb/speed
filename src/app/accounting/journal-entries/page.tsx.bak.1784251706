@@ -1,0 +1,614 @@
+"use client"
+export const dynamic = "force-dynamic"
+import { Suspense, useState, useEffect, useRef } from "react"
+import { useRouter } from "next/navigation"
+import DashboardLayout from "@/components/DashboardLayout"
+import { useLanguage } from "@/lib/LanguageContext"
+import { supabase } from "@/lib/supabase"
+import { formatCurrency } from "@/lib/utils"
+import {
+  Receipt, Save, ArrowLeft, Plus, Trash2, Calculator, CheckCircle, AlertCircle,
+  Calendar, Printer, FileText, RotateCcw, Copy, ChevronDown, Search, Upload,
+  Building2, Car, User, Users, MapPin, Briefcase, FileSpreadsheet, X, Video
+} from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+
+const COST_CENTERS = [
+  { id: "manama", name: "Branch Manama" },
+  { id: "muharraq", name: "Branch Muharraq" },
+  { id: "airport", name: "Airport Rentals" },
+  { id: "riffa", name: "Branch Riffa" },
+  { id: "corporate", name: "Corporate Rentals" },
+]
+
+const BRANCHES = [
+  { id: "manama", name: "Manama" },
+  { id: "airport", name: "Airport" },
+  { id: "muharraq", name: "Muharraq" },
+  { id: "riffa", name: "Riffa" },
+]
+
+const JOURNAL_TEMPLATES = [
+  { id: "rental_income", name: "Rental Income", lines: [{ description: "Rental income received", debit: 0, credit: 500 }, { description: "Rental income", debit: 500, credit: 0 }] },
+  { id: "fuel_expense", name: "Fuel Expense", lines: [{ description: "Vehicle fuel", debit: 50, credit: 0 }, { description: "Fuel payment", debit: 0, credit: 50 }] },
+  { id: "maintenance", name: "Vehicle Maintenance", lines: [{ description: "Vehicle maintenance", debit: 200, credit: 0 }, { description: "Maintenance payment", debit: 0, credit: 200 }] },
+  { id: "insurance", name: "Insurance Premium", lines: [{ description: "Vehicle insurance", debit: 300, credit: 0 }, { description: "Insurance payment", debit: 0, credit: 300 }] },
+  { id: "salary", name: "Salary Payment", lines: [{ description: "Monthly salary", debit: 1000, credit: 0 }, { description: "Salary payment", debit: 0, credit: 1000 }] },
+  { id: "loan_given", name: "Loan Given to Employee", lines: [{ description: "Loan to employee", debit: 500, credit: 0 }, { description: "Loan disbursement", debit: 0, credit: 500 }] },
+  { id: "loan_received", name: "Loan Received", lines: [{ description: "Loan received", debit: 10000, credit: 0 }, { description: "Loan liability", debit: 0, credit: 10000 }] },
+]
+
+type Account = { id: string; name: string; name_ar?: string; code: string; parent_id: string | null; type: string }
+type Vehicle = { id: string; make: string; model: string; plate_number: string }
+type Customer = { id: string; name: string }
+type Supplier = { id: string; name: string }
+type Driver = { id: string; name: string }
+type RentalContract = { id: string; contract_number: string; customer_name?: string; vehicle_plate?: string }
+
+type JournalLine = {
+  id: string
+  account_id: string
+  description: string
+  vehicle_id: string
+  customer_id: string
+  supplier_id: string
+  driver_id: string
+  rental_contract_id: string
+  cost_center: string
+  branch: string
+  video_id: string
+  debit: string
+  credit: string
+}
+
+function generateJournalNumber(): string {
+  const year = new Date().getFullYear()
+  const random = Math.floor(1000 + Math.random() * 9000)
+  return `JV-${year}-${random}`
+}
+
+function JournalPageContent() {
+  const router = useRouter()
+  const [mounted, setMounted] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [vehicles, setVehicles] = useState<Vehicle[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [drivers, setDrivers] = useState<Driver[]>([])
+  const [rentalContracts, setRentalContracts] = useState<RentalContract[]>([])
+  const [videos, setVideos] = useState<{id: string; title: string}[]>([])
+  const [loading, setLoading] = useState(true)
+
+  const [journalNumber, setJournalNumber] = useState(generateJournalNumber())
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0])
+  const [reference, setReference] = useState("")
+  const [description, setDescription] = useState("")
+
+  const [lines, setLines] = useState<JournalLine[]>([
+    { id: "1", account_id: "", description: "", vehicle_id: "", customer_id: "", supplier_id: "", driver_id: "", rental_contract_id: "", cost_center: "", branch: "", video_id: "", debit: "", credit: "" }
+  ])
+
+  const [attachments, setAttachments] = useState<File[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [showTemplateModal, setShowTemplateModal] = useState(false)
+  const [searchAccount, setSearchAccount] = useState("")
+  const [activeDropdown, setActiveDropdown] = useState<string | null>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { setMounted(true); fetchData() }, [])
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setActiveDropdown(null)
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [])
+
+  async function fetchData() {
+    setLoading(true)
+    try {
+      const [
+        { data: accData }, { data: vehData }, { data: custData },
+        { data: supData }, { data: drvData }, { data: rentData }, { data: vidData }
+      ] = await Promise.all([
+        supabase.from("accounts").select("*").order("code"),
+        supabase.from("cars").select("id, make, model, plate_number").order("make"),
+        supabase.from("customers").select("id, name").order("name"),
+        supabase.from("suppliers").select("id, name").order("name"),
+        supabase.from("drivers").select("id, name").order("name"),
+        supabase.from("rental_contracts").select("id, contract_number").order("contract_number", { ascending: false }).limit(100),
+        supabase.from("videos").select("id, title").order("title").limit(50),
+      ])
+      if (accData) setAccounts(accData)
+      if (vehData) setVehicles(vehData)
+      if (custData) setCustomers(custData)
+      if (supData) setSuppliers(supData)
+      if (drvData) setDrivers(drvData)
+      if (rentData) setRentalContracts(rentData.map((r: any) => ({ id: r.id, contract_number: r.contract_number })))
+      if (vidData) setVideos(vidData)
+    } catch (e) { console.error(e) }
+    setLoading(false)
+  }
+
+  function getParentAccounts() { return accounts.filter(a => !a.parent_id) }
+  function getChildAccounts(parentId: string) { return accounts.filter(a => a.parent_id === parentId) }
+  function getAccountById(id: string) { return accounts.find(a => a.id === id) }
+
+  function getAccountLabel(id: string) {
+    const acc = getAccountById(id)
+    if (!acc) return "Select Account..."
+    const parent = acc.parent_id ? getAccountById(acc.parent_id) : null
+    if (parent) return `${parent.code} -> ${acc.code} - ${acc.name}`
+    return `${acc.code} - ${acc.name}`
+  }
+
+  function buildAccountTree() {
+    const parents = getParentAccounts()
+    if (parents.length === 0) return accounts.map(acc => ({ type: "item" as const, id: acc.id, label: `${acc.code} - ${acc.name}` }))
+    const tree: { type: "header" | "item"; id: string; label: string }[] = []
+    parents.forEach(parent => {
+      tree.push({ type: "header", id: `hdr-${parent.id}`, label: `${parent.code} - ${parent.name}` })
+      const children = getChildAccounts(parent.id)
+      children.forEach(child => tree.push({ type: "item", id: child.id, label: `    ${child.code} - ${child.name}` }))
+      if (children.length === 0) tree.push({ type: "header", id: `empty-${parent.id}`, label: "    (No sub-accounts)" })
+    })
+    const knownIds = new Set(parents.map(p => p.id))
+    const orphans = accounts.filter(a => a.parent_id && !knownIds.has(a.parent_id))
+    if (orphans.length > 0) {
+      tree.push({ type: "header", id: "orphan-hdr", label: "Other Accounts" })
+      orphans.forEach(acc => tree.push({ type: "item", id: acc.id, label: `${acc.code} - ${acc.name}` }))
+    }
+    return tree
+  }
+
+  function addLine() {
+    const newId = (Math.max(...lines.map(l => parseInt(l.id)), 0) + 1).toString()
+    setLines([...lines, { id: newId, account_id: "", description: "", vehicle_id: "", customer_id: "", supplier_id: "", driver_id: "", rental_contract_id: "", cost_center: "", branch: "", video_id: "", debit: "", credit: "" }])
+  }
+
+  function removeLine(id: string) { if (lines.length > 1) setLines(lines.filter(l => l.id !== id)) }
+
+  function updateLine(id: string, field: keyof JournalLine, value: string) {
+    setLines(lines.map(l => l.id === id ? { ...l, [field]: value } : l))
+  }
+
+  function getTotalDebit() { return lines.reduce((sum, l) => sum + (parseFloat(l.debit) || 0), 0) }
+  function getTotalCredit() { return lines.reduce((sum, l) => sum + (parseFloat(l.credit) || 0), 0) }
+  function getDifference() { return getTotalDebit() - getTotalCredit() }
+  function isBalanced() { return Math.abs(getDifference()) < 0.001 }
+
+  function autoBalance() {
+    const diff = getDifference()
+    if (Math.abs(diff) < 0.001) return
+    const lastLine = lines[lines.length - 1]
+    if (!lastLine.account_id) { alert("Select account for last line first"); return }
+    updateLine(lastLine.id, diff > 0 ? "credit" : "debit", Math.abs(diff).toFixed(3))
+  }
+
+  function applyTemplate(templateId: string) {
+    const template = JOURNAL_TEMPLATES.find(t => t.id === templateId)
+    if (!template) return
+    setLines(template.lines.map((line, idx) => ({
+      id: (idx + 1).toString(), account_id: "", description: line.description,
+      vehicle_id: "", customer_id: "", supplier_id: "", driver_id: "",
+      rental_contract_id: "", cost_center: "", branch: "", video_id: "",
+      debit: line.debit.toFixed(3), credit: line.credit.toFixed(3)
+    })))
+    setDescription(template.name)
+    setShowTemplateModal(false)
+  }
+
+  function handleReverse() {
+    setLines(lines.map((l, idx) => ({ ...l, id: (idx + 1).toString(), debit: l.credit, credit: l.debit })))
+    setDescription(`Reversal: ${description}`)
+  }
+
+  function handleDuplicate() {
+    setLines(lines.map((l, idx) => ({ ...l, id: (idx + 1).toString() })))
+    setJournalNumber(generateJournalNumber())
+    setReference("")
+  }
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files) return
+    setUploading(true)
+    const uploaded = [...attachments]
+    for (const file of Array.from(files)) uploaded.push(file)
+    setAttachments(uploaded)
+    setUploading(false)
+    e.target.value = ""
+  }
+
+  function removeAttachment(index: number) { setAttachments(attachments.filter((_, i) => i !== index)) }
+
+  async function handleSave(saveAndNew = false) {
+    if (!isBalanced()) { alert("Journal is not balanced!"); return }
+    const validLines = lines.filter(l => l.account_id && (parseFloat(l.debit) > 0 || parseFloat(l.credit) > 0))
+    if (validLines.length === 0) { alert("Add at least one valid line"); return }
+
+    setSaving(true)
+    try {
+      const payload = {
+        journal_number: journalNumber, date, reference, description,
+        total_debit: getTotalDebit(), total_credit: getTotalCredit(),
+        lines: validLines.map(l => ({
+          account_id: l.account_id, description: l.description,
+          vehicle_id: l.vehicle_id || null, customer_id: l.customer_id || null,
+          supplier_id: l.supplier_id || null, driver_id: l.driver_id || null,
+          rental_contract_id: l.rental_contract_id || null,
+          cost_center: l.cost_center || null, branch: l.branch || null,
+          video_id: l.video_id || null,
+          debit: parseFloat(l.debit) || 0, credit: parseFloat(l.credit) || 0,
+        })),
+        attachments: attachments.length,
+      }
+      const res = await fetch("/api/journal-entries", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      const data = await res.json()
+      if (!res.ok) { alert("Error: " + (data.error || "Unknown")); setSaving(false); return }
+
+      alert("Saved!")
+      if (saveAndNew) {
+        setJournalNumber(generateJournalNumber()); setReference(""); setDescription("")
+        setLines([{ id: "1", account_id: "", description: "", vehicle_id: "", customer_id: "", supplier_id: "", driver_id: "", rental_contract_id: "", cost_center: "", branch: "", video_id: "", debit: "", credit: "" }])
+        setAttachments([])
+      } else { router.push("/accounting/journal-entries") }
+    } catch (e: any) { alert("Error: " + e.message); setSaving(false) }
+  }
+
+  function handlePrint() {
+    const printWindow = window.open("", "_blank")
+    if (!printWindow) return
+    const html = `
+      <!DOCTYPE html><html><head><meta charset="UTF-8"><title>Journal - ${journalNumber}</title>
+      <style>
+        @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:Inter,Arial,sans-serif;padding:30px;max-width:1000px;margin:0 auto;background:#fff;color:#1e293b}
+        .header{text-align:center;margin-bottom:20px;border-bottom:2px solid #4f46e5;padding-bottom:15px}
+        .header h1{font-size:22px;font-weight:700;color:#4f46e5}
+        .info{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px}
+        .info-item{padding:8px;background:#f8fafc;border-radius:6px}
+        .info-item label{font-size:10px;text-transform:uppercase;color:#64748b;font-weight:600}
+        .info-item .value{font-size:13px;font-weight:600;margin-top:2px}
+        table{width:100%;border-collapse:collapse;font-size:11px}
+        th{background:#4f46e5;color:#fff;padding:8px;text-align:left;font-size:10px}
+        td{padding:6px 8px;border-bottom:1px solid #e2e8f0}
+        .total{font-weight:700;background:#f8fafc}
+        .balanced{color:#059669;font-weight:700;text-align:center;margin-top:15px;font-size:16px}
+        .footer{margin-top:20px;text-align:center;color:#94a3b8;font-size:11px}
+        .sig{display:flex;justify-content:space-around;margin-top:30px}
+        .sig-line{border-top:1px solid #94a3b8;width:120px;padding-top:6px;text-align:center;font-size:10px;color:#64748b}
+        @media print{body{padding:0}}
+      </style></head><body>
+        <div class="header"><h1>Journal Voucher</h1><p>ERP Horizon</p></div>
+        <div class="info">
+          <div class="info-item"><label>Journal No</label><div class="value">${journalNumber}</div></div>
+          <div class="info-item"><label>Date</label><div class="value">${date}</div></div>
+          <div class="info-item"><label>Reference</label><div class="value">${reference||"-"}</div></div>
+        </div>
+        <div style="margin-bottom:12px"><label style="font-size:10px;color:#64748b;font-weight:600">Description</label><div style="font-size:13px;margin-top:2px">${description||"-"}</div></div>
+        <table>
+          <thead><tr>
+            <th>Account</th><th>Description</th><th>Vehicle</th><th>Customer</th><th>Supplier</th>
+            <th>Driver</th><th>Contract</th><th>Center</th><th>Branch</th><th>Video</th>
+            <th style="text-align:right">Debit</th><th style="text-align:right">Credit</th>
+          </tr></thead>
+          <tbody>
+            ${lines.filter(l=>l.account_id).map(l=>{
+              const acc=getAccountById(l.account_id)
+              const veh=vehicles.find(v=>v.id===l.vehicle_id)
+              const cust=customers.find(c=>c.id===l.customer_id)
+              const sup=suppliers.find(s=>s.id===l.supplier_id)
+              const drv=drivers.find(d=>d.id===l.driver_id)
+              const rent=rentalContracts.find(r=>r.id===l.rental_contract_id)
+              const vid=videos.find(v=>v.id===l.video_id)
+              return `<tr>
+                <td>${acc?`${acc.code}-${acc.name}`:"-"}</td>
+                <td>${l.description||"-"}</td>
+                <td>${veh?`${veh.make} ${veh.model}`:"-"}</td>
+                <td>${cust?.name||"-"}</td>
+                <td>${sup?.name||"-"}</td>
+                <td>${drv?.name||"-"}</td>
+                <td>${rent?.contract_number||"-"}</td>
+                <td>${l.cost_center||"-"}</td>
+                <td>${l.branch||"-"}</td>
+                <td>${vid?.title||"-"}</td>
+                <td style="text-align:right">${l.debit?parseFloat(l.debit).toFixed(3):"-"}</td>
+                <td style="text-align:right">${l.credit?parseFloat(l.credit).toFixed(3):"-"}</td>
+              </tr>`
+            }).join("")}
+          </tbody>
+          <tfoot>
+            <tr class="total"><td colspan="10"><strong>Totals</strong></td>
+              <td style="text-align:right"><strong>${getTotalDebit().toFixed(3)}</strong></td>
+              <td style="text-align:right"><strong>${getTotalCredit().toFixed(3)}</strong></td>
+            </tr>
+          </tfoot>
+        </table>
+        <div class="balanced">${isBalanced()?"✓ BALANCED":`Diff: ${getDifference().toFixed(3)}`}</div>
+        <div class="sig"><div class="sig-line">Prepared</div><div class="sig-line">Reviewed</div><div class="sig-line">Approved</div></div>
+        <div class="footer"><p>Printed ${new Date().toLocaleString()}</p></div>
+      </body></html>
+    `
+    printWindow.document.write(html)
+    printWindow.document.close()
+  }
+
+  if (!mounted) return null
+  const accountTree = buildAccountTree()
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-4 max-w-[1400px] mx-auto p-4" dir="ltr">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => router.push("/accounting/journal-entries")} className="rounded-lg gap-1">
+              <ArrowLeft className="w-4 h-4" /> Back
+            </Button>
+            <div>
+              <h1 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <Receipt className="w-6 h-6 text-indigo-500" /> Journal Entry
+              </h1>
+            </div>
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            <Button variant="outline" size="sm" onClick={handlePrint} className="rounded-lg gap-1"><Printer className="w-4 h-4" /> Print</Button>
+            <Button variant="outline" size="sm" onClick={() => setShowTemplateModal(true)} className="rounded-lg gap-1"><FileSpreadsheet className="w-4 h-4" /> Templates</Button>
+            <Button variant="outline" size="sm" onClick={handleReverse} className="rounded-lg gap-1"><RotateCcw className="w-4 h-4" /> Reverse</Button>
+            <Button variant="outline" size="sm" onClick={handleDuplicate} className="rounded-lg gap-1"><Copy className="w-4 h-4" /> Duplicate</Button>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div>
+              <label className="text-[10px] font-medium text-slate-500 mb-1 block">Journal No</label>
+              <Input value={journalNumber} readOnly className="h-8 rounded-lg bg-slate-50 dark:bg-slate-700 font-mono text-xs" />
+            </div>
+            <div>
+              <label className="text-[10px] font-medium text-slate-500 mb-1 block">Date *</label>
+              <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="h-8 rounded-lg text-xs" />
+            </div>
+            <div>
+              <label className="text-[10px] font-medium text-slate-500 mb-1 block">Reference No</label>
+              <Input value={reference} onChange={e => setReference(e.target.value)} placeholder="INV-1005..." className="h-8 rounded-lg text-xs" />
+            </div>
+            <div>
+              <label className="text-[10px] font-medium text-slate-500 mb-1 block">Description</label>
+              <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="Description..." className="h-8 rounded-lg text-xs" />
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-3">
+            <div className="overflow-x-auto" style={{ maxHeight: "500px", overflowY: "auto" }}>
+              <table className="w-full text-[11px]">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-44">Account *</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-32">Description</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-28">Vehicle</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-28">Customer</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-28">Supplier</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-28">Driver</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-28">Contract</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-24">Cost Center</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-20">Branch</th>
+                    <th className="text-left py-1.5 px-1.5 font-semibold w-24">Video</th>
+                    <th className="text-right py-1.5 px-1.5 font-semibold w-24">Debit</th>
+                    <th className="text-right py-1.5 px-1.5 font-semibold w-24">Credit</th>
+                    <th className="py-1.5 px-1.5 w-8"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map(line => (
+                    <tr key={line.id} className="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/30">
+                      <td className="py-1 px-1.5">
+                        <div ref={dropdownRef} className="relative">
+                          <button type="button" onClick={() => setActiveDropdown(activeDropdown === line.id ? null : line.id)}
+                            className="w-full h-7 px-1.5 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-[10px] flex items-center justify-between text-left truncate">
+                            <span className="truncate">{getAccountLabel(line.account_id)}</span>
+                            <ChevronDown className={`w-3 h-3 text-slate-400 flex-shrink-0 ml-1 ${activeDropdown === line.id ? "rotate-180" : ""}`} />
+                          </button>
+                          {activeDropdown === line.id && (
+                            <div className="absolute z-50 w-64 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-600 rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                              <div className="p-1.5 border-b border-slate-100 dark:border-slate-700 sticky top-0 bg-white dark:bg-slate-800">
+                                <div className="relative">
+                                  <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+                                  <input type="text" value={searchAccount} onChange={e => setSearchAccount(e.target.value)} placeholder="Search..."
+                                    className="w-full h-6 pl-6 pr-2 rounded border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                    onClick={e => e.stopPropagation()} />
+                                </div>
+                              </div>
+                              <div className="py-0.5">
+                                {accountTree.filter(item => item.label.toLowerCase().includes(searchAccount.toLowerCase())).map(item => (
+                                  item.type === "header" ? (
+                                    <div key={item.id} className="px-2.5 py-0.5 text-[9px] font-bold text-slate-400 bg-slate-50 dark:bg-slate-700/50 uppercase tracking-wider select-none pointer-events-none">
+                                      {item.label}
+                                    </div>
+                                  ) : (
+                                    <div key={item.id} role="button" tabIndex={0}
+                                      onMouseDown={e => { e.preventDefault(); updateLine(line.id, "account_id", item.id); setActiveDropdown(null); setSearchAccount("") }}
+                                      className={`px-3 py-1 text-[10px] cursor-pointer hover:bg-indigo-50 dark:hover:bg-indigo-900/20 ${line.account_id === item.id ? "bg-indigo-50 text-indigo-600 font-semibold" : "text-slate-700 dark:text-slate-300"}`}>
+                                      {item.label}
+                                    </div>
+                                  )
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <input type="text" value={line.description} onChange={e => updateLine(line.id, "description", e.target.value)} placeholder="Desc..."
+                          className="w-full h-7 px-1.5 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.vehicle_id} onChange={e => updateLine(line.id, "vehicle_id", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {vehicles.map(v => <option key={v.id} value={v.id}>{v.make} {v.model}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.customer_id} onChange={e => updateLine(line.id, "customer_id", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.supplier_id} onChange={e => updateLine(line.id, "supplier_id", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.driver_id} onChange={e => updateLine(line.id, "driver_id", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.rental_contract_id} onChange={e => updateLine(line.id, "rental_contract_id", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {rentalContracts.map(r => <option key={r.id} value={r.id}>{r.contract_number}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.cost_center} onChange={e => updateLine(line.id, "cost_center", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {COST_CENTERS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.branch} onChange={e => updateLine(line.id, "branch", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {BRANCHES.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <select value={line.video_id} onChange={e => updateLine(line.id, "video_id", e.target.value)}
+                          className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                          <option value="">-</option>
+                          {videos.map(v => <option key={v.id} value={v.id}>{v.title}</option>)}
+                        </select>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <input type="text" inputMode="decimal" value={line.debit} onChange={e => updateLine(line.id, "debit", e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.000"
+                          className="w-full h-7 px-1.5 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] text-right focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <input type="text" inputMode="decimal" value={line.credit} onChange={e => updateLine(line.id, "credit", e.target.value.replace(/[^0-9.]/g, ""))} placeholder="0.000"
+                          className="w-full h-7 px-1.5 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] text-right focus:outline-none focus:ring-1 focus:ring-indigo-500" />
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <button type="button" onClick={() => removeLine(line.id)} className="p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors" title="Delete">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={addLine} className="rounded-lg gap-1 h-8 text-xs">
+                  <Plus className="w-3.5 h-3.5" /> Add Line
+                </Button>
+                <Button variant="outline" size="sm" onClick={autoBalance} className="rounded-lg gap-1 h-8 text-xs">
+                  <Calculator className="w-3.5 h-3.5" /> Auto Balance
+                </Button>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="text-right">
+                  <p className="text-[10px] text-slate-500">Debit</p>
+                  <p className="text-sm font-bold text-slate-900 dark:text-white">{formatCurrency(getTotalDebit())}</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] text-slate-500">Credit</p>
+                  <p className="text-sm font-bold text-slate-900 dark:text-white">{formatCurrency(getTotalCredit())}</p>
+                </div>
+                <div className={`text-right px-3 py-1.5 rounded-lg ${isBalanced() ? "bg-emerald-50 dark:bg-emerald-900/20" : "bg-red-50 dark:bg-red-900/20"}`}>
+                  <p className="text-[10px] text-slate-500">{isBalanced() ? "Status" : "Diff"}</p>
+                  <p className={`text-sm font-bold flex items-center gap-1 ${isBalanced() ? "text-emerald-600" : "text-red-600"}`}>
+                    {isBalanced() ? <><CheckCircle className="w-4 h-4" /> OK</> : <><AlertCircle className="w-4 h-4" /> {formatCurrency(Math.abs(getDifference()))}</>}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 dark:border-slate-700 pt-3">
+            <label className="text-[10px] font-medium text-slate-500 mb-1 block">Attachments</label>
+            <div className="flex items-center gap-2 flex-wrap">
+              <label className="cursor-pointer">
+                <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={handleFileUpload} className="hidden" />
+                <div className="px-3 py-1.5 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-slate-500 text-xs hover:border-indigo-500 hover:text-indigo-500 transition-colors">
+                  {uploading ? "Uploading..." : "Upload files"}
+                </div>
+              </label>
+              {attachments.map((file, idx) => (
+                <div key={idx} className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-100 dark:bg-slate-700 text-[10px] text-slate-700 dark:text-slate-300">
+                  <FileText className="w-3 h-3" />
+                  <span className="max-w-[100px] truncate">{file.name}</span>
+                  <button onClick={() => removeAttachment(idx)} className="ml-1 text-slate-400 hover:text-red-500"><X className="w-3 h-3" /></button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => router.push("/accounting/journal-entries")} className="rounded-lg h-8 text-xs">Cancel</Button>
+            <Button variant="outline" size="sm" onClick={() => handleSave(true)} disabled={saving} className="rounded-lg gap-1 h-8 text-xs">
+              <Save className="w-3.5 h-3.5" /> Save & New
+            </Button>
+            <Button size="sm" onClick={() => handleSave(false)} disabled={saving} className="rounded-lg gap-1 bg-indigo-600 hover:bg-indigo-700 text-white h-8 text-xs px-4">
+              <Save className="w-3.5 h-3.5" /> {saving ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {showTemplateModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-xl w-full max-w-sm p-5 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
+              <FileSpreadsheet className="w-5 h-5 text-indigo-500" /> Templates
+            </h3>
+            <div className="space-y-1.5">
+              {JOURNAL_TEMPLATES.map(t => (
+                <button key={t.id} type="button" onClick={() => applyTemplate(t.id)}
+                  className="w-full text-left px-3 py-2.5 rounded-lg border border-slate-200 dark:border-slate-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors">
+                  <p className="font-semibold text-slate-900 dark:text-white text-xs">{t.name}</p>
+                  <p className="text-[10px] text-slate-500">{t.lines.length} lines</p>
+                </button>
+              ))}
+            </div>
+            <div className="flex justify-end mt-3">
+              <Button variant="outline" size="sm" onClick={() => setShowTemplateModal(false)} className="rounded-lg h-8 text-xs">Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </DashboardLayout>
+  )
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6 text-slate-400">Loading...</div>}>
+      <JournalPageContent />
+    </Suspense>
+  )
+}

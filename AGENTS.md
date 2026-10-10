@@ -1,0 +1,408 @@
+# AGENTS.md
+
+Repository-specific knowledge for AI agents working on this project.
+
+## Project
+
+Next.js 15 (App Router) + Supabase ERP for car rental and sales. Arabic/English UI
+(`src/lib/LanguageContext.tsx`, `src/lib/i18n.ts`). Single repo, no monorepo.
+
+## Commands
+
+```bash
+npm run dev          # dev server on :3000
+npm run build        # production build
+npm run typecheck    # tsc --noEmit
+npm test             # all tests (node:test via tsx)
+npm run test:core    # auth + tenant isolation
+npm run test:excel   # Excel engine
+```
+
+### Known pre-existing failures (not caused by new work)
+
+- `npm run typecheck` reports **129 errors** in the legacy ERP pages. This is the
+  baseline; new code must not increase it. Verify with
+  `npm run typecheck 2>&1 | grep -c "error TS"`.
+- `npm run lint` fails with `Converting circular structure to JSON` — a broken
+  ESLint config, unrelated to source code. Lint is **not usable** as a gate here.
+
+## Architecture that must not be bypassed
+
+```
+src/lib/auth/api-guard.ts   requireContext / withAuth — the only entry point for API auth
+src/lib/auth/policy.ts      can(), tenant/branch/financial-year assertions (pure)
+src/lib/auth/context.ts     resolveAuthContext, getActiveFinancialYear (server-only)
+src/lib/auth/permissions.ts module x action catalogue
+src/lib/auth/audit.ts       logAudit — sanitises metadata before writing
+src/lib/supabase-admin.ts   service-role client (server-only)
+```
+
+Rules learned the hard way:
+
+- **Never trust the request body for identity.** `tenant_id`, `branch`, `role` come
+  from the session via `requireContext`, never from client input.
+- **`resolveAuthContext` always starts from `DEFAULT_ROLE_PERMISSIONS[role]`** and
+  only then merges DB overrides. A test that constructs a context with an empty
+  permission map tests a state that cannot occur in production.
+- **Split pure logic from DB-bound logic.** `validator.ts` (rules) vs
+  `references.ts` (lookups), `gates.ts` (authorization) vs `http.ts` (scope).
+  Importing the `@/lib/auth` barrel pulls `server-only` and breaks client
+  components. Import `policy.ts` / `errors.ts` / `types.ts` directly instead.
+- **Tenant filters are applied before any narrowing filter**, so `ids`/`filters`
+  can only reduce a result set, never widen it.
+
+## Excel service (`src/lib/excel/`)
+
+Reusable CORE capability — import/export for any module, not a business module.
+
+- `registry.ts` — module specs (fields, labels, aliases, types, permissions).
+  Add a module here; nothing else hardcodes module knowledge.
+- Pipeline: `parse` → `mapper` → `normalize` → `validateRow` → `references` →
+  `duplicates` → `importer`.
+- `client.ts` exposes an injectable `ExcelDb`; production passes nothing and gets
+  `supabaseAdmin`. Tests inject a recording stub.
+- Import is limited to modules whose table has a `tenant_id` column. Tables without
+  one are export-only until the RLS migration adds it.
+- `src/components/excel/` — `<ExcelImportButton />` and `<ExcelExportButton />`,
+  both driven by `use-excel.ts`. `Toaster` (sonner) is mounted in `src/app/layout.tsx`.
+
+### Wiring into module pages (Phase 3)
+
+- A page adds exactly one thing to its header:
+  `<ExcelModuleActions module="customers" filters={...} onImported={reload} />`.
+  Do not call the lower-level buttons directly from pages.
+- Pass the page's own filter so "export" matches what the user sees, and the page's
+  reload function so an import refreshes the list.
+- `ExcelModuleActions` renders nothing until `/api/excel/*` confirms the caller's
+  permissions, so a page cannot show a control the user may not use. A module that
+  is export-only shows an "Export only" hint using the registry's `notes`.
+- **Templates are gated by `resolveTemplateModule`**, not the import gate: importable
+  modules use the import permission, export-only modules use the export permission.
+  Never grant `import` permission just so a template can be downloaded.
+- The module list is cached per session in `use-excel.ts`. Clear that cache if a role
+  change must take effect without a reload.
+- `tax_settings` and `tax_rates` are **different real tables**. The Tax Settings pages
+  use `tax_settings`. Verify a table's live columns before wiring a module.
+- 20 pages are wired; `tests/excel-module-integration.test.ts` asserts the page↔module
+  mapping. Adding a wired page means updating that list.
+
+### Import safety invariant (do not weaken)
+
+- **A module may only be importable if it declares a `tenantColumn`.** The importer
+  scopes writes with `if (tenantId && module.tenantColumn)`, so a tenant-less module
+  would scope updates by `id` alone — letting one tenant overwrite another's row.
+  `importSafety()` in `gates.ts` enforces this fail-closed, and
+  `tests/core-security-migration.test.ts` asserts every importable module passes it.
+- Import safety needs three things to agree at once: the registry marks the module
+  `importable: true`, it declares a `tenantColumn`, and **the live table actually has
+  that column**. Never enable import from the registry alone — confirm the column
+  exists in the live database first.
+
+### Database access from this environment
+
+- DDL is **not executable** here: `DATABASE_URL`'s pooler region does not serve the
+  project (every region returns `(ENOTFOUND) tenant/user postgres.<ref> not found`),
+  `db.<ref>.supabase.co` does not resolve, and PostgREST exposes no `exec_sql` RPC.
+  Migrations are delivered as files for an operator to apply, and their application
+  is reported `NOT VERIFIED`.
+- PostgREST **is** reachable with the service key, so the live schema and the current
+  RLS state can be verified at the data level. A useful read-only probe: `GET
+  /rest/v1/<table>?select=id&limit=1` with the anon key — a `content-range` header on
+  a table that should be protected means RLS is not yet enabled.
+- `supabase/migrations/001_core_security.sql` is **not applied** on the live project:
+  `activity_logs` does not exist, the tenant-less tables still have no `tenant_id`,
+  and the anon key can still read, update and delete rows. Until an operator applies
+  it, the anon key remains fully privileged.
+
+## Testing
+
+Tests use `node:test` + `node:assert/strict`, run with `tsx --test`. They import
+source with explicit `.ts` extensions. No live database is reachable, so DB-bound
+code is tested through the injectable client with a PostgREST-like recording stub
+that applies the filters it is given and returns only affected rows.
+
+## Execution 01 invariants (tenant + financial-year wiring)
+
+- `src/lib/auth/session-context.ts` is the **only** client-safe way for a browser
+  page to learn its `tenant_id` and active `financial_year_id`. It derives both
+  from the authenticated session; neither may ever be read from a form field,
+  query string or other caller input.
+- The migration's three `tables text[]` arrays must stay consistent: every table
+  that receives a policy (tenant or company) **must** also appear in the RLS-enable
+  array, or the policy is inert. `tests/core-security-migration.test.ts` enforces
+  this, and would have caught the `ai_recommendations` defect.
+- `financial_years.tenant_id` does not exist until the migration is applied, so
+  the year lookup fails closed to `null` rather than throwing; the creation pages
+  keep working with no financial year in the interim.
+- `journal_entries`/`journal_lines` have **no** `tenant_id` column in the live
+  schema. Only `financial_year_id` is set on journal entries; a `tenant_id` write
+  there would error and is deliberately omitted.
+- `purchase_invoices.tenant_id` is likewise migration-only, so `/purchases/new`
+  spreads `tenant_id` conditionally.
+
+## Execution 03 invariants (RLS / tenant isolation hardening)
+
+- `supabase/migrations/002_tenant_isolation_hardening.sql` is the authoritative,
+  idempotent isolation model and **supersedes** 001. It must be applied for tenant
+  isolation to exist; until then the anon key still reads/writes every table.
+- The migration is verified by execution, not only by parsing. A local PostgreSQL 17
+  with a schema mirroring the live project (63 tables, `anon`/`authenticated`/
+  `service_role` roles, a GUC-driven `auth.uid()`) is enough to run it and assert the
+  isolation semantics. Reuse this pattern for any future DDL change.
+- Two predicates, deliberately different:
+  - `can_read_tenant` is NULL-tolerant (`is not distinct from`), so the current
+    single-tenant install — every `tenant_id` NULL — keeps working unchanged.
+  - `can_write_tenant` is strict: a tenanted caller may not create tenant-less rows
+    (no "orphans" that would leak into the NULL-tenant install) and may not write into
+    another tenant. `assertWritableTenant` in `src/lib/auth/policy.ts` mirrors this.
+- The anon role must hold **zero** table privileges. Supabase grants `anon` full access
+  by default; `revoke all` is the fix, and RLS alone would not have removed those grants.
+- Privileged (service-role) routes bypass RLS, so tenant scoping there lives in the
+  **query** (`.eq("tenant_id", ...)` / `.is("tenant_id", null)`), never only in a
+  post-fetch comparison. See `src/lib/auth/references.ts` and `ownership.ts`.
+- `users` update policy: nobody, not even an admin, may change a row's `tenant_id`.
+  Tenant (re)assignment is provisioning and belongs to the service-role route.
+- `financial_ratio_history` has no tenant/company column; it is isolated through its
+  parent `financial_ratios` row.
+- `npm test` / `test:core` load `.env.local` via `tsx --env-file-if-exists`. Without it,
+  any test that transitively imports the browser Supabase client fails at load.
+
+## Execution 04 invariants (universal Excel engine)
+
+- There is **one** Excel engine (`src/lib/excel/`) and **one** action cluster
+  (`src/components/excel/ExcelModuleActions`). Never add a per-page import/export
+  implementation; add a registry entry instead.
+- Adding a module = a `ModuleSpec` in `registry.ts` (fields, labels, aliases,
+  permissions, duplicate keys). Fields must map to columns verified on the live table.
+- A module is `importable` only when its table has a real tenant column. Otherwise it
+  is `exportable` with a `notes` reason shown to the user. This is why `journal_entries`,
+  `employees`, `branches`, `financial_years` are export-only today.
+- Duplicate detection has two levels: LEVEL 1 (`findFileDuplicates`, same key earlier
+  in the upload) and LEVEL 2 (`findDuplicates`, existing DB row). LEVEL 1 wins. A file
+  duplicate has no DB id, so commit skips it unless the mode is `create`.
+- Grouped modules (`ModuleSpec.group`) assemble several sheet rows into one document
+  (`entry_ref` for journals). Document-level validation failure marks **every** row of
+  the group as an error, and commit writes groups through the injected `writeGroup`,
+  never a generic table insert.
+- Journal import must go through `postJournalEntry` (`src/lib/excel/journal-group.ts`).
+  Never write `journal_entries`/`journal_lines` directly from the engine — a second
+  accounting path is exactly what the core forbids.
+- `postJournalEntry` resolves the tenant **before** its duplicate guard, and scopes the
+  guard by `tenant_id` (`.is("tenant_id", null)` for a tenant-less caller). Matching on
+  `reference_number` alone leaked one tenant's entry to another.
+- `assertAccountsUsable` in `posting.ts` rejects an account id that does not exist or
+  belongs to another tenant. `accounts.tenant_id` is nullable (shared chart), so the
+  tenant-less chart is accepted for any caller.
+- `GET /api/excel/import-history` reads the existing `activity_logs` audit trail; do not
+  create a second import-history store.
+- The error report carries a "الحل المقترح" / "Resolution" column sourced from the
+  `RESOLUTIONS` map in `exporter.ts`; add a code there when adding an error code.
+- `npm run test:excel` includes `tests/excel-duplicates-and-groups.test.ts`;
+  `npm run test:accounting` includes `tests/accounting-tenant-guard.test.ts`.
+
+
+## Execution 05 invariants (sales + invoices + payments + returns)
+
+- **One sales engine.** `src/lib/sales/service.ts` owns every financial sales
+  mutation: `createSalesInvoice`, `recordPayment`, `createSalesReturn`,
+  `assertInvoiceMutable`. Pages and routes call it; nothing posts a sales journal
+  entry directly. A second sales/posting path is what this execution forbids.
+- **Revenue is recognised once, at issue.** Issuing an invoice posts
+  `Dr AR / Cr Revenue / Cr Output VAT`. Collecting it posts `Dr Cash/Bank / Cr AR`
+  and must never credit revenue again. A return posts
+  `Dr Sales Returns (or Revenue) + Dr Output VAT / Cr AR`.
+- **Paid amount and status are derived, never trusted.** `recomputeInvoicePaid`
+  sums the completed payments (refunds negative) and `statusFor` derives the
+  status; a client-supplied `paid_amount` is ignored, so a retry cannot double-count.
+- **Posted invoices are immutable.** `assertInvoiceMutable` refuses edit/delete once
+  a `sale_invoice` journal entry exists for the invoice number (or money was
+  collected). Undo a posted sale with a return, which is auditable.
+- **Sales pages never write tenant_id or post journals themselves.** `sales/new`,
+  `payments/new` and `sales/returns` POST to `/api/invoices`, `/api/payments`,
+  `/api/sales-returns`; the server takes tenant + financial year from the session.
+  `tests/session-context.test.ts` asserts this.
+- **Numbering is one mechanism.** `src/lib/documents/numbering.ts`
+  (`nextDocumentNumber`) wraps `generate_document_number`. Never reintroduce
+  `REC-${Date.now()}`-style numbers — a timestamp changes on retry and defeats the
+  duplicate guard.
+- **Account codes.** `ACCOUNT_CODES` in `accounting/posting.ts`. `41003`
+  (salesReturns) is a contra-revenue account that may **not exist** on a live
+  install; a return falls back to debiting `41002` (salesRevenue) so it still
+  balances. Verified live chart: 11001, 11002, 12001, 21001, 24000, 41001, 41002.
+- **Schema drift is handled, not assumed.** Exec 01/03 declared `tenant_id` on
+  `sales_returns`, `journal_entries`, `journal_lines` and `activity_logs` in SQL that
+  was never applied. `supabase/migrations/003_sales_lifecycle.sql` adds the missing
+  columns and the `receipt`/`sales_return` sequences (additive, idempotent).
+  `src/lib/db/columns.ts` (`hasColumn`, `insertTolerant`) lets the app run before and
+  after the migration — writes drop only columns the DB lacks instead of failing.
+- **Tests need the server condition.** `npm test` uses
+  `node --conditions=react-server --import tsx ...` so `server-only` modules
+  (`supabase-admin`) load. `tests/sales-lifecycle.test.ts` runs the real service
+  against a PostgREST stub; `supabaseAdmin` and `assertReference` take an injectable
+  client for this.
+
+## Execution 05.1 — Financial-year enforcement (server side)
+
+- `resolveAuthContext` (`src/lib/auth/context.ts`) now resolves the tenant's
+  active financial year and puts it on `AuthContext.financialYearId`. It used to
+  be hardcoded `null`, which silently disabled year validation on every API
+  route. Do not revert it to `null`.
+- `src/lib/sales/service.ts` calls `assertPostingYear(client, context, date)`
+  before every financial write (invoice, payment, return). It resolves the year
+  through the caller's own client, tenant-scoped, and skips validation when the
+  tenant has no year (backward compatible). Any new financial service must call
+  it too.
+- Migrations `001`, `002`, `003` are still NOT applied to the live database
+  (direct Postgres access is blocked from the dev environment; the anon key can
+  still read/write). Applying them is the one remaining operator step.
+
+## Execution 05.2 - RLS policy semantics + migration verification
+
+- `activity_logs` append-only policies (`activity_logs_no_update` /
+  `activity_logs_no_delete`) MUST be `as restrictive`. The generic tenant loop
+  creates permissive `activity_logs_tenant_update` / `_delete` policies, and
+  PostgreSQL ORs permissive policies - so a permissive `using (false)` deny is a
+  no-op and a tenant can rewrite its own audit trail. RESTRICTIVE is ANDed with
+  every permissive policy. Regression-guarded in
+  `tests/core-security-migration.test.ts` and `tests/security-tenant-isolation.test.ts`.
+- Migration `003` seeds the sales-returns contra account `41003` idempotently
+  (`where not exists` on `code`, explicit `gen_random_uuid()` id). Without it a
+  return falls back to debiting `41002`; `postJournalEntry` maps
+  `ACCOUNT_CODES.salesReturns = "41003"`.
+- The three migrations were verified end-to-end on a local PostgreSQL 17 built
+  from the live schema (63 tables): apply, idempotent re-apply, and rollback all
+  succeed; 26/26 behavioural isolation assertions pass. They are still NOT
+  applied to the live database (no reachable DDL path from the dev env).
+- Cross-tenant FK (e.g. an invoice referencing another tenant's customer) is NOT
+  stopped by RLS; it is an application-layer responsibility
+  (`assertReference` / `assertAccountsUsable`).
+
+## Execution 05.3 - live production verification + activation status
+
+- **Live DB access:** the configured `DATABASE_URL` in `.env.local` points at the
+  stale pooler host `aws-1-us-east-2.pooler.supabase.com` and its credentials are
+  rejected (`ENOTFOUND tenant/user`). The IPv6-only direct host does not resolve
+  (no IPv6 here). There is no `exec_sql` RPC and no migration-history table, so
+  **DDL activation is not possible from this environment** - it is an operator
+  step. The live project IS reachable over the authenticated REST (PostgREST)
+  path with the service-role key, which is how live facts below were read.
+- **Live state confirmed (read-only, via REST):** migrations 001/002/003 are NOT
+  applied - `activity_logs` absent; `sales_returns` missing `tenant_id`,
+  `return_number`, `vat_amount`; `journal_entries`/`journal_lines` missing
+  `tenant_id`; `expenses` missing `branch_id`. Live chart has 18 accounts and
+  **no `41003`**. `tenants`/`branches` are empty; the single live user is
+  `role=client`, `tenant_id=null`.
+- **Live anon exposure CONFIRMED:** with the anon key, `customers`/`users`/
+  `accounts` SELECT returns real PII and UPDATE/DELETE return HTTP 204 (privilege
+  granted). This closes only when 001/002 are applied live.
+- `financial/reports`, `financial/kpis`, `financial/health-score`,
+  `financial/ratios`, `financial/recommendations` filter by `company_id` and
+  **skip the filter when `tenantId` is null** (fail-open), unlike the
+  `scopeToTenant` convention elsewhere. Live is single-tenant (`tenantId=null`)
+  and the tables are empty, so it is latent, not exploited.
+- `expenses.branch` is free text, not a `branch_id` FK (`assertBranchAccess` not
+  applied); documented, not changed.
+- Sales document numbering (invoices/payments/returns) uses the centralized
+  `nextDocumentNumber`; the legacy `REC-${Date.now()}` pattern remains only in the
+  rentals UI (`src/app/rentals/new/page.tsx`), which is out of scope until Exec 06.
+
+## Execution 05.4 - DDL path exhausted (still blocked)
+
+- **Root cause of the DB blocker:** the live direct host
+  `db.<ref>.supabase.co` is **IPv6-only** (no A record; only
+  `2406:da1c:...`) and this environment has **no IPv6 egress**. The configured
+  `DATABASE_URL` points at `aws-1-us-east-2.pooler.supabase.com`, and **all 24
+  pooler regions on ports 5432/6543** return `ENOTFOUND tenant/user` -- with both
+  the real password and a deliberately-wrong one (a registered tenant would return
+  `password authentication failed`). So the pooler host is wrong/unknown and the
+  IPv6 route is unavailable.
+- **No other DDL path:** Supabase CLI absent (no config, no token,
+  `SUPABASE_ACCESS_TOKEN`/`SUPABASE_DB_PASSWORD` unset); management API `401`;
+  pg-meta/`/pg/query` `404`; `exec_sql` `404`; `/api/migrate` disabled + depends on
+  `exec_sql`; no CI/CD; no DB credentials anywhere in the repo.
+- **Live still unapplied:** `activity_logs` absent; `sales_returns`
+  `tenant_id`/`return_number`/`vat_amount` missing; `journal_entries`/
+  `journal_lines.tenant_id` missing; `expenses.branch_id` missing; 18 accounts, no
+  `41003`; 0 tenants/branches; 1 user (`tenant_id=null`).
+- **Live anon exposure confirmed again:** anon SELECT returns PII and anon
+  INSERT/UPDATE/DELETE return 201/204 on `customers`/`invoices`/`users`/`accounts`.
+- **Incident:** the 05.4 anon INSERT probes created two blank rows (one
+  `customers`, one `invoices`). They were deleted via service-role REST and the
+  counts restored to 2/2. Future anon probes must use non-existent ids and must not
+  INSERT on the live database.
+- Activation requires the operator to supply the **current** pooler connection
+  string (or DB password) as `DATABASE_URL`, then apply 001 -> 002 -> 003.
+
+## Execution 05.5 - Production migration package (owner-executed)
+
+- **Deliverable:** `supabase/PRODUCTION_ACTIVATION_001_002_003.sql` — the frozen
+  migrations 001 -> 002 -> 003 embedded **byte-identical** (SHA-256 of each body
+  is recorded in a banner at its header) between a read-only PRE-FLIGHT and a
+  read-only POST-FLIGHT. Do not edit the embedded bodies; regenerate the file from
+  `supabase/migrations/` instead.
+- **Companion SQL:** `supabase/ANON_VERIFICATION.sql` (non-destructive; every write
+  probe guarded with `where false`, `SET ROLE anon` inside exception-guarded
+  blocks) and `supabase/RLS_COVERAGE_REPORT.sql`.
+- **Operator docs:** `PRODUCTION_MIGRATION_RUNBOOK.md`,
+  `PRODUCTION_SECURITY_CHECKLIST.md`. Correct project ref: `chlkmdobhvfnldqkgdji`.
+- **Local proof:** a live-like 63-table harness (built from the live PostgREST
+  OpenAPI spec) applies the package with 0 errors, is idempotent on re-run, leaves
+  RLS on all 64 tables, creates `41003` once, and preserves seeded rows. Anon
+  probes: 48 denied post-migration, 33 permitted pre-migration.
+- **Public-read invariant (do not regress):** `cars` and `settings` are
+  tenant-owned and become RLS-protected. Anonymous marketing pages must NOT read
+  them directly with the anon key; they use `/api/public/vehicles` and
+  `/api/public/company-profile`, which run server-side (service-role) but return
+  an explicit PUBLIC-SAFE projection (no cost/supplier/VIN/finance/insurance
+  columns, no `select('*')`). `/api/public/` is allow-listed in `src/middleware.ts`
+  and the guard is enforced by `tests/security-tenant-isolation.test.ts`.
+
+
+
+
+
+## Execution 06 — Public SaaS + Free Account (invariants)
+
+- **Public SaaS routes** (no ERP data, static marketing only): `/`, `/features`,
+  `/solutions`, `/pricing`, `/faq`, `/privacy`, `/terms`. Chrome:
+  `src/components/MarketingNavbar.tsx` + `MarketingFooter.tsx`. Do NOT expose
+  internal/admin routes in the footer or navbar.
+- **Free signup is server-authoritative**: `POST /api/saas/signup` (public).
+  It creates a NEW tenant and makes the signer `admin` of that tenant only.
+  `tenant_id`/`role`/`company_id`/`user_id` are NEVER read from the request body.
+  Duplicate email -> 409 before any user/tenant is created; partial failure rolls
+  back auth user + tenant. Keep this the ONLY public account-creating route.
+- **Onboarding**: `POST /api/saas/onboarding` requires requireContext(...,{requireAdmin:true})
+  and scopes every write with .eq("tenant_id", tenantId); tenant comes from the
+  session, never the body. Idempotent; all steps optional.
+- **Pure rules** live in `src/lib/saas/provisioning.ts` (validateSignup,
+  validateOnboarding, defaultFinancialYear, FREE_PLAN) - keep it infrastructure-free.
+- **Free plan** is static and advertises only real modules; NO inventory, NO
+  billing. Paid plans are "coming soon" only.
+- **Middleware** PUBLIC_API_PREFIXES now also allows `/api/saas/signup`; every
+  other `/api/*` stays behind the auth gate. Adding a public prefix requires
+  updating tests/security-tenant-isolation.test.ts allow-list AND adding a
+  safety assertion.
+- **expenses.branch_id**: deliberately NOT added - the architecture uses the
+  existing free-text expenses.branch; branch_id has no consumer.
+- Public pages must never query ERP tables directly; use `/api/public/*` with an
+  explicit safe column projection. RLS stays enabled.
+
+
+## Deployment (production)
+
+- Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,
+  domain `https://speed.harbourconsultancies.com`.
+- Deploy = `git pull --ff-only origin main` -> `npm run build` ->
+  `pm2 restart speed --update-env`. NEVER reset --hard / force push; preserve
+  `.env.local` (untracked, never commit it).
+- The OpenHands sandbox has NO access to that host (no /var/www, no pm2, no ssh).
+  On-server steps must be run on the production VM; from the sandbox only commit
+  + push + local production-mode verification are possible.
+- Supabase data project: `chlkmdobhvfnldqkgdji`. `slelguoygbfzlpylpxfs` in
+  layout.tsx is the Orchids platform script host, NOT a database.
+- Pre-existing gap (do not silently fix without a dedicated task): middleware
+  gates only `/api/*`; page routes like `/dashboard` return 200 to anonymous
+  callers and rely on client-side gating.
+- Live E2E signup/onboarding tests MUST use a disposable email and delete the
+  auth user, tenant, branch, settings and financial_years afterwards.

@@ -1,0 +1,262 @@
+"use client"
+import { Suspense } from 'react'
+import { } from 'react'
+export const dynamic = "force-dynamic"
+
+import { useEffect, useMemo, useState } from 'react'
+import { supabase, Expense, Supplier, Car } from '@/lib/supabase'
+import DashboardLayout from '@/components/DashboardLayout'
+import { useLanguage } from '@/lib/LanguageContext'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { formatCurrency, formatDate } from '@/lib/utils'
+import { Receipt } from 'lucide-react'
+
+const categories = [
+  { value: 'general', label: 'General' },
+  { value: 'maintenance', label: 'Maintenance' },
+  { value: 'traffic_fine', label: 'Traffic Fine' },
+  { value: 'insurance', label: 'Insurance' },
+  { value: 'registration', label: 'Registration' },
+]
+
+function ExpensesPageContent() {
+  const { lang, t, isRTL } = useLanguage()
+  const [mounted, setMounted] = useState(false)
+  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [cars, setCars] = useState<Car[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [form, setForm] = useState({
+    expense_date: '',
+    amount: '',
+    category: 'general',
+    supplier_id: 'none',
+    car_id: 'none',
+    description: '',
+  })
+
+  useEffect(() => {
+    setMounted(true)
+    fetchData()
+  }, [])
+
+  async function fetchData() {
+    setLoading(true)
+    const [expensesRes, suppliersRes, carsRes] = await Promise.all([
+      supabase
+        .from('expenses')
+        .select('*, supplier:suppliers(name), car:cars(plate_number, make, model)')
+        .order('expense_date', { ascending: false }),
+      supabase.from('suppliers').select('*').order('name'),
+      supabase.from('cars').select('*').order('plate_number'),
+    ])
+
+    setExpenses((expensesRes.data || []) as Expense[])
+    setSuppliers((suppliersRes.data || []) as Supplier[])
+    setCars((carsRes.data || []) as Car[])
+    setLoading(false)
+  }
+
+  const filteredExpenses = useMemo(() => {
+    if (!search) return expenses
+    const term = search.toLowerCase()
+    return expenses.filter((expense) =>
+      (expense.supplier?.name || '').toLowerCase().includes(term) ||
+      (expense.car?.plate_number || '').toLowerCase().includes(term) ||
+      (expense.category || '').toLowerCase().includes(term)
+    )
+  }, [expenses, search])
+
+  const handleSubmit = async () => {
+    if (!form.expense_date || !form.amount) return
+    await supabase.from('expenses').insert([
+      {
+        expense_date: form.expense_date,
+        amount: Number(form.amount),
+        category: form.category,
+        supplier_id: form.supplier_id === 'none' ? null : form.supplier_id,
+        car_id: form.car_id === 'none' ? null : form.car_id,
+        description: form.description || null,
+      },
+    ])
+    setForm({
+      expense_date: '',
+      amount: '',
+      category: 'general',
+      supplier_id: 'none',
+      car_id: 'none',
+      description: '',
+    })
+    fetchData()
+  }
+
+  if (!mounted) return null
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        <header className="flex flex-col gap-2">
+          <h1 className="text-3xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
+            <Receipt className="w-7 h-7 text-cyan-500" />
+            {t.expenses}
+          </h1>
+          <p className="text-slate-500 dark:text-slate-400">
+            {isRTL ? 'تسجيل المصروفات وربطها بالموردين والمركبات' : 'Log expenses and link them to suppliers and vehicles'}
+          </p>
+        </header>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 space-y-4">
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <Input
+              type="date"
+              value={form.expense_date}
+              onChange={(event) => setForm({ ...form, expense_date: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Input
+              type="number"
+              placeholder={t.amount}
+              value={form.amount}
+              onChange={(event) => setForm({ ...form, amount: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Select value={form.category} onValueChange={(value) => setForm({ ...form, category: value })}>
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder={t.category} />
+              </SelectTrigger>
+              <SelectContent>
+                {categories.map((category) => (
+                  <SelectItem key={category.value} value={category.value}>
+                    {isRTL
+                      ? category.value === 'general'
+                        ? 'عام'
+                        : category.value === 'maintenance'
+                          ? 'صيانة'
+                          : category.value === 'traffic_fine'
+                            ? 'مخالفة مرور'
+                            : category.value === 'insurance'
+                              ? 'تأمين'
+                              : 'ترخيص'
+                      : category.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={form.supplier_id} onValueChange={(value) => setForm({ ...form, supplier_id: value })}>
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder={t.selectSupplier} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">{isRTL ? 'بدون مورد' : 'No supplier'}</SelectItem>
+                {suppliers.map((supplier) => (
+                  <SelectItem key={supplier.id} value={supplier.id}>
+                    {supplier.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={form.car_id} onValueChange={(value) => setForm({ ...form, car_id: value })}>
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder={t.selectCar} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">{isRTL ? 'بدون سيارة' : 'No car'}</SelectItem>
+                {cars.map((car) => (
+                  <SelectItem key={car.id} value={car.id}>
+                    {car.plate_number} - {car.make} {car.model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              placeholder={t.notes}
+              value={form.description}
+              onChange={(event) => setForm({ ...form, description: event.target.value })}
+              className="h-12 rounded-xl lg:col-span-2"
+            />
+          </div>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <Badge variant="outline">{expenses.length}</Badge>
+            <Button onClick={handleSubmit} className="bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl">
+              {t.addExpense}
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 space-y-4">
+          <Input
+            placeholder={isRTL ? 'بحث بالمورد أو السيارة...' : 'Search by supplier or car...'}
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="h-12 rounded-xl"
+          />
+
+          {loading ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full"></div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-slate-500 dark:text-slate-400 text-sm border-b border-slate-200 dark:border-slate-700">
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.expenseDate}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.category}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.supplier}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.cars}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.amount}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredExpenses.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-6 text-center text-slate-500">
+                        {t.noData}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredExpenses.map((expense) => (
+                      <tr key={expense.id} className="border-b border-slate-100 dark:border-slate-700/50">
+                        <td className="py-3 text-slate-700 dark:text-slate-300">
+                          {formatDate(expense.expense_date || new Date(), lang === 'ar' ? 'ar-SA' : 'en-US')}
+                        </td>
+                        <td className="py-3">
+                          <Badge variant="outline">{expense.category}</Badge>
+                        </td>
+                        <td className="py-3 text-slate-700 dark:text-slate-300">{expense.supplier?.name || '-'}</td>
+                        <td className="py-3 text-slate-700 dark:text-slate-300">
+                          {expense.car?.plate_number ? `${expense.car?.plate_number} - ${expense.car?.make}` : '-'}
+                        </td>
+                        <td className="py-3 font-semibold text-rose-600 dark:text-rose-400">
+                          {formatCurrency(expense.amount ?? 0)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default function ExpensesPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <ExpensesPageContent />
+    </Suspense>
+  )
+}

@@ -1,0 +1,352 @@
+"use client"
+import { Suspense } from 'react'
+
+export const dynamic = "force-dynamic"
+
+import { useEffect, useMemo, useState } from 'react'
+import { supabase, Expense, Supplier, Car } from '@/lib/supabase'
+import DashboardLayout from '@/components/DashboardLayout'
+import { useLanguage } from '@/lib/LanguageContext'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { formatCurrency, formatDate } from '@/lib/utils'
+import { Receipt } from 'lucide-react'
+
+const categories = [
+  { value: 'general', label: 'General' },
+  { value: 'maintenance', label: 'Maintenance' },
+  { value: 'traffic_fine', label: 'Traffic Fine' },
+  { value: 'insurance', label: 'Insurance' },
+  { value: 'registration', label: 'Registration' },
+]
+
+function ExpensesPageContent() {
+  const { lang, t, isRTL } = useLanguage()
+  const [mounted, setMounted] = useState(false)
+  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [cars, setCars] = useState<Car[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [form, setForm] = useState({
+    expense_date: '',
+    amount: '',
+    vat_amount: '',
+    category: 'general',
+    supplier_id: 'none',
+    car_id: 'none',
+    description: '',
+    account_code: '',
+  })
+
+  useEffect(() => {
+    setMounted(true)
+    fetchData()
+  }, [])
+
+  async function fetchData() {
+    setLoading(true)
+    const [expensesRes, suppliersRes, carsRes] = await Promise.all([
+      supabase
+        .from('expenses')
+        .select('*, supplier:suppliers(name), car:cars(plate_number, make, model)')
+        .order('expense_date', { ascending: false }),
+      supabase.from('suppliers').select('*').order('name'),
+      supabase.from('cars').select('*').order('plate_number'),
+    ])
+
+    setExpenses((expensesRes.data || []) as Expense[])
+    setSuppliers((suppliersRes.data || []) as Supplier[])
+    setCars((carsRes.data || []) as Car[])
+    setLoading(false)
+  }
+
+  const filteredExpenses = useMemo(() => {
+    if (!search) return expenses
+    const term = search.toLowerCase()
+    return expenses.filter((expense) =>
+      (expense.supplier?.name || '').toLowerCase().includes(term) ||
+      (expense.car?.plate_number || '').toLowerCase().includes(term) ||
+      (expense.category || '').toLowerCase().includes(term)
+    )
+  }, [expenses, search])
+
+  const CATEGORY_ACCOUNT_MAP: Record<string, string> = {
+    maintenance: "51003",
+    fuel: "61017",
+    insurance: "51002",
+    registration: "51001",
+    depreciation: "51009",
+    salary: "61003",
+    rent: "61001",
+    utilities: "61015",
+    communication: "61019",
+    bank: "61018",
+    audit: "61023",
+    commission: "61013",
+    lmra: "61011",
+    gosi: "61014",
+    admin: "61016",
+    general: "61016",
+    traffic_fine: "51001",
+  }
+
+  const EXPENSE_ACCOUNTS = [
+    { code: "51001", label: "51001 — Ministry of Transportation Fees" },
+    { code: "51002", label: "51002 — Vehicle Insurance BNI" },
+    { code: "51003", label: "51003 — Repairs & Maintenance" },
+    { code: "51004", label: "51004 — R&M Rooma Motors" },
+    { code: "51005", label: "51005 — R&M Zayani Motors" },
+    { code: "51006", label: "51006 — R&M Busalman" },
+    { code: "51007", label: "51007 — Al Malik Garage D&P" },
+    { code: "51008", label: "51008 — R&M From Others" },
+    { code: "51009", label: "51009 — Depreciation Motor Vehicles" },
+    { code: "61001", label: "61001 — Office Rent" },
+    { code: "61002", label: "61002 — Changan Services Package" },
+    { code: "61003", label: "61003 — Basic Pay" },
+    { code: "61007", label: "61007 — Overtime Pay" },
+    { code: "61008", label: "61008 — Housing Allowances" },
+    { code: "61009", label: "61009 — Telephone Allowance" },
+    { code: "61010", label: "61010 — Social Insurance" },
+    { code: "61011", label: "61011 — LMRA Fee" },
+    { code: "61012", label: "61012 — LMRA Visa Fee" },
+    { code: "61013", label: "61013 — Sales Commission Charge" },
+    { code: "61014", label: "61014 — GOSI / HC" },
+    { code: "61015", label: "61015 — Electricity & Water" },
+    { code: "61016", label: "61016 — Office Expenses" },
+    { code: "61017", label: "61017 — Fuel Expenses" },
+    { code: "61018", label: "61018 — Bank Charge / Finance Cost" },
+    { code: "61019", label: "61019 — Telephone, Internet Saar" },
+    { code: "61020", label: "61020 — Telephone & Internet Amwaj" },
+    { code: "61021", label: "61021 — STC Business" },
+    { code: "61022", label: "61022 — Batelco Wifi" },
+    { code: "61023", label: "61023 — Audit Fees" },
+    { code: "61024", label: "61024 — Creditmax Commission Charges" },
+  ]
+
+  const handleSubmit = async () => {
+    if (!form.expense_date || !form.amount) return
+    await supabase.from('expenses').insert([
+      {
+        expense_date: form.expense_date,
+        amount: Number(form.amount),
+        vat_amount: form.vat_amount ? Number(form.vat_amount) : 0,
+        total_amount: Number(form.amount) + (form.vat_amount ? Number(form.vat_amount) : 0),
+        notes: form.notes || null,
+        payment_method: 'cash',
+        category: form.category,
+        supplier_id: form.supplier_id === 'none' ? null : form.supplier_id,
+        car_id: form.car_id === 'none' ? null : form.car_id,
+        description: form.description || null,
+        account_code: form.account_code || null,
+      },
+    ])
+    setForm({
+      expense_date: '',
+      amount: '',
+      vat_amount: '',
+      category: 'general',
+      supplier_id: 'none',
+      car_id: 'none',
+      description: '',
+      account_code: '',
+    })
+    fetchData()
+  }
+
+  if (!mounted) return null
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        <header className="flex flex-col gap-2">
+          <h1 className="text-3xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
+            <Receipt className="w-7 h-7 text-cyan-500" />
+            {t.expenses}
+          </h1>
+          <p className="text-slate-500 dark:text-slate-400">
+            {isRTL ? 'تسجيل المصروفات وربطها بالموردين والمركبات' : 'Log expenses and link them to suppliers and vehicles'}
+          </p>
+        </header>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 space-y-4">
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <Input
+              type="date"
+              value={form.expense_date}
+              onChange={(event) => setForm({ ...form, expense_date: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Input
+              type="number"
+              placeholder={t.amount}
+              value={form.amount}
+              onChange={(event) => setForm({ ...form, amount: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Input
+              type="number"
+              placeholder={isRTL ? 'الضريبة (VAT)' : 'VAT Amount'}
+              value={form.vat_amount}
+              onChange={(event) => setForm({ ...form, vat_amount: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Input
+              placeholder={isRTL ? 'ملاحظات' : 'Notes'}
+              value={form.notes}
+              onChange={(event) => setForm({ ...form, notes: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Input
+              type="number"
+              placeholder={isRTL ? 'الضريبة (VAT)' : 'VAT Amount'}
+              value={form.vat_amount}
+              onChange={(event) => setForm({ ...form, vat_amount: event.target.value })}
+              className="h-12 rounded-xl"
+            />
+            <Select value={form.category} onValueChange={(value) => setForm({ ...form, category: value, account_code: CATEGORY_ACCOUNT_MAP[value] || "" })}>
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder={t.category} />
+              </SelectTrigger>
+              <SelectContent>
+                {categories.map((category) => (
+                  <SelectItem key={category.value} value={category.value}>
+                    {isRTL
+                      ? category.value === 'general'
+                        ? 'عام'
+                        : category.value === 'maintenance'
+                          ? 'صيانة'
+                          : category.value === 'traffic_fine'
+                            ? 'مخالفة مرور'
+                            : category.value === 'insurance'
+                              ? 'تأمين'
+                              : 'ترخيص'
+                      : category.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={form.supplier_id} onValueChange={(value) => setForm({ ...form, supplier_id: value })}>
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder={t.selectSupplier} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">{isRTL ? 'بدون مورد' : 'No supplier'}</SelectItem>
+                {suppliers.map((supplier) => (
+                  <SelectItem key={supplier.id} value={supplier.id}>
+                    {supplier.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={form.car_id} onValueChange={(value) => setForm({ ...form, car_id: value })}>
+              <SelectTrigger className="h-12 rounded-xl">
+                <SelectValue placeholder={t.selectCar} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">{isRTL ? 'بدون سيارة' : 'No car'}</SelectItem>
+                {cars.map((car) => (
+                  <SelectItem key={car.id} value={car.id}>
+                    {car.plate_number} - {car.make} {car.model}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              placeholder={t.notes}
+              value={form.description}
+              onChange={(event) => setForm({ ...form, description: event.target.value })}
+              className="h-12 rounded-xl lg:col-span-2"
+            />
+          </div>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <Badge variant="outline">{expenses.length}</Badge>
+            <Button onClick={handleSubmit} className="bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl">
+              {t.addExpense}
+            </Button>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700 space-y-4">
+          <Input
+            placeholder={isRTL ? 'بحث بالمورد أو السيارة...' : 'Search by supplier or car...'}
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="h-12 rounded-xl"
+          />
+
+          {loading ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin w-8 h-8 border-4 border-cyan-500 border-t-transparent rounded-full"></div>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-slate-500 dark:text-slate-400 text-sm border-b border-slate-200 dark:border-slate-700">
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.expenseDate}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.category}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.supplier}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.cars}</th>
+                    <th className={`py-3 ${isRTL ? 'text-right' : 'text-left'}`}>{t.amount}</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredExpenses.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-6 text-center text-slate-500">
+                        {t.noData}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredExpenses.map((expense) => (
+                      <tr key={expense.id} className="border-b border-slate-100 dark:border-slate-700/50">
+                        <td className="py-3 text-slate-700 dark:text-slate-300">
+                          {formatDate(expense.expense_date || new Date(), lang === 'ar' ? 'ar-SA' : 'en-US')}
+                        </td>
+                        <td className="py-3">
+                          <Badge variant="outline">{expense.category}</Badge>
+                        </td>
+                        <td className="py-3 text-slate-700 dark:text-slate-300">{expense.supplier?.name || '-'}</td>
+                        <td className="py-3 text-slate-700 dark:text-slate-300">
+                          {expense.car?.plate_number ? `${expense.car?.plate_number} - ${expense.car?.make}` : '-'}
+                        </td>
+                        <td className="py-3 font-semibold text-rose-600 dark:text-rose-400">
+                          {formatCurrency(expense.amount ?? 0)}
+                        </td>
+                        <td className="py-3">
+                          {expense.payment_type === "credit" && (
+                            <a href={`/expenses/${expense.id}/pay`} className="inline-flex items-center px-2 py-1 rounded-lg text-xs font-medium bg-orange-50 text-orange-700 hover:bg-orange-100 dark:bg-orange-900/20 dark:text-orange-300">
+                              {isRTL ? "تسوية" : "Settle"}
+                            </a>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default function ExpensesPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <ExpensesPageContent />
+    </Suspense>
+  )
+}

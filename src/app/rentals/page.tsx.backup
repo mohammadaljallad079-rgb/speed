@@ -1,0 +1,427 @@
+"use client"
+import { Suspense } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { supabase, RentalContract } from '@/lib/supabase'
+import { formatCurrency, formatDate, getStatusColor } from '@/lib/utils'
+import {
+  FileText, Plus, Search, MoreVertical, Trash2, CreditCard, Printer, Eye, Pencil,
+  Save, Loader2, Receipt, X, User, Car, Calendar, DollarSign
+} from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import DashboardLayout from '@/components/DashboardLayout'
+import { useLanguage } from '@/lib/LanguageContext'
+import Link from 'next/link'
+
+export const dynamic = 'force-dynamic'
+
+function RentalsPageContent() {
+  const { t, isRTL } = useLanguage()
+  const router = useRouter()
+  const [mounted, setMounted] = useState(false)
+  const [contracts, setContracts] = useState<RentalContract[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
+
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false)
+  const [paymentLoading, setPaymentLoading] = useState(false)
+  const [selectedContract, setSelectedContract] = useState<RentalContract | null>(null)
+  const [invoice, setInvoice] = useState<any>(null)
+  const [accounts, setAccounts] = useState<any[]>([])
+  const [paymentForm, setPaymentForm] = useState({
+    amount: '',
+    payment_date: new Date().toISOString().split('T')[0],
+    payment_method: 'cash',
+    notes: '',
+    receipt_number: '',
+  })
+
+  // Contract Detail Modal State
+  const [contractModalOpen, setContractModalOpen] = useState(false)
+  const [selectedContractDetails, setSelectedContractDetails] = useState<any>(null)
+  const [contractInvoice, setContractInvoice] = useState<any>(null)
+  const [contractPayments, setContractPayments] = useState<any[]>([])
+
+  useEffect(() => {
+    setMounted(true)
+    const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '')
+    const queryStatus = searchParams.get('status')
+    if (queryStatus) setStatusFilter(queryStatus)
+  }, [])
+
+  useEffect(() => { fetchContracts() }, [statusFilter])
+
+  async function fetchContracts() {
+    setLoading(true)
+    try {
+      let query = supabase.from('rental_contracts').select('*, customers(full_name), cars(make, model, plate_number)').order('created_at', { ascending: false })
+      if (statusFilter !== 'all') query = query.eq('status', statusFilter)
+      const { data } = await query
+      if (data) setContracts(data as any)
+    } catch (error) { console.error('Error:', error) }
+    setLoading(false)
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return
+    await supabase.from('rental_contracts').delete().eq('id', deleteTarget)
+    setDeleteTarget(null)
+    fetchContracts()
+  }
+
+  function handlePrint(contract: RentalContract) {
+    router.push('/rentals/print?id=' + contract.id)
+  }
+
+  async function handlePayment(contract: RentalContract) {
+    setSelectedContract(contract)
+    setOpenMenuId(null)
+    const { data: invData } = await supabase.from('invoices').select('*').eq('rental_contract_id', contract.id).order('created_at', { ascending: false }).maybeSingle()
+    setInvoice(invData)
+    const { data: accData } = await supabase.from('accounts').select('id, code, name_ar, name_en').in('type', ['asset']).order('code')
+    setAccounts(accData || [])
+    const { count } = await supabase.from('payments').select('*', { count: 'exact', head: true })
+    const num = ((count || 0) + 1).toString().padStart(4, '0')
+    setPaymentForm({
+      receipt_number: 'REC-' + num,
+      amount: invData ? (invData.total_amount - (invData.paid_amount || 0)).toFixed(3) : (contract.total_amount || 0).toFixed(3),
+      payment_date: new Date().toISOString().split('T')[0],
+      payment_method: 'cash',
+      notes: '',
+    })
+    setPaymentModalOpen(true)
+  }
+
+  async function openContractModal(contract: RentalContract) {
+    setSelectedContractDetails(contract)
+    setContractModalOpen(true)
+    const { data: invData } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('rental_contract_id', contract.id)
+      .order('created_at', { ascending: false })
+      .maybeSingle()
+    setContractInvoice(invData)
+    const { data: payData } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('rental_contract_id', contract.id)
+      .order('payment_date', { ascending: false })
+    setContractPayments(payData || [])
+  }
+
+  async function handlePaymentSubmit() {
+    if (!paymentForm.amount || parseFloat(paymentForm.amount) <= 0 || !selectedContract) {
+      alert(isRTL ? 'يرجى إدخال مبلغ صحيح' : 'Please enter a valid amount')
+      return
+    }
+    setPaymentLoading(true)
+    try {
+      const amount = parseFloat(paymentForm.amount)
+      const { data: payment, error: paymentError } = await supabase.from('payments').insert([{
+        receipt_number: paymentForm.receipt_number,
+        customer_id: selectedContract.customer_id,
+        invoice_id: invoice?.id || null,
+        rental_contract_id: selectedContract.id,
+        amount: amount,
+        payment_method: paymentForm.payment_method,
+        payment_date: paymentForm.payment_date,
+        notes: paymentForm.notes,
+        status: 'completed',
+        payment_type: 'receipt',
+        payment_type: 'receipt',
+      }]).select().single()
+      if (paymentError) throw paymentError
+
+      if (invoice) {
+        const newPaid = (invoice.paid_amount || 0) + amount
+        const newStatus = newPaid >= invoice.total_amount ? 'paid' : 'pending'
+        await supabase.from('invoices').update({ paid_amount: newPaid, status: newStatus }).eq('id', invoice.id)
+      }
+
+      const { data: revenueAccounts } = await supabase.from('accounts').select('id, code, name_ar, name_en').eq('type', 'revenue').order('code').limit(1)
+      const cashAccount = accounts.find((a: any) => a.code.startsWith('11') || a.name_en?.toLowerCase().includes('cash')) || accounts[0]
+      const revenueAccount = revenueAccounts?.[0]
+
+      if (cashAccount && revenueAccount) {
+        const entryNumber = 'JE-' + Date.now()
+        const { data: journalEntry } = await supabase.from('journal_entries').insert([{
+          entry_number: entryNumber,
+          date: paymentForm.payment_date,
+          description: isRTL ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + selectedContract.contract_number : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + selectedContract.contract_number,
+          status: 'posted',
+          total_debit: amount,
+          total_credit: amount,
+        }]).select().single()
+
+        if (journalEntry) {
+          await supabase.from('journal_lines').insert([
+            { journal_entry_id: journalEntry.id, account_id: cashAccount.id, debit: amount, credit: 0, description: isRTL ? 'نقدية' : 'Cash' },
+            { journal_entry_id: journalEntry.id, account_id: revenueAccount.id, debit: 0, credit: amount, description: isRTL ? 'إيرادات' : 'Revenue' },
+          ])
+        }
+      }
+
+      if (invoice && (invoice.paid_amount || 0) + amount >= invoice.total_amount) {
+        await supabase.from('rental_contracts').update({ status: 'completed' }).eq('id', selectedContract.id)
+      }
+
+      setPaymentModalOpen(false)
+      setPaymentForm({ amount: '', payment_date: new Date().toISOString().split('T')[0], payment_method: 'cash', notes: '', receipt_number: '' })
+      await fetchContracts()
+      alert(isRTL ? 'تم تسجيل الدفعة بنجاح' : 'Payment recorded successfully')
+    } catch (err: any) {
+      console.error('Payment error:', err)
+      alert(err.message || (isRTL ? 'خطأ في تسجيل الدفعة' : 'Error recording payment'))
+    } finally {
+      setPaymentLoading(false)
+    }
+  }
+
+  const filtered = contracts.filter(c => {
+    const matchesSearch = (c.contract_number || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.customers?.full_name || '').toLowerCase().includes(search.toLowerCase()) ||
+      (c.car?.plate_number || '').toLowerCase().includes(search.toLowerCase())
+    return matchesSearch
+  })
+
+  const statusOptions = [
+    { value: 'all', label: isRTL ? 'الكل' : 'All', color: 'bg-slate-100 text-slate-700' },
+    { value: 'active', label: isRTL ? 'نشط' : 'Active', color: 'bg-emerald-100 text-emerald-700' },
+    { value: 'pending', label: isRTL ? 'معلق' : 'Pending', color: 'bg-amber-100 text-amber-700' },
+    { value: 'completed', label: isRTL ? 'مكتمل' : 'Completed', color: 'bg-blue-100 text-blue-700' },
+    { value: 'cancelled', label: isRTL ? 'ملغي' : 'Cancelled', color: 'bg-red-100 text-red-700' },
+  ]
+
+  const remainingAmount = invoice ? (invoice.total_amount - (invoice.paid_amount || 0)) : (selectedContract?.total_amount || 0)
+
+  if (!mounted) return null
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        <header className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900 dark:text-white">{t.rentalAgreements}</h1>
+            <p className="text-slate-500 dark:text-slate-400 mt-1">{contracts.length} {t.allAgreements}</p>
+          </div>
+          <Button asChild className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-lg shadow-cyan-500/25">
+            <Link href="/rentals/new"><Plus className="w-5 h-5 ml-2 mr-2" />{t.newRental}</Link>
+          </Button>
+        </header>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700">
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="flex-1 relative">
+              <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+              <Input placeholder={isRTL ? 'بحث برقم العقد، العميل، أو السيارة...' : 'Search by contract, customer, or car...'} value={search} onChange={(e) => setSearch(e.target.value)} className="pr-10 bg-slate-50 dark:bg-slate-700" />
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {statusOptions.map((status) => (
+                <button key={status.value} onClick={() => setStatusFilter(status.value)} className={'px-4 py-2 rounded-lg text-sm font-medium transition-all ' + (statusFilter === status.value ? status.color + ' ring-2 ring-offset-1 ring-slate-300' : 'bg-slate-100 text-slate-500 hover:bg-slate-200')}>{status.label}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center h-64"><div className="animate-spin w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full"></div></div>
+        ) : (
+          <div className="grid gap-4">
+            {filtered.map((contract) => (
+              <div key={contract.id} className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:border-cyan-500/50 transition-colors">
+                <div onClick={() => openContractModal(contract)} className="flex items-center gap-4 flex-1 cursor-pointer">
+                  <div className="w-12 h-12 rounded-xl bg-cyan-50 dark:bg-cyan-900/20 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0"><FileText className="w-6 h-6" /></div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 dark:text-white">{contract.contract_number}</h3>
+                    <p className="text-sm text-slate-500">{contract.customers?.full_name}</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-8 flex-1 md:justify-items-center">
+                  <div><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.startDate}</p><p className="font-medium text-slate-900 dark:text-slate-100">{contract.start_date}</p></div>
+                  <div><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.carDetails}</p><p className="font-medium text-slate-900 dark:text-slate-100">{contract.car?.make} {contract.car?.model}</p></div>
+                  <div className="hidden md:block text-center"><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.totalAmount}</p><p className="font-bold text-cyan-600 dark:text-cyan-400">{formatCurrency(contract.total_amount)}</p></div>
+                </div>
+
+                <div className="flex items-center justify-between md:justify-end gap-4 border-t md:border-t-0 pt-4 md:pt-0">
+                  <Badge className={getStatusColor(contract.status)}>{contract.status}</Badge>
+                  <div className="relative">
+                    <Button variant="ghost" size="icon" className="text-slate-400 hover:text-cyan-500" onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === contract.id ? null : contract.id) }}><MoreVertical className="w-5 h-5" /></Button>
+                    {openMenuId === contract.id && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setOpenMenuId(null)} />
+                        <div className={'absolute ' + (isRTL ? 'left-0' : 'right-0') + ' top-full mt-1 w-48 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 z-20 py-1 overflow-hidden'}>
+                          <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors text-right" style={{direction: isRTL ? 'rtl' : 'ltr'}} onClick={() => { setOpenMenuId(null); openContractModal(contract) }}><Eye className="w-4 h-4 text-cyan-500" /><span>{isRTL ? 'عرض التفاصيل' : 'View Details'}</span></button>
+                          <Link href={'/rentals/' + contract.id + '/edit'} className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors" onClick={() => setOpenMenuId(null)}><Pencil className="w-4 h-4 text-amber-500" /><span>{isRTL ? 'تعديل' : 'Edit'}</span></Link>
+                          <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors text-right" style={{direction: isRTL ? 'rtl' : 'ltr'}} onClick={() => handlePayment(contract)}><CreditCard className="w-4 h-4 text-emerald-500" /><span>{isRTL ? 'تسجيل دفعة' : 'Record Payment'}</span></button>
+                          <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors text-right" style={{direction: isRTL ? 'rtl' : 'ltr'}} onClick={() => { setOpenMenuId(null); handlePrint(contract) }}><Printer className="w-4 h-4 text-blue-500" /><span>{isRTL ? 'طباعة' : 'Print'}</span></button>
+                          <div className="border-t border-slate-100 dark:border-slate-700 my-1" />
+                          <button className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-right" style={{direction: isRTL ? 'rtl' : 'ltr'}} onClick={() => { setOpenMenuId(null); setDeleteTarget(contract.id) }}><Trash2 className="w-4 h-4" /><span>{isRTL ? 'حذف' : 'Delete'}</span></button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && filtered.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-64 text-slate-500"><FileText className="w-16 h-16 mb-4 opacity-20" /><p>{t.noData}</p></div>
+        )}
+      </div>
+
+      {deleteTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-2xl border border-slate-200 dark:border-slate-700 max-w-sm w-full mx-4">
+            <div className="flex items-center gap-3 mb-4"><div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center"><Trash2 className="w-5 h-5 text-red-600" /></div><h3 className="text-lg font-bold text-slate-900 dark:text-white">{isRTL ? 'تأكيد الحذف' : 'Confirm Delete'}</h3></div>
+            <p className="text-slate-500 dark:text-slate-400 mb-6">{isRTL ? 'هل أنت متأكد من حذف هذا العقد؟ لا يمكن التراجع عن هذا الإجراء.' : 'Are you sure you want to delete this contract? This action cannot be undone.'}</p>
+            <div className="flex gap-3 justify-end"><Button variant="outline" onClick={() => setDeleteTarget(null)}>{isRTL ? 'إلغاء' : 'Cancel'}</Button><Button variant="destructive" onClick={handleDelete}>{isRTL ? 'حذف' : 'Delete'}</Button></div>
+          </div>
+        </div>
+      )}
+
+      {/* Contract Detail Modal */}
+      <Dialog open={contractModalOpen} onOpenChange={setContractModalOpen}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto" dir={isRTL ? 'rtl' : 'ltr'}>
+          <DialogHeader className="flex items-center justify-between flex-row">
+            <DialogTitle className="flex items-center gap-2 text-lg">
+              <FileText className="w-5 h-5 text-cyan-500" />
+              {isRTL ? 'تفاصيل العقد' : 'Contract Details'}
+              {selectedContractDetails && <span className="text-sm text-slate-400 font-normal">- {selectedContractDetails.contract_number}</span>}
+            </DialogTitle>
+            <Button variant="ghost" size="icon" onClick={() => setContractModalOpen(false)} className="shrink-0"><X className="w-4 h-4" /></Button>
+          </DialogHeader>
+
+          {selectedContractDetails && (
+            <div className="space-y-6 py-4">
+              <div className="flex items-center justify-between">
+                <Badge className={getStatusColor(selectedContractDetails.status)}>{selectedContractDetails.status}</Badge>
+                <div className="flex gap-2">
+                  <Button onClick={() => { setContractModalOpen(false); handlePayment(selectedContractDetails) }} className="bg-emerald-500 hover:bg-emerald-600 text-white" size="sm">
+                    <CreditCard className="w-4 h-4 mr-2" />{isRTL ? 'تسجيل دفعة' : 'Record Payment'}
+                  </Button>
+                  <Button onClick={() => { setContractModalOpen(false); handlePrint(selectedContractDetails) }} variant="outline" size="sm">
+                    <Printer className="w-4 h-4 mr-2" />{isRTL ? 'طباعة' : 'Print'}
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Card className="border-0 shadow-sm bg-slate-50">
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm text-slate-600"><User className="w-4 h-4" />{isRTL ? 'العميل' : 'Customer'}</CardTitle></CardHeader>
+                  <CardContent className="space-y-1 text-sm">
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'الاسم' : 'Name'}</span><span className="font-medium">{selectedContractDetails.customers?.full_name}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'الهاتف' : 'Phone'}</span><span className="font-medium">{selectedContractDetails.customers?.phone || '-'}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'البريد' : 'Email'}</span><span className="font-medium">{selectedContractDetails.customers?.email || '-'}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">CPR</span><span className="font-medium">{selectedContractDetails.customers?.cpr_number || '-'}</span></div>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-0 shadow-sm bg-slate-50">
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm text-slate-600"><Car className="w-4 h-4" />{isRTL ? 'السيارة' : 'Vehicle'}</CardTitle></CardHeader>
+                  <CardContent className="space-y-1 text-sm">
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'الماركة' : 'Make'}</span><span className="font-medium">{selectedContractDetails.car?.make} {selectedContractDetails.car?.model}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'السنة' : 'Year'}</span><span className="font-medium">{selectedContractDetails.car?.year || '-'}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'اللوحة' : 'Plate'}</span><span className="font-medium">{selectedContractDetails.car?.plate_number || '-'}</span></div>
+                    <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'اللون' : 'Color'}</span><span className="font-medium">{selectedContractDetails.car?.color || '-'}</span></div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card className="border-0 shadow-sm bg-slate-50">
+                <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm text-slate-600"><Calendar className="w-4 h-4" />{isRTL ? 'تفاصيل الحجز' : 'Booking Details'}</CardTitle></CardHeader>
+                <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div><p className="text-slate-500 text-xs">{isRTL ? 'من' : 'From'}</p><p className="font-medium">{selectedContractDetails.start_date}</p></div>
+                  <div><p className="text-slate-500 text-xs">{isRTL ? 'إلى' : 'To'}</p><p className="font-medium">{selectedContractDetails.end_date}</p></div>
+                  <div><p className="text-slate-500 text-xs">{isRTL ? 'الأيام' : 'Days'}</p><p className="font-medium">{selectedContractDetails.total_days}</p></div>
+                  <div><p className="text-slate-500 text-xs">{isRTL ? 'السعر اليومي' : 'Daily Rate'}</p><p className="font-medium">{formatCurrency(selectedContractDetails.daily_rate)}</p></div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-0 shadow-sm bg-slate-50">
+                <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm text-slate-600"><DollarSign className="w-4 h-4" />{isRTL ? 'المبالغ' : 'Financials'}</CardTitle></CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'المجموع الفرعي' : 'Subtotal'}</span><span className="font-medium">{formatCurrency(selectedContractDetails.subtotal)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'الضريبة' : 'VAT'}</span><span className="font-medium">{formatCurrency(selectedContractDetails.vat_amount)}</span></div>
+                  <div className="flex justify-between border-t pt-2"><span className="font-bold text-slate-700">{isRTL ? 'الإجمالي' : 'Total'}</span><span className="font-bold text-cyan-600 text-lg">{formatCurrency(selectedContractDetails.total_amount)}</span></div>
+                  {contractInvoice && (
+                    <>
+                      <div className="flex justify-between border-t pt-2"><span className="text-slate-500">{isRTL ? 'المدفوع' : 'Paid'}</span><span className="font-medium text-emerald-600">{formatCurrency(contractInvoice.paid_amount || 0)}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'المتبقي' : 'Remaining'}</span><span className="font-medium text-red-600">{formatCurrency((contractInvoice.total_amount || 0) - (contractInvoice.paid_amount || 0))}</span></div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+
+              {contractPayments.length > 0 && (
+                <Card className="border-0 shadow-sm bg-slate-50">
+                  <CardHeader className="pb-2"><CardTitle className="flex items-center gap-2 text-sm text-slate-600"><Receipt className="w-4 h-4" />{isRTL ? 'سجل الدفعات' : 'Payment History'}</CardTitle></CardHeader>
+                  <CardContent>
+                    <div className="space-y-2">
+                      {contractPayments.map((p: any) => (
+                        <div key={p.id} className="flex justify-between items-center p-2 bg-white rounded-lg text-sm">
+                          <div><span className="font-medium">{p.receipt_number}</span><span className="text-slate-400 mx-2">|</span><span className="text-slate-500">{p.payment_date}</span></div>
+                          <span className="font-bold text-emerald-600">{formatCurrency(p.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {selectedContractDetails.notes && (
+                <div className="p-3 bg-yellow-50 rounded-lg text-sm">
+                  <p className="text-slate-500 text-xs mb-1">{isRTL ? 'ملاحظات' : 'Notes'}</p>
+                  <p>{selectedContractDetails.notes}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={paymentModalOpen} onOpenChange={setPaymentModalOpen}>
+        <DialogContent className="max-w-lg" dir={isRTL ? 'rtl' : 'ltr'}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Receipt className="w-5 h-5 text-emerald-500" />{isRTL ? 'تسجيل دفعة' : 'Record Payment'}{selectedContract && <span className="text-sm text-slate-400 font-normal">- {selectedContract.contract_number}</span>}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            {invoice && (
+              <div className="p-3 bg-slate-50 rounded-lg text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'الفاتورة:' : 'Invoice:'}</span><span className="font-medium">{invoice.invoice_number}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'الإجمالي:' : 'Total:'}</span><span className="font-medium">{formatCurrency(invoice.total_amount)}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">{isRTL ? 'المتبقي:' : 'Remaining:'}</span><span className="font-medium text-red-600">{formatCurrency(remainingAmount)}</span></div>
+              </div>
+            )}
+            <div className="space-y-2"><Label>{isRTL ? 'رقم الإيصال' : 'Receipt Number'}</Label><Input value={paymentForm.receipt_number} onChange={e => setPaymentForm({...paymentForm, receipt_number: e.target.value})} className="font-mono" /></div>
+            <div className="space-y-2"><Label>{isRTL ? 'المبلغ (د.ب)' : 'Amount (BHD)'} *</Label><Input type="number" step="0.001" value={paymentForm.amount} onChange={e => setPaymentForm({...paymentForm, amount: e.target.value})} className="text-xl font-bold text-center" placeholder="0.000" />{remainingAmount > 0 && (<button type="button" onClick={() => setPaymentForm({...paymentForm, amount: remainingAmount.toFixed(3)})} className="text-xs text-emerald-600 hover:underline">{isRTL ? 'دفع المتبقي كاملاً: ' + remainingAmount.toFixed(3) + ' د.ب' : 'Pay full remaining: ' + remainingAmount.toFixed(3) + ' BHD'}</button>)}</div>
+            <div className="space-y-2"><Label>{isRTL ? 'تاريخ الدفع' : 'Payment Date'}</Label><Input type="date" value={paymentForm.payment_date} onChange={e => setPaymentForm({...paymentForm, payment_date: e.target.value})} /></div>
+            <div className="space-y-2"><Label>{isRTL ? 'طريقة الدفع' : 'Payment Method'}</Label><Select value={paymentForm.payment_method} onValueChange={v => setPaymentForm({...paymentForm, payment_method: v})}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="cash">{isRTL ? 'نقداً' : 'Cash'}</SelectItem><SelectItem value="card">{isRTL ? 'بطاقة' : 'Card'}</SelectItem><SelectItem value="transfer">{isRTL ? 'تحويل بنكي' : 'Bank Transfer'}</SelectItem><SelectItem value="cheque">{isRTL ? 'شيك' : 'Cheque'}</SelectItem></SelectContent></Select></div>
+            <div className="space-y-2"><Label>{isRTL ? 'ملاحظات' : 'Notes'}</Label><Input value={paymentForm.notes} onChange={e => setPaymentForm({...paymentForm, notes: e.target.value})} placeholder={isRTL ? 'ملاحظات اختيارية' : 'Optional notes'} /></div>
+          </div>
+          <DialogFooter className="gap-2"><Button variant="outline" onClick={() => setPaymentModalOpen(false)}>{isRTL ? 'إلغاء' : 'Cancel'}</Button><Button onClick={handlePaymentSubmit} disabled={paymentLoading} className="bg-emerald-500 hover:bg-emerald-600 text-white">{paymentLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Save className="w-4 h-4 mr-2" />}{isRTL ? 'حفظ الدفعة' : 'Save Payment'}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </DashboardLayout>
+  )
+}
+
+export default function RentalsPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <RentalsPageContent />
+    </Suspense>
+  )
+}

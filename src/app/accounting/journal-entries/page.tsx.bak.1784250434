@@ -1,0 +1,1041 @@
+"use client"
+export const dynamic = "force-dynamic"
+import { Suspense, useState, useEffect, useRef, useCallback } from "react"
+import DashboardLayout from "@/components/DashboardLayout"
+import { useLanguage } from "@/lib/LanguageContext"
+import { supabase, JournalEntry, JournalLine, Account, Car, Customer, Supplier, RentalContract, generateJournalNumber } from "@/lib/supabase"
+import { formatCurrency, formatDate } from "@/lib/utils"
+import {
+  BookOpen, Plus, Save, Trash2, RotateCcw, CheckCircle, XCircle,
+  ArrowUpDown, FileText, Search, Eye, Pencil, Printer, Filter,
+  X, Paperclip, Upload, File, Image, Repeat, Copy
+} from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
+
+const COST_CENTERS = [
+  { key: 'manama', labelAr: 'فرع المنامة', labelEn: 'Branch Manama' },
+  { key: 'muharraq', labelAr: 'فرع المحرق', labelEn: 'Branch Muharraq' },
+  { key: 'airport', labelAr: 'فرع المطار', labelEn: 'Branch Airport' },
+  { key: 'riffa', labelAr: 'فرع الرفاع', labelEn: 'Branch Riffa' },
+  { key: 'corporate', labelAr: 'التأجير الشركات', labelEn: 'Corporate Rentals' },
+]
+
+const BRANCHES = ['Manama', 'Airport', 'Muharraq', 'Riffa']
+
+const JOURNAL_TEMPLATES = [
+  { id: 'rental_income', nameAr: 'إيراد تأجير', nameEn: 'Rental Income' },
+  { id: 'fuel_expense', nameAr: 'مصروف وقود', nameEn: 'Fuel Expense' },
+  { id: 'maintenance', nameAr: 'صيانة مركبة', nameEn: 'Vehicle Maintenance' },
+  { id: 'insurance', nameAr: 'تأمين مركبة', nameEn: 'Vehicle Insurance' },
+]
+
+type JournalLineForm = {
+  id: string
+  account_id: string
+  lineDescription: string
+  vehicle_id: string
+  customer_id: string
+  supplier_id: string
+  driver_id: string
+  rental_contract_id: string
+  cost_center: string
+  branch: string
+  debit: string
+  credit: string
+  line_order: number
+}
+
+type AttachmentFile = {
+  id?: string
+  file: File | null
+  name: string
+  url?: string
+  type: string
+}
+
+function JournalEntriesPageContent() {
+  const { t, isRTL } = useLanguage()
+  const [mounted, setMounted] = useState(false)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [cars, setCars] = useState<Car[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [drivers, setDrivers] = useState<any[]>([])
+  const [rentalContracts, setRentalContracts] = useState<RentalContract[]>([])
+  const [entries, setEntries] = useState<JournalEntry[]>([])
+  const [entryLines, setEntryLines] = useState<JournalLine[]>([])
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [showForm, setShowForm] = useState(false)
+  const [editingEntry, setEditingEntry] = useState<JournalEntry | null>(null)
+  const [viewingEntry, setViewingEntry] = useState<JournalEntry | null>(null)
+  const [showFilters, setShowFilters] = useState(false)
+  const [attachments, setAttachments] = useState<AttachmentFile[]>([])
+  const [showTemplates, setShowTemplates] = useState(false)
+
+  const [search, setSearch] = useState('')
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
+  const [filterStatus, setFilterStatus] = useState('all')
+
+  const [journalNumber, setJournalNumber] = useState('')
+  const [entryDate, setEntryDate] = useState(new Date().toISOString().split('T')[0])
+  const [referenceNumber, setReferenceNumber] = useState('')
+  const [journalDescription, setJournalDescription] = useState('')
+
+  const [lines, setLines] = useState<JournalLineForm[]>([
+    { id: crypto.randomUUID(), account_id: '', lineDescription: '', vehicle_id: '', customer_id: '', supplier_id: '', driver_id: '', rental_contract_id: '', cost_center: '', branch: '', debit: '', credit: '', line_order: 1 },
+    { id: crypto.randomUUID(), account_id: '', lineDescription: '', vehicle_id: '', customer_id: '', supplier_id: '', driver_id: '', rental_contract_id: '', cost_center: '', branch: '', debit: '', credit: '', line_order: 2 },
+  ])
+
+  const lineRefs = useRef<(HTMLTableRowElement | null)[]>([])
+
+  useEffect(() => {
+    setMounted(true)
+    fetchData()
+  }, [])
+
+  async function fetchData() {
+    setLoading(true)
+    try {
+      const [{ data: accData }, { data: carData }, { data: custData }, { data: supData }, { data: drvData }, { data: rentData }, { data: entriesData }] = await Promise.all([
+        supabase.from('accounts').select('*').eq('is_active', true).order('code'),
+        supabase.from('cars').select('id, make, model, plate_number').order('plate_number'),
+        supabase.from('customers').select('id, full_name').order('full_name'),
+        supabase.from('suppliers').select('id, name').order('name'),
+        supabase.from('drivers').select('id, full_name').order('full_name'),
+        supabase.from('rental_contracts').select('id, contract_number').order('created_at', { ascending: false }).limit(50),
+        supabase.from('journal_entries').select('*').order('entry_date', { ascending: false }).limit(50),
+      ])
+
+      if (accData) setAccounts(accData as Account[])
+      if (carData) setCars(carData as Car[])
+      if (custData) setCustomers(custData as Customer[])
+      if (supData) setSuppliers(supData as Supplier[])
+      if (drvData) setDrivers(drvData)
+      if (rentData) setRentalContracts(rentData as RentalContract[])
+      if (entriesData) setEntries(entriesData as any)
+    } catch (error) {
+      console.error('Error fetching data:', error)
+    }
+    setLoading(false)
+  }
+
+  async function fetchEntryLines(entryId: string) {
+    const { data } = await supabase
+      .from('journal_lines')
+      .select('*, accounts(code, name, name_ar, name_en, type), cars(make, model, plate_number), customers(full_name), suppliers(name), drivers(full_name), rental_contracts(contract_number)')
+      .eq('journal_entry_id', entryId)
+      .order('line_order')
+    if (data) setEntryLines(data as any)
+  }
+
+  async function fetchAttachments(entryId: string) {
+    const { data } = await supabase
+      .from('journal_attachments')
+      .select('*')
+      .eq('journal_entry_id', entryId)
+    if (data) {
+      setAttachments(data.map((a: any) => ({
+        id: a.id,
+        file: null,
+        name: a.file_name,
+        url: a.file_url,
+        type: a.file_type,
+      })))
+    }
+  }
+
+  function addLine() {
+    setLines([...lines, {
+      id: crypto.randomUUID(),
+      account_id: '',
+      lineDescription: '',
+      vehicle_id: '',
+      customer_id: '',
+      supplier_id: '',
+      driver_id: '',
+      rental_contract_id: '',
+      cost_center: '',
+      branch: '',
+      debit: '',
+      credit: '',
+      line_order: lines.length + 1,
+    }])
+  }
+
+  function removeLine(index: number) {
+    if (lines.length <= 2) {
+      alert(isRTL ? 'يجب أن يكون هناك بندان على الأقل' : 'At least 2 lines required')
+      return
+    }
+    setLines(lines.filter((_, i) => i !== index).map((l, i) => ({ ...l, line_order: i + 1 })))
+  }
+
+  function updateLine(index: number, field: keyof JournalLineForm, value: string) {
+    const newLines = [...lines]
+    newLines[index] = { ...newLines[index], [field]: value }
+    setLines(newLines)
+  }
+
+  const totalDebit = lines.reduce((s, l) => s + (parseFloat(l.debit) || 0), 0)
+  const totalCredit = lines.reduce((s, l) => s + (parseFloat(l.credit) || 0), 0)
+  const difference = totalDebit - totalCredit
+  const isBalanced = Math.abs(difference) < 0.001
+
+  function autoBalance() {
+    const lastLine = lines[lines.length - 1]
+    if (!lastLine.account_id) {
+      alert(isRTL ? 'اختر حساب السطر الأخير أولاً' : 'Select account for last line first')
+      return
+    }
+    const newLines = [...lines]
+    if (totalDebit > totalCredit) {
+      newLines[newLines.length - 1].credit = difference.toFixed(3)
+      newLines[newLines.length - 1].debit = ''
+    } else if (totalCredit > totalDebit) {
+      newLines[newLines.length - 1].debit = Math.abs(difference).toFixed(3)
+      newLines[newLines.length - 1].credit = ''
+    }
+    setLines(newLines)
+  }
+
+  function applyTemplate(templateId: string) {
+    const template = JOURNAL_TEMPLATES.find(t => t.id === templateId)
+    if (!template) return
+    setJournalDescription(isRTL ? template.nameAr : template.nameEn)
+    setShowTemplates(false)
+  }
+
+  function clearForm() {
+    setJournalNumber(generateJournalNumber())
+    setEntryDate(new Date().toISOString().split('T')[0])
+    setReferenceNumber('')
+    setJournalDescription('')
+    setLines([
+      { id: crypto.randomUUID(), account_id: '', lineDescription: '', vehicle_id: '', customer_id: '', supplier_id: '', driver_id: '', rental_contract_id: '', cost_center: '', branch: '', debit: '', credit: '', line_order: 1 },
+      { id: crypto.randomUUID(), account_id: '', lineDescription: '', vehicle_id: '', customer_id: '', supplier_id: '', driver_id: '', rental_contract_id: '', cost_center: '', branch: '', debit: '', credit: '', line_order: 2 },
+    ])
+    setAttachments([])
+    setEditingEntry(null)
+  }
+
+  async function uploadAttachments(entryId: string) {
+    const filesToUpload = attachments.filter((a: AttachmentFile) => a.file && !a.id)
+    for (const att of filesToUpload) {
+      const fileExt = att.file!.name.split('.').pop()
+      const fileName = entryId + '/' + Date.now() + '.' + fileExt
+      const { error: uploadError } = await supabase.storage
+        .from('journal-attachments')
+        .upload(fileName, att.file!)
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError)
+        continue
+      }
+
+      const { data: urlData } = supabase.storage.from('journal-attachments').getPublicUrl(fileName)
+
+      await supabase.from('journal_attachments').insert({
+        journal_entry_id: entryId,
+        file_name: att.file!.name,
+        file_url: urlData.publicUrl,
+        file_type: att.file!.type,
+      })
+    }
+  }
+
+  async function handleSave(saveAndNew: boolean = false) {
+    const desc = journalDescription.trim() || lines.find((l: JournalLineForm) => l.lineDescription.trim())?.lineDescription || ''
+    if (!desc) {
+      alert(isRTL ? 'أدخل وصف القيد' : 'Enter journal description')
+      return
+    }
+    if (!isBalanced) {
+      alert(isRTL ? 'القيد غير متوازن! الفرق: ' + formatCurrency(Math.abs(difference)) : 'Journal is not balanced! Difference: ' + formatCurrency(Math.abs(difference)))
+      return
+    }
+    const activeLines = lines.filter((l: JournalLineForm) => l.account_id && (parseFloat(l.debit) > 0 || parseFloat(l.credit) > 0))
+    if (activeLines.length < 2) {
+      alert(isRTL ? 'يجب إدخال بندين على الأقل' : 'At least 2 lines required')
+      return
+    }
+
+    setSaving(true)
+    try {
+      const jn = journalNumber || generateJournalNumber()
+      setJournalNumber(jn)
+
+      let entryId: string
+
+      if (editingEntry) {
+        await supabase.from('journal_entries').update({
+          entry_date: entryDate,
+          reference_number: referenceNumber || null,
+          description: desc,
+          total_debit: totalDebit,
+          total_credit: totalCredit,
+        }).eq('id', editingEntry.id)
+
+        await supabase.from('journal_lines').delete().eq('journal_entry_id', editingEntry.id)
+        entryId = editingEntry.id
+      } else {
+        const { data: entryData, error: entryError } = await supabase.from('journal_entries').insert([{
+          journal_number: jn,
+          entry_date: entryDate,
+          reference_number: referenceNumber || null,
+          description: desc,
+          total_debit: totalDebit,
+          total_credit: totalCredit,
+          is_balanced: true,
+          status: 'posted',
+        }]).select().single()
+
+        if (entryError) throw entryError
+        entryId = entryData.id
+      }
+
+      const linesToInsert = activeLines.map((l: JournalLineForm) => ({
+        journal_entry_id: entryId,
+        account_id: l.account_id,
+        description: l.lineDescription || null,
+        vehicle_id: l.vehicle_id || null,
+        customer_id: l.customer_id || null,
+        supplier_id: l.supplier_id || null,
+        driver_id: l.driver_id || null,
+        rental_contract_id: l.rental_contract_id || null,
+        cost_center: l.cost_center || null,
+        branch: l.branch || null,
+        debit: parseFloat(l.debit) || 0,
+        credit: parseFloat(l.credit) || 0,
+        line_order: l.line_order,
+      }))
+      await supabase.from('journal_lines').insert(linesToInsert)
+
+      await uploadAttachments(entryId)
+
+      if (saveAndNew) {
+        clearForm()
+      } else {
+        clearForm()
+        setShowForm(false)
+      }
+      fetchData()
+      alert(isRTL ? 'تم حفظ القيد بنجاح' : 'Journal entry saved successfully')
+    } catch (error: any) {
+      alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
+    }
+    setSaving(false)
+  }
+
+  async function handleReverse(entry: JournalEntry) {
+    if (!confirm(isRTL ? 'هل أنت متأكد من عكس هذا القيد؟' : 'Are you sure you want to reverse this entry?')) return
+    try {
+      const reversedNumber = entry.journal_number + '-R'
+      const { data: newEntry, error } = await supabase.from('journal_entries').insert([{
+        journal_number: reversedNumber,
+        entry_date: new Date().toISOString().split('T')[0],
+        reference_number: 'REV-' + entry.journal_number,
+        description: (isRTL ? 'عكس: ' : 'Reverse: ') + (entry.description || ''),
+        total_debit: entry.total_credit,
+        total_credit: entry.total_debit,
+        is_balanced: true,
+        status: 'reversed',
+        reversed_from_id: entry.id,
+      }]).select().single()
+
+      if (error) throw error
+
+      const { data: originalLines } = await supabase
+        .from('journal_lines')
+        .select('*')
+        .eq('journal_entry_id', entry.id)
+
+      if (originalLines) {
+        const reversedLines = originalLines.map((l: any) => ({
+          journal_entry_id: newEntry.id,
+          account_id: l.account_id,
+          description: l.description,
+          vehicle_id: l.vehicle_id,
+          customer_id: l.customer_id,
+          supplier_id: l.supplier_id,
+          driver_id: l.driver_id,
+          rental_contract_id: l.rental_contract_id,
+          cost_center: l.cost_center,
+          branch: l.branch,
+          debit: l.credit,
+          credit: l.debit,
+          line_order: l.line_order,
+        }))
+        await supabase.from('journal_lines').insert(reversedLines)
+      }
+
+      await supabase.from('journal_entries').update({ status: 'reversed', reversed_by_id: newEntry.id }).eq('id', entry.id)
+      fetchData()
+      alert(isRTL ? 'تم عكس القيد بنجاح' : 'Entry reversed successfully')
+    } catch (error: any) {
+      alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
+    }
+  }
+
+  async function handleDeleteEntry(id: string) {
+    if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذا القيد؟' : 'Are you sure you want to delete this entry?')) return
+    await supabase.from('journal_entries').delete().eq('id', id)
+    fetchData()
+    setViewingEntry(null)
+  }
+
+  function handleView(entry: JournalEntry) {
+    setViewingEntry(entry)
+    fetchEntryLines(entry.id)
+    fetchAttachments(entry.id)
+  }
+
+  async function handleEdit(entry: JournalEntry) {
+    setEditingEntry(entry)
+    setJournalNumber(entry.journal_number)
+    setEntryDate(entry.entry_date)
+    setReferenceNumber(entry.reference_number || '')
+    setJournalDescription(entry.description || '')
+
+    const { data } = await supabase
+      .from('journal_lines')
+      .select('*')
+      .eq('journal_entry_id', entry.id)
+      .order('line_order')
+
+    if (data && data.length > 0) {
+      setLines(data.map((l: any) => ({
+        id: crypto.randomUUID(),
+        account_id: l.account_id || '',
+        lineDescription: l.description || '',
+        vehicle_id: l.vehicle_id || '',
+        customer_id: l.customer_id || '',
+        supplier_id: l.supplier_id || '',
+        driver_id: l.driver_id || '',
+        rental_contract_id: l.rental_contract_id || '',
+        cost_center: l.cost_center || '',
+        branch: l.branch || '',
+        debit: l.debit ? l.debit.toString() : '',
+        credit: l.credit ? l.credit.toString() : '',
+        line_order: l.line_order,
+      })))
+    } else {
+      setLines([
+        { id: crypto.randomUUID(), account_id: '', lineDescription: '', vehicle_id: '', customer_id: '', supplier_id: '', driver_id: '', rental_contract_id: '', cost_center: '', branch: '', debit: '', credit: '', line_order: 1 },
+        { id: crypto.randomUUID(), account_id: '', lineDescription: '', vehicle_id: '', customer_id: '', supplier_id: '', driver_id: '', rental_contract_id: '', cost_center: '', branch: '', debit: '', credit: '', line_order: 2 },
+      ])
+    }
+    fetchAttachments(entry.id)
+    setShowForm(true)
+    setViewingEntry(null)
+  }
+
+  function handlePrint(entry: JournalEntry) {
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) return
+
+    const entryLinesForPrint = entryLines.filter((l: JournalLine) => l.journal_entry_id === entry.id)
+    const totalDr = entryLinesForPrint.reduce((s, l) => s + (parseFloat(l.debit as any) || 0), 0)
+    const totalCr = entryLinesForPrint.reduce((s, l) => s + (parseFloat(l.credit as any) || 0), 0)
+
+    const html = `
+      <!DOCTYPE html>
+      <html dir="` + (isRTL ? 'rtl' : 'ltr') + `">
+      <head>
+        <meta charset="UTF-8">
+        <title>` + (isRTL ? 'قيد يومي' : 'Journal Entry') + ` - ` + entry.journal_number + `</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; }
+          .header { text-align: center; border-bottom: 2px solid #333; padding-bottom: 20px; margin-bottom: 30px; }
+          .header h1 { margin: 0; font-size: 24px; }
+          .header p { margin: 5px 0; color: #666; }
+          .info { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
+          .info-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #eee; }
+          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+          th, td { padding: 10px; text-align: ` + (isRTL ? 'right' : 'left') + `; border-bottom: 1px solid #ddd; }
+          th { background: #f5f5f5; font-weight: bold; }
+          .total { font-weight: bold; background: #f9f9f9; }
+          .balanced { color: green; font-weight: bold; }
+          .footer { margin-top: 40px; text-align: center; color: #999; font-size: 12px; }
+          @media print { .no-print { display: none; } body { padding: 20px; } }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h1>` + (isRTL ? 'قيد يومي' : 'Journal Entry') + `</h1>
+          <p>ERP Horizon - Car Rental</p>
+        </div>
+        <div class="info">
+          <div class="info-item"><span>` + (isRTL ? 'رقم القيد:' : 'Journal No:') + `</span><strong>` + entry.journal_number + `</strong></div>
+          <div class="info-item"><span>` + (isRTL ? 'التاريخ:' : 'Date:') + `</span><strong>` + entry.entry_date + `</strong></div>
+          <div class="info-item"><span>` + (isRTL ? 'المرجع:' : 'Reference:') + `</span><strong>` + (entry.reference_number || '-') + `</strong></div>
+          <div class="info-item"><span>` + (isRTL ? 'الحالة:' : 'Status:') + `</span><strong>` + entry.status + `</strong></div>
+        </div>
+        <p><strong>` + (isRTL ? 'الوصف:' : 'Description:') + `</strong> ` + (entry.description || '-') + `</p>
+        <table>
+          <thead>
+            <tr>
+              <th>` + (isRTL ? 'الحساب' : 'Account') + `</th>
+              <th>` + (isRTL ? 'الوصف' : 'Description') + `</th>
+              <th>` + (isRTL ? 'مدين' : 'Debit') + `</th>
+              <th>` + (isRTL ? 'دائن' : 'Credit') + `</th>
+            </tr>
+          </thead>
+          <tbody>
+            ` + entryLinesForPrint.map((l: JournalLine) => {
+              const acc = (l as any).accounts
+              return `<tr>
+                <td>` + (acc ? acc.code + ' - ' + acc.name : '-') + `</td>
+                <td>` + (l.description || '-') + `</td>
+                <td>` + (l.debit > 0 ? (parseFloat(l.debit as any) || 0).toFixed(3) : '') + `</td>
+                <td>` + (l.credit > 0 ? (parseFloat(l.credit as any) || 0).toFixed(3) : '') + `</td>
+              </tr>`
+            }).join('') + `
+            <tr class="total">
+              <td colspan="2">` + (isRTL ? 'الإجمالي' : 'Total') + `</td>
+              <td>` + totalDr.toFixed(3) + `</td>
+              <td>` + totalCr.toFixed(3) + `</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="balanced">` + (entry.is_balanced ? (isRTL ? '✓ القيد متوازن' : '✓ BALANCED') : (isRTL ? '✗ غير متوازن' : '✗ UNBALANCED')) + `</p>
+        <div class="footer">
+          <p>` + (isRTL ? 'تم الطباعة بواسطة ERP Horizon' : 'Printed by ERP Horizon') + `</p>
+          <p>` + new Date().toLocaleString() + `</p>
+        </div>
+        <div class="no-print" style="text-align: center; margin-top: 30px;">
+          <button onclick="window.print()" style="padding: 10px 30px; font-size: 16px; cursor: pointer;">` + (isRTL ? 'طباعة' : 'Print') + `</button>
+        </div>
+      </body>
+      </html>
+    `
+    printWindow.document.write(html)
+    printWindow.document.close()
+  }
+
+  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files) return
+    const newAttachments: AttachmentFile[] = Array.from(files).map((file: File) => ({
+      file,
+      name: file.name,
+      type: file.type,
+    }))
+    setAttachments([...attachments, ...newAttachments])
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments(attachments.filter((_, i) => i !== index))
+  }
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent, lineIndex: number, field: string) => {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      const fieldOrder = ['account_id', 'lineDescription', 'vehicle_id', 'customer_id', 'supplier_id', 'driver_id', 'rental_contract_id', 'cost_center', 'branch', 'debit', 'credit']
+      const currentFieldIndex = fieldOrder.indexOf(field)
+      
+      if (field === 'credit') {
+        if (lineIndex + 1 >= lines.length) {
+          addLine()
+        }
+        setTimeout(() => {
+          const nextLineRef = lineRefs.current[lineIndex + 1]
+          if (nextLineRef) {
+            const select = nextLineRef.querySelector('select') as HTMLSelectElement
+            if (select) select.focus()
+          }
+        }, 50)
+      } else {
+        const nextField = fieldOrder[currentFieldIndex + 1]
+        const currentLineRef = lineRefs.current[lineIndex]
+        if (currentLineRef) {
+          const nextEl = currentLineRef.querySelector(`[data-field="${nextField}"]`) as HTMLElement
+          if (nextEl) nextEl.focus()
+        }
+      }
+    }
+  }, [lines])
+
+  const filteredEntries = entries.filter((e: JournalEntry) => {
+    const matchesSearch = !search ||
+      e.journal_number.toLowerCase().includes(search.toLowerCase()) ||
+      (e.reference_number || '').toLowerCase().includes(search.toLowerCase()) ||
+      (e.description || '').toLowerCase().includes(search.toLowerCase())
+    const matchesDateFrom = !filterDateFrom || e.entry_date >= filterDateFrom
+    const matchesDateTo = !filterDateTo || e.entry_date <= filterDateTo
+    const matchesStatus = filterStatus === 'all' || e.status === filterStatus
+    return matchesSearch && matchesDateFrom && matchesDateTo && matchesStatus
+  })
+
+  if (!mounted) return null
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-3">
+              <BookOpen className="w-7 h-7 text-indigo-500" />
+              {isRTL ? 'القيود اليومية' : 'Journal Entries'}
+            </h1>
+            <p className="text-slate-500 dark:text-slate-400 mt-1">
+              {isRTL ? 'تسجيل ومراجعة القيود المحاسبية' : 'Record and review accounting journal entries'}
+            </p>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => setShowTemplates(!showTemplates)} className="rounded-xl gap-2">
+              <Copy className="w-4 h-4" /> {isRTL ? 'قوالب' : 'Templates'}
+            </Button>
+            <Button onClick={() => { clearForm(); setShowForm(!showForm); }} className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl gap-2">
+              <Plus className="w-4 h-4" />
+              {showForm ? (isRTL ? 'إغلاق' : 'Close') : (isRTL ? 'قيد جديد' : 'New Entry')}
+            </Button>
+          </div>
+        </div>
+
+        {showTemplates && (
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-4">
+            <h4 className="font-bold text-slate-900 dark:text-white mb-3">{isRTL ? 'قوالب القيود' : 'Journal Templates'}</h4>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {JOURNAL_TEMPLATES.map(t => (
+                <button key={t.id} onClick={() => applyTemplate(t.id)} className="p-3 text-left rounded-xl border border-slate-200 dark:border-slate-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors">
+                  <p className="font-semibold text-slate-900 dark:text-white">{isRTL ? t.nameAr : t.nameEn}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {showForm && (
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <div className="p-6 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/30">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-bold text-slate-900 dark:text-white">
+                  {editingEntry ? (isRTL ? 'تعديل قيد' : 'Edit Journal Entry') : (isRTL ? 'قيد جديد' : 'New Journal Entry')}
+                </h3>
+                <Button variant="ghost" size="sm" onClick={() => setShowForm(false)} className="h-8 w-8 p-0">
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block"># {isRTL ? 'رقم القيد' : 'Journal No.'}</label>
+                  <Input value={journalNumber || generateJournalNumber()} readOnly className="h-10 rounded-xl bg-slate-100 font-mono text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">📅 {isRTL ? 'التاريخ' : 'Date'}</label>
+                  <Input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)} className="h-10 rounded-xl" />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block"><FileText className="w-3 h-3 inline" /> {isRTL ? 'رقم المرجع' : 'Reference No.'}</label>
+                  <Input value={referenceNumber} onChange={(e) => setReferenceNumber(e.target.value)} className="h-10 rounded-xl" placeholder={isRTL ? 'مثال: INV-1005' : 'e.g. INV-1005'} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500 mb-1 block">📝 {isRTL ? 'الوصف العام' : 'Description'}</label>
+                  <Input value={journalDescription} onChange={(e) => setJournalDescription(e.target.value)} className="h-10 rounded-xl" placeholder={isRTL ? 'وصف القيد العام...' : 'General journal description...'} />
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 text-xs font-semibold border-b border-slate-200 dark:border-slate-700">
+                    <th className="py-2 px-3 w-10 text-center">#</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-48`}>{isRTL ? 'الحساب' : 'Account'} *</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-32`}>{isRTL ? 'الوصف' : 'Description'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-36`}>{isRTL ? 'المركبة' : 'Vehicle'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-32`}>{isRTL ? 'العميل' : 'Customer'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-32`}>{isRTL ? 'المورد' : 'Supplier'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-32`}>{isRTL ? 'السائق' : 'Driver'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-36`}>{isRTL ? 'عقد التأجير' : 'Rental Contract'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-32`}>{isRTL ? 'مركز التكلفة' : 'Cost Center'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-24`}>{isRTL ? 'الفرع' : 'Branch'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-24 text-emerald-700`}>{isRTL ? 'مدين' : 'Debit'}</th>
+                    <th className={`py-2 px-3 ${isRTL ? 'text-right' : 'text-left'} w-24 text-red-700`}>{isRTL ? 'دائن' : 'Credit'}</th>
+                    <th className="py-2 px-3 w-10"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((line, idx) => (
+                    <tr key={line.id} ref={el => { lineRefs.current[idx] = el }} className="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/20">
+                      <td className="py-2 px-3 text-center text-xs text-slate-400">{idx + 1}</td>
+                      <td className="py-2 px-3">
+                        <select value={line.account_id} onChange={(e) => updateLine(idx, 'account_id', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'account_id')} data-field="account_id" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر الحساب...' : 'Select account...'}</option>
+                          {accounts.map(acc => (
+                            <option key={acc.id} value={acc.id}>{acc.code} - {isRTL ? (acc.name_ar || acc.name) : (acc.name_en || acc.name)}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <Input value={line.lineDescription} onChange={(e) => updateLine(idx, 'lineDescription', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'lineDescription')} data-field="lineDescription" className="h-9 rounded-lg text-sm" placeholder={isRTL ? 'وصف...' : 'Desc...'} />
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.vehicle_id} onChange={(e) => updateLine(idx, 'vehicle_id', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'vehicle_id')} data-field="vehicle_id" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {cars.map(car => (
+                            <option key={car.id} value={car.id}>{car.make} {car.model} ({car.plate_number})</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.customer_id} onChange={(e) => updateLine(idx, 'customer_id', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'customer_id')} data-field="customer_id" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {customers.map(c => (
+                            <option key={c.id} value={c.id}>{c.full_name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.supplier_id} onChange={(e) => updateLine(idx, 'supplier_id', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'supplier_id')} data-field="supplier_id" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {suppliers.map(s => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.driver_id} onChange={(e) => updateLine(idx, 'driver_id', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'driver_id')} data-field="driver_id" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {drivers.map((d: any) => (
+                            <option key={d.id} value={d.id}>{d.full_name}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.rental_contract_id} onChange={(e) => updateLine(idx, 'rental_contract_id', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'rental_contract_id')} data-field="rental_contract_id" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {rentalContracts.map(r => (
+                            <option key={r.id} value={r.id}>{r.contract_number}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.cost_center} onChange={(e) => updateLine(idx, 'cost_center', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'cost_center')} data-field="cost_center" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {COST_CENTERS.map(cc => (
+                            <option key={cc.key} value={cc.key}>{isRTL ? cc.labelAr : cc.labelEn}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <select value={line.branch} onChange={(e) => updateLine(idx, 'branch', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'branch')} data-field="branch" className="w-full h-9 px-2 text-sm rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                          <option value="">{isRTL ? 'اختر...' : 'Select...'}</option>
+                          {BRANCHES.map(b => (
+                            <option key={b} value={b}>{b}</option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="py-2 px-3">
+                        <Input type="number" step="0.001" value={line.debit} onChange={(e) => updateLine(idx, 'debit', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'debit')} data-field="debit" className="h-9 rounded-lg text-sm text-emerald-700 font-semibold" placeholder="0.000" />
+                      </td>
+                      <td className="py-2 px-3">
+                        <Input type="number" step="0.001" value={line.credit} onChange={(e) => updateLine(idx, 'credit', e.target.value)} onKeyDown={(e) => handleKeyDown(e, idx, 'credit')} data-field="credit" className="h-9 rounded-lg text-sm text-red-700 font-semibold" placeholder="0.000" />
+                      </td>
+                      <td className="py-2 px-3 text-center">
+                        <Button variant="ghost" size="icon" onClick={() => removeLine(idx)} className="h-7 w-7 text-red-400 hover:text-red-600">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-700/20">
+              <div className="flex items-center gap-2 mb-2">
+                <Paperclip className="w-4 h-4 text-slate-500" />
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-300">{isRTL ? 'المرفقات' : 'Attachments'}</span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="cursor-pointer">
+                  <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={handleFileUpload} className="hidden" />
+                  <span className="inline-flex items-center gap-1 px-3 py-1.5 text-sm bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors">
+                    <Upload className="w-3.5 h-3.5" />
+                    {isRTL ? 'رفع ملف' : 'Upload File'}
+                  </span>
+                </label>
+                {attachments.map((att, idx) => (
+                  <div key={idx} className="flex items-center gap-1 px-2 py-1 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-xs rounded-lg">
+                    {att.type?.includes('pdf') ? <FileText className="w-3 h-3" /> : att.type?.includes('image') ? <Image className="w-3 h-3" /> : <File className="w-3 h-3" />}
+                    <span className="max-w-[120px] truncate">{att.name}</span>
+                    <button onClick={() => removeAttachment(idx)} className="ml-1 text-red-400 hover:text-red-600">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-700/30">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-6">
+                  <div className="text-center">
+                    <p className="text-xs text-slate-500">{isRTL ? 'إجمالي المدين' : 'Total Debit'}</p>
+                    <p className="text-lg font-bold text-emerald-600">{formatCurrency(totalDebit)}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs text-slate-500">{isRTL ? 'إجمالي الدائن' : 'Total Credit'}</p>
+                    <p className="text-lg font-bold text-red-600">{formatCurrency(totalCredit)}</p>
+                  </div>
+                  <div className="h-10 w-px bg-slate-300 dark:bg-slate-600"></div>
+                  <div className="text-center">
+                    <p className="text-xs text-slate-500">{isRTL ? 'الفرق' : 'Difference'}</p>
+                    {isBalanced ? (
+                      <div className="flex items-center gap-1 text-emerald-600 font-bold">
+                        <CheckCircle className="w-4 h-4" />
+                        <span>{isRTL ? 'متوازن' : 'BALANCED'}</span>
+                      </div>
+                    ) : (
+                      <p className={`text-lg font-bold ${difference > 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                        {formatCurrency(Math.abs(difference))} {difference > 0 ? (isRTL ? 'مدين زائد' : 'Dr excess') : (isRTL ? 'دائن زائد' : 'Cr excess')}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Button variant="outline" size="sm" onClick={addLine} className="rounded-lg gap-1">
+                    <Plus className="w-3 h-3" /> {isRTL ? 'إضافة سطر' : 'Add Line'}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={autoBalance} className="rounded-lg gap-1 text-indigo-600 border-indigo-200 hover:bg-indigo-50">
+                    <ArrowUpDown className="w-3 h-3" /> {isRTL ? 'توازن تلقائي' : 'Auto Balance'}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={clearForm} className="rounded-lg gap-1">
+                    <RotateCcw className="w-3 h-3" /> {isRTL ? 'مسح' : 'Clear'}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => handleSave(true)} className="rounded-lg gap-1 text-emerald-600 border-emerald-200 hover:bg-emerald-50">
+                    <Save className="w-3 h-3" /> {isRTL ? 'حفظ وجديد' : 'Save & New'}
+                  </Button>
+                  <Button onClick={() => handleSave(false)} disabled={saving || !isBalanced} className={`rounded-xl gap-2 ${isBalanced ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-slate-400'} text-white`}>
+                    <Save className="w-4 h-4" />
+                    {saving ? (isRTL ? 'جاري...' : 'Saving...') : (isRTL ? 'حفظ القيد' : 'Save Entry')}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700">
+          <div className="flex flex-col md:flex-row md:items-center gap-3">
+            <div className="relative flex-1">
+              <Search className={`absolute ${isRTL ? 'right-3' : 'left-3'} top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400`} />
+              <Input placeholder={isRTL ? 'بحث برقم القيد أو المرجع...' : 'Search by journal # or reference...'} value={search} onChange={(e) => setSearch(e.target.value)} className={`${isRTL ? 'pr-9' : 'pl-9'} h-10 rounded-xl`} />
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)} className="rounded-lg gap-1">
+              <Filter className="w-4 h-4" /> {isRTL ? 'فلاتر' : 'Filters'}
+            </Button>
+          </div>
+          {showFilters && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'من تاريخ' : 'From Date'}</label>
+                <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className="h-9 rounded-lg" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'إلى تاريخ' : 'To Date'}</label>
+                <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className="h-9 rounded-lg" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'الحالة' : 'Status'}</label>
+                <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="w-full h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white">
+                  <option value="all">{isRTL ? 'الكل' : 'All'}</option>
+                  <option value="draft">{isRTL ? 'مسودة' : 'Draft'}</option>
+                  <option value="posted">{isRTL ? 'مرحل' : 'Posted'}</option>
+                  <option value="reversed">{isRTL ? 'معكوس' : 'Reversed'}</option>
+                </select>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+          {loading ? (
+            <div className="flex items-center justify-center h-32">
+              <div className="animate-spin w-6 h-6 border-4 border-indigo-500 border-t-transparent rounded-full"></div>
+            </div>
+          ) : filteredEntries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-32 text-slate-400">
+              <BookOpen className="w-8 h-8 mb-2 opacity-30" />
+              <p className="text-sm">{isRTL ? 'لا توجد قيود' : 'No entries found'}</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-slate-50 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400 text-xs border-b border-slate-200 dark:border-slate-700">
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'رقم القيد' : 'Journal No.'}</th>
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'التاريخ' : 'Date'}</th>
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'المرجع' : 'Reference'}</th>
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'الوصف' : 'Description'}</th>
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'مدين' : 'Debit'}</th>
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'دائن' : 'Credit'}</th>
+                    <th className={`py-3 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'الحالة' : 'Status'}</th>
+                    <th className="py-3 px-4 text-center">{isRTL ? 'إجراءات' : 'Actions'}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredEntries.map((entry: JournalEntry) => (
+                    <tr key={entry.id} className="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/20 transition-colors">
+                      <td className="py-3 px-4 font-mono text-sm font-semibold text-indigo-600">{entry.journal_number}</td>
+                      <td className="py-3 px-4 text-sm text-slate-500">{formatDate(entry.entry_date)}</td>
+                      <td className="py-3 px-4 text-sm text-slate-500">{entry.reference_number || '-'}</td>
+                      <td className="py-3 px-4 text-sm text-slate-700 dark:text-slate-300 max-w-[200px] truncate">{entry.description || '-'}</td>
+                      <td className="py-3 px-4 text-sm font-semibold text-emerald-600">{formatCurrency(parseFloat(entry.total_debit as any) || 0)}</td>
+                      <td className="py-3 px-4 text-sm font-semibold text-red-600">{formatCurrency(parseFloat(entry.total_credit as any) || 0)}</td>
+                      <td className="py-3 px-4">
+                        <Badge className={entry.is_balanced ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}>
+                          {entry.is_balanced ? (isRTL ? 'متوازن' : 'Balanced') : (isRTL ? 'غير متوازن' : 'Unbalanced')}
+                        </Badge>
+                      </td>
+                      <td className="py-3 px-4 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button variant="ghost" size="icon" onClick={() => handleView(entry)} className="h-7 w-7 text-blue-500 hover:text-blue-600" title={isRTL ? 'معاينة' : 'View'}>
+                            <Eye className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handleEdit(entry)} className="h-7 w-7 text-amber-500 hover:text-amber-600" title={isRTL ? 'تعديل' : 'Edit'}>
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handlePrint(entry)} className="h-7 w-7 text-slate-500 hover:text-slate-600" title={isRTL ? 'طباعة' : 'Print'}>
+                            <Printer className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handleReverse(entry)} className="h-7 w-7 text-orange-500 hover:text-orange-600" title={isRTL ? 'عكس' : 'Reverse'}>
+                            <Repeat className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => handleDeleteEntry(entry.id)} className="h-7 w-7 text-red-400 hover:text-red-600" title={isRTL ? 'حذف' : 'Delete'}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {viewingEntry && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl w-full max-w-5xl max-h-[90vh] overflow-auto shadow-2xl">
+              <div className="p-6 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Eye className="w-5 h-5 text-indigo-500" />
+                  {isRTL ? 'معاينة القيد' : 'View Journal Entry'}
+                </h3>
+                <Button variant="ghost" size="icon" onClick={() => setViewingEntry(null)} className="h-8 w-8">
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-50 dark:bg-slate-700/30 p-4 rounded-xl">
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'رقم القيد' : 'Journal No.'}</p>
+                    <p className="font-mono font-bold text-slate-900 dark:text-white">{viewingEntry.journal_number}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'التاريخ' : 'Date'}</p>
+                    <p className="font-bold text-slate-900 dark:text-white">{formatDate(viewingEntry.entry_date)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'المرجع' : 'Reference'}</p>
+                    <p className="font-bold text-slate-900 dark:text-white">{viewingEntry.reference_number || '-'}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-slate-500">{isRTL ? 'الحالة' : 'Status'}</p>
+                    <Badge className={viewingEntry.is_balanced ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}>
+                      {viewingEntry.is_balanced ? (isRTL ? 'متوازن' : 'Balanced') : (isRTL ? 'غير متوازن' : 'Unbalanced')}
+                    </Badge>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-1">{isRTL ? 'الوصف' : 'Description'}</p>
+                  <p className="text-slate-900 dark:text-white font-medium">{viewingEntry.description || '-'}</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
+                    <thead>
+                      <tr className="bg-indigo-50 dark:bg-indigo-900/20 text-indigo-700 dark:text-indigo-300 text-xs">
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'الحساب' : 'Account'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'الوصف' : 'Description'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'المركبة' : 'Vehicle'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'العميل' : 'Customer'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'المورد' : 'Supplier'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'السائق' : 'Driver'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'عقد التأجير' : 'Contract'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'مركز التكلفة' : 'Cost Center'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'مدين' : 'Debit'}</th>
+                        <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'دائن' : 'Credit'}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {entryLines.map((line: JournalLine) => {
+                        const acc = (line as any).accounts
+                        const car = (line as any).cars
+                        const cust = (line as any).customers
+                        const sup = (line as any).suppliers
+                        const drv = (line as any).drivers
+                        const rent = (line as any).rental_contracts
+                        return (
+                          <tr key={line.id} className="border-b border-slate-100 dark:border-slate-700/50">
+                            <td className="py-2 px-4 text-sm">{acc ? `${acc.code} - ${isRTL ? (acc.name_ar || acc.name) : (acc.name_en || acc.name)}` : '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{line.description || '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{car ? `${car.make} ${car.model} (${car.plate_number})` : '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{cust ? cust.full_name : '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{sup ? sup.name : '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{drv ? drv.full_name : '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{rent ? rent.contract_number : '-'}</td>
+                            <td className="py-2 px-4 text-sm text-slate-600">{line.cost_center || '-'}</td>
+                            <td className="py-2 px-4 text-sm font-semibold text-emerald-600">{line.debit > 0 ? formatCurrency(parseFloat(line.debit as any) || 0) : '-'}</td>
+                            <td className="py-2 px-4 text-sm font-semibold text-red-600">{line.credit > 0 ? formatCurrency(parseFloat(line.credit as any) || 0) : '-'}</td>
+                          </tr>
+                        )
+                      })}
+                      <tr className="bg-slate-50 dark:bg-slate-700/50 font-bold">
+                        <td colSpan={8} className="py-2 px-4 text-sm text-slate-900 dark:text-white">{isRTL ? 'الإجمالي' : 'Total'}</td>
+                        <td className="py-2 px-4 text-sm text-emerald-600">{formatCurrency(entryLines.reduce((s, l) => s + (parseFloat(l.debit as any) || 0), 0))}</td>
+                        <td className="py-2 px-4 text-sm text-red-600">{formatCurrency(entryLines.reduce((s, l) => s + (parseFloat(l.credit as any) || 0), 0))}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                {attachments.length > 0 && (
+                  <div>
+                    <p className="text-xs text-slate-500 mb-2">{isRTL ? 'المرفقات:' : 'Attachments:'}</p>
+                    <div className="flex flex-wrap gap-2">
+                      {attachments.map((att, idx) => (
+                        <a key={idx} href={att.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-xs rounded-lg hover:bg-indigo-100 transition-colors">
+                          {att.type?.includes('pdf') ? <FileText className="w-3 h-3" /> : att.type?.includes('image') ? <Image className="w-3 h-3" /> : <File className="w-3 h-3" />}
+                          {att.name}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setViewingEntry(null)} className="rounded-xl">{isRTL ? 'إغلاق' : 'Close'}</Button>
+                  <Button onClick={() => { handlePrint(viewingEntry); setViewingEntry(null); }} className="rounded-xl gap-2 bg-indigo-600 hover:bg-indigo-700 text-white">
+                    <Printer className="w-4 h-4" /> {isRTL ? 'طباعة' : 'Print'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </DashboardLayout>
+  )
+}
+
+export default function Page() {
+  return (
+    <Suspense fallback={<div className="p-6 text-slate-400">Loading...</div>}>
+      <JournalEntriesPageContent />
+    </Suspense>
+  )
+}

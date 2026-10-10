@@ -63,6 +63,7 @@ function context(overrides: Partial<AuthContext> = {}): AuthContext {
     financialYearId: null,
     permissions: {},
     isAdmin: false,
+    isSuperAdmin: false,
     ...overrides,
   };
 }
@@ -338,7 +339,9 @@ describe("privileged routes enforce authorization", () => {
   test("the schema-migration endpoint is disabled by default", () => {
     const source = fs.readFileSync(path.join(ROOT, "src/app/api/migrate/route.ts"), "utf8");
     assert.match(source, /ENABLE_SCHEMA_MIGRATION_ENDPOINT/);
-    assert.match(source, /requireContext\(request, \{ requireAdmin: true \}\)/);
+    // DDL is global-only: even an authenticated company administrator must not
+    // reach it. The guard must require the explicit super-admin role.
+    assert.match(source, /requireContext\(request, \{ requireAdmin: true, requireSuperAdmin: true \}\)/);
   });
 
   test("reference validation filters by tenant in the query", () => {

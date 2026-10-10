@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { supabaseAdmin } from "../supabase-admin";
 import {
+  isAdminRole,
   mergePermissions,
   normaliseRole,
   permissionsFromJson,
@@ -109,7 +110,8 @@ export async function resolveAuthContext(request: Request): Promise<AuthContext 
     branchIds: profile?.branch_id ? [profile.branch_id as string] : null,
     financialYearId: null,
     permissions,
-    isAdmin: role === "admin",
+    isAdmin: isAdminRole(role),
+    isSuperAdmin: role === "super_admin",
   };
 }
 

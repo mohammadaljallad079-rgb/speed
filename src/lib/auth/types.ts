@@ -28,7 +28,13 @@ export type AuthContext = {
   /** Active financial year, when the tenant has one configured. */
   financialYearId: string | null;
   permissions: PermissionMap;
+  /** Any administrator: company-scoped (`admin`) or global (`super_admin`). */
   isAdmin: boolean;
+  /**
+   * The global operator only. It bypasses tenant scoping on the server query
+   * path; it is never derived from request input.
+   */
+  isSuperAdmin: boolean;
 };
 
 export type FinancialYear = {

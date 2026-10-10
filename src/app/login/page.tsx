@@ -35,20 +35,34 @@ function LoginPageContent() {
       return;
     }
 
-    const { data: appUser, error: userError } = await supabase
-      .from("users")
-      .select("role")
-      .eq("id", data.user.id)
-      .maybeSingle();
+    // The session exists, but the role/tenant decision is NOT made here. It is
+    // resolved server-side by /api/me from the session and the application
+    // tables, so a forged client value can never grant a role.
+    const res = await fetch("/api/me", { cache: "no-store" });
+    const me = await res.json().catch(() => null);
 
-    if (userError || !appUser) {
+    if (!res.ok) {
       await supabase.auth.signOut();
-      setError(isRTL ? "لا يمكن العثور على صلاحيات المستخدم." : "User permissions not found.");
+      if (me?.code === "account_not_provisioned") {
+        setError(
+          isRTL
+            ? "تم إنشاء الجلسة لكن الحساب غير مرتبط بالنظام. تواصل مع المسؤول."
+            : "Sign-in succeeded but your account is not linked to the ERP. Contact an administrator.",
+        );
+      } else {
+        setError(isRTL ? "تعذر التحقق من صلاحيات الحساب." : "Could not verify your account permissions.");
+      }
       setLoading(false);
       return;
     }
 
-    if (!['admin', 'staff'].includes(appUser.role)) {
+    // Customers belong in the customer portal; administrators and staff in the ERP.
+    if (me?.role === "client") {
+      router.replace("/customer-dashboard");
+      return;
+    }
+
+    if (me?.role !== "admin" && me?.role !== "super_admin" && me?.role !== "staff") {
       await supabase.auth.signOut();
       setError(isRTL ? "هذا الحساب غير مخوّل لدخول لوحة الإدارة." : "This account is not authorized to access the admin panel.");
       setLoading(false);

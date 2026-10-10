@@ -15,6 +15,9 @@
 .env.*
 !.env.example
 
+# final completion report contains temporary admin credentials — never commit it
+SPEED_FINAL_COMPLETION_REPORT.md
+
 # testing
 /coverage
 

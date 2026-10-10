@@ -25,6 +25,26 @@ const PUBLIC_API_PREFIXES = [
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
+  const { pathname } = request.nextUrl;
+  const isPublicApi = PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  // Fail safe if the deployment is misconfigured. Without this the middleware
+  // throws for every matched route (including public pages) and the app returns
+  // 500. Deny protected APIs rather than risk an unauthenticated pass-through;
+  // genuinely public routes and pages are untouched.
+  if (!supabaseUrl || !supabaseAnonKey) {
+    if (pathname.startsWith("/api/") && !isPublicApi) {
+      return NextResponse.json(
+        { error: "Authentication required", code: "unauthenticated" },
+        { status: 401 },
+      );
+    }
+    return response;
+  }
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -45,9 +65,6 @@ export async function middleware(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const { pathname } = request.nextUrl;
-  const isPublicApi = PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 
   if (pathname.startsWith("/api/") && !isPublicApi && !user) {
     return NextResponse.json(

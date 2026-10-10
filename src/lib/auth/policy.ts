@@ -17,7 +17,23 @@ import type { AuthContext, FinancialYear } from "./types";
  */
 
 export function normaliseRole(value: unknown): AppRole {
-  return value === "admin" || value === "staff" || value === "client" ? value : "staff";
+  return value === "super_admin" || value === "admin" || value === "staff" || value === "client"
+    ? value
+    : "staff";
+}
+
+/** True for any administrator, company-scoped (`admin`) or global (`super_admin`). */
+export function isAdminRole(value: unknown): boolean {
+  return value === "admin" || value === "super_admin";
+}
+
+/**
+ * True only for the global operator. This is the single predicate that decides
+ * "global-only" features (e.g. cross-tenant administration); no email address
+ * or request field can produce it.
+ */
+export function isSuperAdmin(context: AuthContext): boolean {
+  return context.role === "super_admin";
 }
 
 export function mergePermissions(base: PermissionMap, overrides: PermissionMap): PermissionMap {

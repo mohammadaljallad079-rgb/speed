@@ -34,7 +34,17 @@ const statements = [
 
 export async function GET(request: Request) {
   try {
-    const context = await requireContext(request, { requireAdmin: true });
+    // DDL is the highest-privilege operation in the system, so it is disabled
+    // unless an operator explicitly opts in AND the caller is the global
+    // operator. A company administrator cannot reach it.
+    if (process.env.ENABLE_SCHEMA_MIGRATION_ENDPOINT !== "true") {
+      return NextResponse.json(
+        { error: "Schema migration endpoint is disabled", code: "endpoint_disabled" },
+        { status: 404 },
+      );
+    }
+
+    const context = await requireContext(request, { requireAdmin: true, requireSuperAdmin: true });
 
     const results: { statement: string; status: string }[] = [];
     for (const sql of statements) {

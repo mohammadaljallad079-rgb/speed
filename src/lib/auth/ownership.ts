@@ -15,12 +15,28 @@ export async function assertTenantOwnership(
   context: AuthContext,
   select = "id, tenant_id",
 ): Promise<Record<string, unknown>> {
-  const { data } = await supabaseAdmin.from(table).select(select).eq("id", id).maybeSingle();
-  if (!data) throw notFound(`${table} not found`);
+  const reader = () => supabaseAdmin.from(table).select(select).eq("id", id);
 
-  const row = data as unknown as Record<string, unknown>;
-  if (context.tenantId && row.tenant_id && row.tenant_id !== context.tenantId) {
-    throw forbidden(`${table} belongs to another tenant`);
+  // The tenant scope is part of the lookup, so a row owned by another tenant is
+  // never even loaded — a post-fetch comparison alone would let the row exist in
+  // memory before being rejected.
+  if (context.tenantId) {
+    const { data: own } = await reader().eq("tenant_id", context.tenantId).maybeSingle();
+    if (own) return own as unknown as Record<string, unknown>;
   }
-  return row;
+
+  if (context.isSuperAdmin) {
+    const { data: any } = await reader().maybeSingle();
+    if (!any) throw notFound(`${table} not found`);
+    return any as unknown as Record<string, unknown>;
+  }
+
+  // Tenant-less caller / shared row: only a tenant-less row is addressable.
+  const { data: shared } = await reader().is("tenant_id", null).maybeSingle();
+  if (shared) return shared as unknown as Record<string, unknown>;
+
+  // Distinguish "exists but belongs to someone else" (403) from "missing" (404).
+  const { data: existing } = await reader().maybeSingle();
+  if (existing) throw forbidden(`${table} belongs to another tenant`);
+  throw notFound(`${table} not found`);
 }

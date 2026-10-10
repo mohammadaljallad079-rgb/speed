@@ -389,6 +389,37 @@ that applies the filters it is given and returns only affected rows.
   explicit safe column projection. RLS stays enabled.
 
 
+## Execution 07 — administrator accounts, global super admin, login hardening
+
+- **Two distinct administrator roles.** `admin` is the company administrator and
+  is tenant-scoped. `super_admin` (`is_super_admin()` / `AuthContext.isSuperAdmin`)
+  is the **global** operator and is deliberately tenant-less. Nothing derives
+  either role from request input or an email address; both come from
+  `public.users.role` via `resolveAuthContext`.
+- **The global-only boundary is explicit.** `GuardOptions.requireSuperAdmin`
+  rejects a company `admin` with 403. The schema-migration endpoint
+  (`/api/migrate`) requires it AND `ENABLE_SCHEMA_MIGRATION_ENDPOINT=true`; it is
+  404 otherwise.
+- **`/api/me` is the only place the login page learns its role.** It resolves the
+  context server-side and separates `401 unauthenticated` (no session) from
+  `403 account_not_provisioned` (Auth identity with no `users`/`profiles` row).
+  The login page must never read `users.role` with the browser client.
+- **Isolation predicates live in migration 004** (`004_global_super_admin.sql`).
+  It *extends* `can_read_tenant`/`can_write_tenant`/`can_read_company`/
+  `can_write_company` rather than rewriting policies, so every policy inherits
+  super-admin behaviour from one definition. It also normalises the `users.role`
+  check constraint to include `super_admin`.
+- **`supabaseAdmin` initialises lazily.** Importing a module that references it no
+  longer throws when the service-role key is absent (tests, static analysis); the
+  client still fails hard on first use. Do not revert to a top-level `throw`.
+- **Middleware fails safe.** With no Supabase env it denies protected `/api/*`
+  with 401 and lets public routes/pages through, instead of throwing a 500 on
+  every matched route.
+- **Provisioning tools** (server-only, never imported by app code):
+  `scripts/provision-admin-accounts.mjs` (idempotent create/repair via the Auth
+  admin API) and `scripts/verify-admin-accounts.mjs` (real sign-in + role/tenant
+  assertions). `npm run provision:admins` / `npm run verify:admins`.
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

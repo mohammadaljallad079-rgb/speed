@@ -141,6 +141,7 @@ export async function POST(request: NextRequest) {
     financialYearId: null,
     permissions: {},
     isAdmin: true,
+    isSuperAdmin: false,
   };
   await logAudit(context, {
     action: "create",

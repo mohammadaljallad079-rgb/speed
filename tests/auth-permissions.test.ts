@@ -22,7 +22,8 @@ function context(role: AuthContext["role"], overrides: Partial<AuthContext> = {}
     branchIds: null,
     financialYearId: null,
     permissions: DEFAULT_ROLE_PERMISSIONS[role],
-    isAdmin: role === "admin",
+    isAdmin: role === "admin" || role === "super_admin",
+    isSuperAdmin: role === "super_admin",
     ...overrides,
   };
 }

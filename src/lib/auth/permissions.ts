@@ -32,7 +32,16 @@ export type PermissionAction = "view" | "create" | "edit" | "delete";
 
 export type PermissionKey = `${PermissionModule}.${PermissionAction}`;
 
-export type AppRole = "admin" | "staff" | "client";
+/**
+ * Application roles.
+ *
+ * `super_admin` is the platform-level operator. It exists so that a genuine
+ * global administrator is *explicit* rather than implied by an email address:
+ * nothing in the request can produce it, it is granted only by the service-role
+ * provisioning path, and it carries no tenant. `admin` remains the company
+ * administrator, scoped to its own tenant.
+ */
+export type AppRole = "super_admin" | "admin" | "staff" | "client";
 
 export type PermissionGrant = Record<PermissionAction, boolean>;
 
@@ -57,6 +66,9 @@ function grantsFor(modules: PermissionModule[], grant: PermissionGrant): Permiss
 }
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<AppRole, PermissionMap> = {
+  // The global operator is never constrained by the module matrix; `can()`
+  // short-circuits on `isAdmin`, and this entry documents that intent.
+  super_admin: grantsFor(ADMIN_MODULES, ALL),
   admin: grantsFor(ADMIN_MODULES, ALL),
   staff: {
     ...grantsFor(STAFF_MODULES, ALL),

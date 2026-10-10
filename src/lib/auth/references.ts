@@ -35,6 +35,12 @@ export const REF_RENTAL_CONTRACT: ReferenceSpec = { field: "rental_contract_id",
  * Verifies a single reference. Missing/empty values are ignored (the column is
  * optional). A value that does not resolve, or resolves into another tenant,
  * throws a 422 so the server — not the client — rejects the request.
+ *
+ * The tenant scope is applied *in the query*, never as a post-fetch comparison:
+ * a caller with a tenant may only resolve rows in its own tenant (or a shared,
+ * tenant-less reference row such as the global chart of accounts); a tenant-less
+ * caller may only resolve tenant-less rows. This mirrors the RLS predicate and
+ * cannot be widened by a crafted id.
  */
 export async function assertReference(
   spec: ReferenceSpec,
@@ -44,18 +50,17 @@ export async function assertReference(
   if (value === undefined || value === null || value === "") return;
   if (typeof value !== "string") throw invalidReference(spec.field);
 
-  const { data } = await supabaseAdmin
-    .from(spec.table)
-    .select("id, tenant_id")
-    .eq("id", value)
-    .maybeSingle();
+  const reader = () => supabaseAdmin.from(spec.table).select("id, tenant_id").eq("id", value);
 
-  if (!data) throw invalidReference(spec.field);
-
-  const tenantId = (data as { tenant_id?: string | null }).tenant_id ?? null;
-  if (context.tenantId && tenantId && tenantId !== context.tenantId) {
-    throw invalidReference(spec.field);
+  if (context.tenantId) {
+    const { data: own } = await reader().eq("tenant_id", context.tenantId).maybeSingle();
+    if (own) return;
   }
+
+  // Shared reference data (tenant_id is null) is usable by any authenticated
+  // caller; a tenant-less caller can therefore only ever resolve these rows.
+  const { data: shared } = await reader().is("tenant_id", null).maybeSingle();
+  if (!shared) throw invalidReference(spec.field);
 }
 
 /** Verifies every reference declared for a payload. */
@@ -80,13 +85,23 @@ export async function assertReferenceList(
   const unique = [...new Set(values.filter((v): v is string => typeof v === "string" && v !== ""))];
   if (unique.length === 0) return;
 
-  const { data } = await supabaseAdmin.from(spec.table).select("id, tenant_id").in("id", unique);
-  const rows = (data ?? []) as { id: string; tenant_id?: string | null }[];
-
-  if (rows.length !== unique.length) throw invalidReference(spec.field);
-  for (const row of rows) {
-    if (context.tenantId && row.tenant_id && row.tenant_id !== context.tenantId) {
-      throw invalidReference(spec.field);
-    }
+  const found = new Set<string>();
+  if (context.tenantId) {
+    const { data: own } = await supabaseAdmin
+      .from(spec.table)
+      .select("id, tenant_id")
+      .in("id", unique)
+      .eq("tenant_id", context.tenantId);
+    for (const row of (own ?? []) as { id: string }[]) found.add(row.id);
   }
+
+  const { data: shared } = await supabaseAdmin
+    .from(spec.table)
+    .select("id, tenant_id")
+    .in("id", unique)
+    .is("tenant_id", null);
+  for (const row of (shared ?? []) as { id: string }[]) found.add(row.id);
+
+  // Every id must resolve to a row the caller may use (own tenant or shared).
+  if (found.size !== unique.length) throw invalidReference(spec.field);
 }

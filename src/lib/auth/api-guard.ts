@@ -15,9 +15,26 @@ export type GuardOptions = {
   allowRoles?: AuthContext["role"][];
   /** When true the caller must be an administrator. */
   requireAdmin?: boolean;
+  /**
+   * When true the caller must be the *global* operator (`super_admin`), not a
+   * company-scoped `admin`. This is the explicit boundary for global-only
+   * features; a company administrator is rejected with 403.
+   */
+  requireSuperAdmin?: boolean;
   /** Set to false for endpoints that must be reachable without a session. */
   requireAuth?: boolean;
 };
+
+/** Applies the role checks shared by every guard entry point. */
+function assertRole(context: AuthContext, options: GuardOptions): void {
+  if (options.requireSuperAdmin && !context.isSuperAdmin) {
+    throw forbidden("Global administrator access required");
+  }
+  if (options.requireAdmin && !context.isAdmin) throw forbidden("Administrator access required");
+  if (options.allowRoles && !options.allowRoles.includes(context.role) && !context.isAdmin) {
+    throw forbidden();
+  }
+}
 
 /**
  * Central entry point for every privileged route handler.
@@ -45,10 +62,7 @@ export async function withAuth<T>(
       return NextResponse.json(await handler(null as unknown as AuthContext));
     }
 
-    if (options.requireAdmin && !context.isAdmin) throw forbidden("Administrator access required");
-    if (options.allowRoles && !options.allowRoles.includes(context.role) && !context.isAdmin) {
-      throw forbidden();
-    }
+    assertRole(context, options);
     if (options.module && options.action && !can(context, options.module, options.action)) {
       throw forbidden(`Missing permission: ${options.module}.${options.action}`);
     }
@@ -76,10 +90,7 @@ export async function withAuthResponse(
       return await handler(null as unknown as AuthContext);
     }
 
-    if (options.requireAdmin && !context.isAdmin) throw forbidden("Administrator access required");
-    if (options.allowRoles && !options.allowRoles.includes(context.role) && !context.isAdmin) {
-      throw forbidden();
-    }
+    assertRole(context, options);
     if (options.module && options.action && !can(context, options.module, options.action)) {
       throw forbidden(`Missing permission: ${options.module}.${options.action}`);
     }
@@ -101,7 +112,7 @@ export async function requireContext(
 ): Promise<AuthContext> {
   const context = await resolveAuthContext(request);
   if (!context) throw unauthorized();
-  if (options.requireAdmin && !context.isAdmin) throw forbidden("Administrator access required");
+  assertRole(context, options);
   if (options.module && options.action && !can(context, options.module, options.action)) {
     throw forbidden(`Missing permission: ${options.module}.${options.action}`);
   }

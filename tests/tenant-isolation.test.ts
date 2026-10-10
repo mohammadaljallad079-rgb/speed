@@ -31,6 +31,7 @@ function context(overrides: Partial<AuthContext> = {}): AuthContext {
     financialYearId: null,
     permissions: {},
     isAdmin: false,
+    isSuperAdmin: false,
     ...overrides,
   };
 }

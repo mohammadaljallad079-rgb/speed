@@ -431,6 +431,23 @@ that applies the filters it is given and returns only affected rows.
   `scripts/provision-admin-accounts.mjs` (idempotent create/repair via the Auth
   admin API) and `scripts/verify-admin-accounts.mjs` (real sign-in + role/tenant
   assertions). `npm run provision:admins` / `npm run verify:admins`.
+  - The provisioner exports `provisionAdmins(client, opts)` and is exercised by
+    `tests/admin-provisioning.test.ts` against an in-memory Supabase stub (no live
+    DB). Keep it dependency-injected; do not reach for `supabaseAdmin` inside it.
+  - It **never resets an existing user's password** unless `--rotate-passwords` (or
+    an explicit password) is given, and it rolls back a newly-created Auth identity
+    if its `public.users` mapping fails — no half-provisioned privileged account.
+  - It writes temporary passwords to `.admin-credentials.local` (0600, gitignored);
+    printing them to stdout requires `--print-passwords`.
+  - The company admin must be pinned to a real tenant (`--tenant-id`); the super
+    admin is always tenant-less. The script verifies the pinned tenant exists.
+- **Migration 004 has an operator activation package**
+  (`supabase/PRODUCTION_ACTIVATION_004.sql`) embedding the migration verbatim
+  (sha256 in its header) between read-only PRE/POST-FLIGHT queries. Run it after
+  `PRODUCTION_ACTIVATION_001_002_003.sql`. Regenerate it from
+  `supabase/migrations/004_global_super_admin.sql` rather than editing the body.
+  It was executed end-to-end on PostgreSQL 17 (package applied, POST-FLIGHT green,
+  11/11 assertions) — see `supabase/tests/004_harness/`.
 
 ## Deployment (production)
 

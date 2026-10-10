@@ -15,8 +15,10 @@
 .env.*
 !.env.example
 
-# final completion report contains temporary admin credentials — never commit it
+# reports credentials files contain temporary admin secrets — never commit them
 SPEED_FINAL_COMPLETION_REPORT.md
+SPEED_FINAL_ADMIN_SECURITY_CLOSURE_REPORT.md
+.admin-credentials.local
 
 # testing
 /coverage

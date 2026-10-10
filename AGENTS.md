@@ -409,6 +409,18 @@ that applies the filters it is given and returns only affected rows.
   `can_write_company` rather than rewriting policies, so every policy inherits
   super-admin behaviour from one definition. It also normalises the `users.role`
   check constraint to include `super_admin`.
+- **Privilege escalation is blocked by a BEFORE trigger, not RLS.**
+  `prevent_role_escalation` on `users` refuses any `super_admin` grant/revoke by a
+  non-super-admin. It must be a trigger: a RLS `with check` sees only the NEW row,
+  so it cannot distinguish "granted" from "already was". It allows the service
+  path (`auth.uid() is null`) so provisioning still works.
+- **004 also tightens `tenants`/`users` policies.** The executable harness
+  (`supabase/tests/004_harness/`) proved 002 let a company admin read every
+  tenant and INSERT a user into another tenant, and that a super admin could not
+  update a tenanted row. 004's `tenants_read`/`users_self_select`/
+  `users_self_update`/`users_admin_insert` close all three. The service-role
+  `users` API is unaffected (it bypasses RLS). **Run this harness for any future
+  identity-policy change** — parsing alone would not have caught these.
 - **`supabaseAdmin` initialises lazily.** Importing a module that references it no
   longer throws when the service-role key is absent (tests, static analysis); the
   client still fails hard on first use. Do not revert to a top-level `throw`.

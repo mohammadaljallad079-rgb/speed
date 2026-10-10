@@ -129,24 +129,36 @@ async function resolveCompanyTenant(companyAdminId) {
   return { tenant: createdTenant, created: true, reason: "created" };
 }
 
-async function upsertAppUser({ id, email, fullName, role, tenantId }) {
-  if (DRY_RUN) return { id, email, role, tenant_id: tenantId, skipped: true };
-  const { error } = await admin.from("users").upsert(
-    {
-      id,
-      email,
-      full_name: fullName,
-      role,
-      tenant_id: tenantId,
-      is_active: true,
-    },
-    { onConflict: "id" },
-  );
-  if (error) throw error;
-  return { id, email, role, tenant_id: tenantId };
+async function tableHasColumn(table, column) {
+  // PostgREST reports an unknown column on a zero-row probe with 400/42703;
+  // simpler and reliable: ask for the column and see if the API rejects it.
+  const { error } = await admin.from(table).select(column).limit(1);
+  return !error;
 }
 
-async function ensureAccount({ email, role, fullName, tenantId, password }) {
+async function upsertAppUser({ id, email, fullName, username, role, tenantId }) {
+  if (DRY_RUN) return { id, email, role, tenant_id: tenantId, skipped: true };
+
+  const row = {
+    id,
+    email,
+    full_name: fullName,
+    role,
+    tenant_id: tenantId,
+    is_active: true,
+  };
+  // `username` is only written when the live schema actually has the column, so
+  // the account works on installs where it does not exist.
+  if (username && (await tableHasColumn("users", "username"))) {
+    row.username = username;
+  }
+
+  const { error } = await admin.from("users").upsert(row, { onConflict: "id" });
+  if (error) throw error;
+  return { id, email, role, tenant_id: tenantId, username: row.username ?? null };
+}
+
+async function ensureAccount({ email, username, role, fullName, tenantId, password }) {
   let authUser = await findAuthUserByEmail(email);
   let authCreated = false;
 
@@ -177,6 +189,7 @@ async function ensureAccount({ email, role, fullName, tenantId, password }) {
     id: authUser.id,
     email,
     fullName,
+    username,
     role,
     tenantId,
   });
@@ -197,6 +210,7 @@ async function main() {
 
   const companyResult = await ensureAccount({
     email: COMPANY_EMAIL,
+    username: "speedadmin",
     role: "admin",
     fullName: "SPEED Administrator",
     tenantId: tenant.id,
@@ -210,6 +224,7 @@ async function main() {
   // the SPEED company as a shortcut.
   const superResult = await ensureAccount({
     email: SUPER_EMAIL,
+    username: "admin",
     role: "super_admin",
     fullName: "Global Super Administrator",
     tenantId: null,

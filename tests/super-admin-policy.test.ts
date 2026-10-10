@@ -130,4 +130,18 @@ describe("migration 004 — global super admin", () => {
   test("the anon role never gains the new functions", () => {
     assert.match(sql, /revoke all on function public\.is_super_admin\(\) from anon/);
   });
+
+  test("it closes the privilege-escalation path a company admin had", () => {
+    // A BEFORE trigger because RLS `with check` cannot see the OLD row.
+    assert.match(sql, /create or replace function public\.prevent_role_escalation/);
+    assert.match(sql, /create trigger users_prevent_role_escalation/);
+    assert.match(sql, /raise exception 'Only a super administrator may grant or revoke the super_admin role'/);
+  });
+
+  test("it tightens the identity policies that were too broad for an admin", () => {
+    assert.match(sql, /drop policy if exists tenants_read on public\.tenants/);
+    assert.match(sql, /drop policy if exists users_admin_insert on public\.users/);
+    // Cross-tenant INSERT is denied: the new WITH CHECK scopes to the caller's tenant.
+    assert.match(sql, /tenant_id is not distinct from public\.current_tenant_id\(\)/);
+  });
 });

@@ -157,6 +157,32 @@ describe("mandatory 5: filters, columns and grouping compose correctly", () => {
     assert.equal(preview.definition.groupBy!.key, "customer_name");
     assert.ok(preview.columns.some((c) => c.key.startsWith("agg_")));
   });
+
+  test("grouped aggregate actually sums the group (not zero)", async () => {
+    const preview = await buildDynamicPreview(ctx(), { prompt: "تقرير مبيعات حسب العميل مع مجموع الإجمالي", now: NOW });
+    // Tenant A: Alpha -> INV-1 110, Beta -> INV-2 220 (INV-1 duplicate 110).
+    const alpha = preview.rows.find((r) => r["customer_name"] === "Alpha")!;
+    const beta = preview.rows.find((r) => r["customer_name"] === "Beta")!;
+    assert.equal(alpha["agg_0"], 220); // INV-1 appears twice (i1 + i4)
+    assert.equal(beta["agg_0"], 220);
+    assert.ok(preview.rows.every((r) => Number(r["agg_0"]) > 0), "no group may be zero");
+  });
+
+  test("'total' without a named field sums the money column, not the group key", async () => {
+    const preview = await buildDynamicPreview(ctx(), { prompt: "تقرير مبيعات حسب العميل مع المجموع", now: NOW });
+    assert.equal(preview.definition.aggregates[0]?.field, "total");
+    assert.ok(preview.rows.every((r) => Number(r["agg_0"]) > 0));
+  });
+
+  test("a sort request is not mistaken for a group-by", async () => {
+    const ar = await buildDynamicPreview(ctx(), { prompt: "رتّب المصروفات حسب التصنيف والقيمة", now: NOW });
+    assert.equal(ar.definition.groupBy, null, "Arabic sort must not become a grouping");
+    assert.equal(ar.request.sort?.field, "expense_category");
+    const en = await buildDynamicPreview(ctx(), { prompt: "sales report with total sorted by total desc", now: NOW });
+    assert.equal(en.definition.groupBy, null, "English sorted by must not become a grouping");
+    assert.equal(en.request.sort?.field, "total");
+    assert.equal(en.request.sort?.dir, "desc");
+  });
 });
 
 describe("mandatory 6-8: detect wrong totals, duplicates, wrongly excluded records", () => {

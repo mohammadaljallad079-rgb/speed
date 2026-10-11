@@ -163,9 +163,17 @@ export function parseReportRequest(text: string, options: ParseOptions = {}): Re
   const { found, unknown } = matchFields(raw, permitted);
   const unknownFields = unknown;
 
-  // Grouping: "حسب العميل" / "by customer" / "group by month".
+  // A sort clause ("رتّب المصروفات حسب التصنيف" = "sort expenses by category")
+  // also contains "حسب". Strip it before looking for a group-by so an Arabic
+  // sort request is not turned into a grouping.
+  let groupText = raw;
+  const sortClause = /(?:رتّب|رتب|sort(?:ed)?\s*by|order\s*by)\s*[^\n,.]+/i.exec(raw);
+  if (sortClause) groupText = groupText.replace(sortClause[0], " ");
+
+  // Grouping: "حسب العميل" / "group by customer". A bare English "by" is not
+  // accepted, so "sorted by"/"order by" are not mistaken for a group-by.
   let groupBy: string | null = null;
-  const groupMatch = /(?:حسب|مجموعة حسب|by|group\s*by)\s*([^\n,.]+)/i.exec(raw);
+  const groupMatch = /(?:حسب|مجموعة حسب|group(?:ed)?\s*by)\s*([^\n,.]+)/i.exec(groupText);
   if (groupMatch) {
     const seg = groupMatch[1];
     const candidate =
@@ -184,7 +192,12 @@ export function parseReportRequest(text: string, options: ParseOptions = {}): Re
   // Aggregates: sum/مجموع, count/عدد, avg/متوسط.
   const aggregates: ReportAggregate[] = [];
   if (/(مجموع|إجمالي|total|sum)/i.test(raw)) {
-    const target = found.find((k) => CATALOG_BY_KEY[k]?.total) ?? found[0];
+    // Prefer a numeric field the user named; otherwise fall back to the
+    // dataset's natural money column (never a text field such as a group key,
+    // which would sum to zero).
+    const named = found.find((k) => CATALOG_BY_KEY[k]?.total) ?? found.find((k) => CATALOG_BY_KEY[k]?.type === "currency");
+    const fallback = source.defaultFields.find((k) => CATALOG_BY_KEY[k]?.type === "currency");
+    const target = named ?? fallback;
     if (target) aggregates.push({ field: target, fn: "sum" });
   }
   if (/(عدد|count)/i.test(raw)) aggregates.push({ field: "*", fn: "count" });

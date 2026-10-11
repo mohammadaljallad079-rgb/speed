@@ -168,15 +168,15 @@ async function loadAndShape(
   if (keyField && ctx.allowField?.(keyField) !== false && !definition.fields.some((f) => f.key === keyField.key)) {
     definition.fields = [keyField, ...definition.fields];
   }
-  // Filter fields must be loaded even when they are not displayed, so the
-  // filter can be applied; they are never added to the visible columns.
+  // Fields needed to evaluate filters and aggregates must be loaded even when
+  // they are not displayed; they are never added to the visible columns.
   const loadFields = [...definition.fields];
-  for (const f of definition.filters) {
-    const field = CATALOG_BY_KEY[f.field];
-    if (field && ctx.allowField?.(field) !== false && !loadFields.some((x) => x.key === field.key)) {
-      loadFields.push(field);
-    }
-  }
+  const need = (key: string) => {
+    const field = CATALOG_BY_KEY[key];
+    if (field && ctx.allowField?.(field) !== false && !loadFields.some((x) => x.key === field.key)) loadFields.push(field);
+  };
+  for (const f of definition.filters) need(f.field);
+  for (const a of definition.aggregates) if (a.field !== "*") need(a.field);
   const query: ReportQuery = { tenantId: ctx.tenantId, from: input.from ?? null, to: input.to ?? null };
   const { rows: raw, sourceCount } = await loadDynamicRows(ctx.db, definition.dataset, query, loadFields);
   const filtered = applyFilters(raw, definition.filters, now);

@@ -9,6 +9,11 @@ import { useState } from "react";
 import { useLanguage } from "@/lib/LanguageContext";
 
 import { supabase } from "@/lib/supabase";
+import {
+  loginErrorMessage,
+  notProvisionedMessage,
+  unauthorizedRoleMessage,
+} from "@/lib/auth/login-errors";
 
 function LoginPageContent() {
   const router = useRouter();
@@ -24,13 +29,26 @@ function LoginPageContent() {
     setLoading(true);
     setError(null);
 
+    // Normalise the credentials once. A trailing space from a mobile keyboard
+    // autocomplete is the classic cause of an intermittent
+    // `Invalid login credentials` from GoTrue's `/token?grant_type=password`.
+    const normalisedEmail = email.trim();
+    const normalisedPassword = password.trim();
+
     const { data, error: signInError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+      email: normalisedEmail,
+      password: normalisedPassword,
     });
 
     if (signInError || !data.user) {
-      setError(signInError?.message ?? (isRTL ? "تعذر تسجيل الدخول." : "Login failed."));
+      // Secret-free diagnostic: the status/code (never the message, which varies
+      // by provider version, and never the credentials) tells an operator whether
+      // this is a real credential rejection or a configuration problem.
+      console.error("[login] sign-in failed", {
+        status: signInError?.status,
+        code: signInError?.code,
+      });
+      setError(loginErrorMessage(signInError, isRTL));
       setLoading(false);
       return;
     }
@@ -38,17 +56,22 @@ function LoginPageContent() {
     // The session exists, but the role/tenant decision is NOT made here. It is
     // resolved server-side by /api/me from the session and the application
     // tables, so a forged client value can never grant a role.
-    const res = await fetch("/api/me", { cache: "no-store" });
+    let res: Response;
+    try {
+      res = await fetch("/api/me", { cache: "no-store" });
+    } catch {
+      await supabase.auth.signOut();
+      setError(isRTL ? "تعذر الاتصال بالخادم. حاول مرة أخرى." : "Could not reach the server. Please try again.");
+      setLoading(false);
+      return;
+    }
+
     const me = await res.json().catch(() => null);
 
     if (!res.ok) {
       await supabase.auth.signOut();
-      if (me?.code === "account_not_provisioned") {
-        setError(
-          isRTL
-            ? "تم إنشاء الجلسة لكن الحساب غير مرتبط بالنظام. تواصل مع المسؤول."
-            : "Sign-in succeeded but your account is not linked to the ERP. Contact an administrator.",
-        );
+      if (res.status === 403 && me?.code === "account_not_provisioned") {
+        setError(notProvisionedMessage(isRTL));
       } else {
         setError(isRTL ? "تعذر التحقق من صلاحيات الحساب." : "Could not verify your account permissions.");
       }
@@ -64,7 +87,7 @@ function LoginPageContent() {
 
     if (me?.role !== "admin" && me?.role !== "super_admin" && me?.role !== "staff") {
       await supabase.auth.signOut();
-      setError(isRTL ? "هذا الحساب غير مخوّل لدخول لوحة الإدارة." : "This account is not authorized to access the admin panel.");
+      setError(unauthorizedRoleMessage(isRTL));
       setLoading(false);
       return;
     }
@@ -101,6 +124,10 @@ function LoginPageContent() {
                 id="email"
                 type="email"
                 required
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-gray-900 focus:outline-none"

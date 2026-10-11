@@ -449,6 +449,31 @@ that applies the filters it is given and returns only affected rows.
   It was executed end-to-end on PostgreSQL 17 (package applied, POST-FLIGHT green,
   11/11 assertions) — see `supabase/tests/004_harness/`.
 
+## Login flow invariants (do not regress)
+
+- **The role is decided server-side, never by the login page.** `src/app/login/page.tsx`
+  signs in with the shared browser client, then calls `/api/me`; the role it routes
+  on comes from that response, not from `signInWithPassword`'s user object or from
+  `user_metadata`. `tests/login-flow.test.ts` asserts the page never reads
+  `users`/`user_metadata`/`app_metadata`.
+- **Error text is centralized** in `src/lib/auth/login-errors.ts` (pure). Never echo
+  the provider's raw message (it varies by `@supabase/supabase-js` version and can
+  leak detail). `loginErrorMessage` maps `invalid_credentials`/400/429/… to safe,
+  localized strings.
+- **Credentials are normalised** (`.trim()`) and the email input sets
+  `autoCapitalize="none" autoCorrect="off"` — an autocapitalized or space-padded
+  email is the classic cause of an intermittent `400 /token?grant_type=password`.
+- **Config consistency is checkable** via `src/lib/supabase-config.ts`
+  (`supabaseConfigConsistent`): a `NEXT_PUBLIC_SUPABASE_URL` whose project ref does
+  not match the anon key's `ref` claim is the signature of a build/runtime env
+  mismatch.
+- **A deployed bundle that lacks `/api/me`, `super_admin` and `customer-dashboard`
+  is stale.** Verify what production actually serves (`/_next/static/chunks/*.js`)
+  before debugging anything else.
+- Browser-client note: `src/lib/supabase.ts` in the current source uses
+  `createBrowserClient` (cookie-backed, so middleware/route handlers see the
+  session). `.bak`/`.save` files are legacy and not built.
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

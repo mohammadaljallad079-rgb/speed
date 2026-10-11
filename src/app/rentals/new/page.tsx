@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation"
 import { jsPDF } from "jspdf"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
+import { nextDocumentNumber } from "@/lib/numbering";
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -524,8 +525,9 @@ function NewRentalForm() {
         const acc = (code: string) => accountsData?.find((a: any) => a.code === code)?.id
 
         if (paidNum > 0) {
+          const receiptNumber = await nextDocumentNumber(supabase, "receipt", "REC")
           const { error: paymentError } = await supabase.from("payments").insert({
-            receipt_number: `REC-${Date.now().toString().slice(-8)}`,
+            receipt_number: receiptNumber,
             invoice_id: newInvoice.id,
             customer_id: contract.customer_id,
             rental_contract_id: newContract.id,

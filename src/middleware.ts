@@ -22,11 +22,60 @@ const PUBLIC_API_PREFIXES = [
   "/api/saas/signup", // public free-account signup (creates a NEW tenant)
 ];
 
+/**
+ * ERP page prefixes that require a session. An anonymous caller is redirected
+ * to `/login` instead of being served the page shell (which would otherwise
+ * return 200 and rely on client-side gating). The list is deliberately explicit
+ * so marketing and portal pages are never caught by accident.
+ */
+const PROTECTED_PAGE_PREFIXES = [
+  "/dashboard",
+  "/financial-dashboard",
+  "/accounting",
+  "/reports",
+  "/sales",
+  "/purchases",
+  "/purchase-orders",
+  "/rentals",
+  "/cars",
+  "/fleet",
+  "/customers",
+  "/suppliers",
+  "/supplier-payments",
+  "/supplier-statements",
+  "/invoices",
+  "/payments",
+  "/expenses",
+  "/quotations",
+  "/loans",
+  "/credits",
+  "/maintenance",
+  "/bookings",
+  "/hr",
+  "/settings",
+  "/erp",
+  "/employee-portal",
+  "/customer-dashboard",
+  "/onboarding",
+];
+
+/** True when a page path must have a session (else redirect to /login). */
+export function isProtectedPage(pathname: string): boolean {
+  return PROTECTED_PAGE_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
+
+/** True when an `/api/*` path is intentionally public. */
+export function isPublicApiPath(pathname: string): boolean {
+  return PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const { pathname } = request.nextUrl;
-  const isPublicApi = PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  const isPublicApi = isPublicApiPath(pathname);
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -71,6 +120,13 @@ export async function middleware(request: NextRequest) {
       { error: "Authentication required", code: "unauthenticated" },
       { status: 401 },
     );
+  }
+
+  if (isProtectedPage(pathname) && !user) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/login";
+    loginUrl.search = "";
+    return NextResponse.redirect(loginUrl);
   }
 
   return response;

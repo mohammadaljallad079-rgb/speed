@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { requireContext, toErrorResponse } from "@/lib/auth";
+import { requireContext, scopeToCompany, toErrorResponse } from "@/lib/auth";
 
 /**
  * Financial ratios read endpoint.
@@ -18,7 +18,7 @@ export async function GET(request: Request) {
       .select("*")
       .order("created_at", { ascending: false })
       .limit(100);
-    if (context.tenantId) query = query.eq("company_id", context.tenantId);
+    query = scopeToCompany(query, context);
 
     const { data, error } = await query;
     if (error) throw error;

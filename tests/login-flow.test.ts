@@ -15,7 +15,7 @@ import {
   projectRefFromUrl,
   supabaseConfigConsistent,
 } from "../src/lib/supabase-config.ts";
-import { middleware } from "../src/middleware.ts";
+import { isProtectedPage, isPublicApiPath, middleware } from "../src/middleware.ts";
 
 /**
  * Login + authentication flow regression guard.
@@ -160,5 +160,38 @@ describe("middleware gates the privileged API surface", () => {
   test("does not gate public pages", async () => {
     const res = await middleware(new NextRequest("https://example.com/login"));
     assert.notEqual(res.status, 401);
+  });
+});
+
+describe("page-level gate redirects anonymous callers", () => {
+  test("ERP pages are protected", () => {
+    for (const p of [
+      "/dashboard",
+      "/financial-dashboard",
+      "/accounting/journal-entries",
+      "/reports/profit-loss",
+      "/sales/new",
+      "/settings/users",
+      "/hr/payroll",
+    ]) {
+      assert.equal(isProtectedPage(p), true, `${p} must be protected`);
+    }
+  });
+
+  test("marketing and auth pages stay public", () => {
+    for (const p of ["/", "/login", "/pricing", "/features", "/signup", "/customer-login"]) {
+      assert.equal(isProtectedPage(p), false, `${p} must stay public`);
+    }
+  });
+
+  test("a prefix does not swallow an unrelated page", () => {
+    // `/carsomething` must not be treated as the `/cars` section.
+    assert.equal(isProtectedPage("/carsomething"), false);
+  });
+
+  test("public API allow-list is exact", () => {
+    assert.equal(isPublicApiPath("/api/saas/signup"), true);
+    assert.equal(isPublicApiPath("/api/public/vehicles"), true);
+    assert.equal(isPublicApiPath("/api/users"), false);
   });
 });

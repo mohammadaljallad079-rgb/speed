@@ -16,7 +16,9 @@ import {
   assertWritableTenant,
   canAccessBranch,
   sanitizeMetadata,
+  scopeToCompany,
 } from "../src/lib/auth/policy.ts";
+import { nextDocumentNumber } from "../src/lib/numbering.ts";
 import type { AuthContext, FinancialYear } from "../src/lib/auth/types.ts";
 
 function context(overrides: Partial<AuthContext> = {}): AuthContext {
@@ -187,5 +189,60 @@ describe("audit metadata sanitisation", () => {
 
   test("undefined values are dropped", () => {
     assert.deepEqual(sanitizeMetadata({ a: undefined, b: 1 }), { b: 1 });
+  });
+});
+
+// A recording stub mirroring the PostgREST builder subset these helpers touch.
+function recordingQuery() {
+  const calls: Array<[string, string, unknown]> = [];
+  const q = {
+    eq(column: string, value: unknown) {
+      calls.push(["eq", column, value]);
+      return q;
+    },
+    is(column: string, value: unknown) {
+      calls.push(["is", column, value]);
+      return q;
+    },
+    calls,
+  };
+  return q;
+}
+
+describe("company scope is fail-closed", () => {
+  test("a tenant-less caller is scoped to IS NULL, never unfiltered", () => {
+    const q = recordingQuery();
+    scopeToCompany(q, context({ tenantId: null }));
+    assert.deepEqual(q.calls, [["is", "company_id", null]]);
+  });
+
+  test("a tenanted caller is scoped to its own tenant", () => {
+    const q = recordingQuery();
+    scopeToCompany(q, context({ tenantId: TENANT_A }));
+    assert.deepEqual(q.calls, [["eq", "company_id", TENANT_A]]);
+  });
+
+  test("only a super admin reads across tenants (no filter)", () => {
+    const q = recordingQuery();
+    scopeToCompany(q, context({ tenantId: null, isSuperAdmin: true }));
+    assert.equal(q.calls.length, 0);
+  });
+});
+
+describe("document numbering is idempotent-safe", () => {
+  test("uses the row-locked RPC value when available", async () => {
+    const client = { rpc: async () => ({ data: "REC-2026-0001", error: null }) };
+    assert.equal(await nextDocumentNumber(client, "receipt", "REC"), "REC-2026-0001");
+  });
+
+  test("falls back without throwing when the sequence is unavailable", async () => {
+    const client = { rpc: async () => ({ data: null, error: { message: "function not found" } }) };
+    const value = await nextDocumentNumber(client, "receipt", "REC");
+    assert.match(value, /^REC-\d{8}$/);
+  });
+
+  test("an empty RPC result also falls back", async () => {
+    const client = { rpc: async () => ({ data: "", error: null }) };
+    assert.match(await nextDocumentNumber(client, "receipt", "REC"), /^REC-\d{8}$/);
   });
 });

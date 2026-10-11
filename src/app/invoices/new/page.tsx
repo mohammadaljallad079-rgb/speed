@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic"
 import { useRouter } from "next/navigation"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
+import { nextDocumentNumber } from "@/lib/numbering";
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Save, FileText, User, DollarSign, CreditCard, Percent, Hash } from "lucide-react"
 import Link from "next/link"
@@ -136,8 +137,9 @@ function NewInvoiceContent() {
       if (error) throw error
 
       if (advancePayment > 0 && newInvoice) {
+        const receiptNumber = await nextDocumentNumber(supabase, "receipt", "REC")
         const { error: paymentError } = await supabase.from("payments").insert({
-          receipt_number: `REC-${Date.now().toString().slice(-8)}`,
+          receipt_number: receiptNumber,
           invoice_id: newInvoice.id,
           customer_id: form.customer_id,
           rental_contract_id: form.rental_contract_id && form.rental_contract_id !== "none" ? form.rental_contract_id : null,

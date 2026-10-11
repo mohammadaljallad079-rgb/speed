@@ -110,6 +110,21 @@ export function scopeToTenant<T>(query: T, context: AuthContext): T {
 }
 
 /**
+ * Applies a company/tenant scope to a shared-artefact read, fail-closed.
+ *
+ * Unlike `scopeToTenant`, a tenant-less caller is scoped to `IS NULL` (the
+ * single-tenant install) rather than left unfiltered. This prevents a caller
+ * whose tenant cannot be resolved from reading every tenant's financial
+ * artefacts. Super admins are the only cross-tenant readers and are never
+ * scoped.
+ */
+export function scopeToCompany<T>(query: T, context: AuthContext, column = "company_id"): T {
+  if (context.isSuperAdmin) return query;
+  const q = query as unknown as { eq: (c: string, v: string) => T; is: (c: string, v: null) => T };
+  return context.tenantId ? q.eq(column, context.tenantId) : q.is(column, null);
+}
+
+/**
  * Rejects a write that would place a row in a tenant other than the caller's.
  * `undefined`/`null` incoming values are replaced with the caller's tenant.
  */

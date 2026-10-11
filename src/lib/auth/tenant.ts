@@ -9,6 +9,7 @@ export {
   assertWritableTenant,
   canAccessBranch,
   isDateInFinancialYear,
+  scopeToCompany,
   scopeToTenant,
   tenantValueFor,
 } from "./policy";

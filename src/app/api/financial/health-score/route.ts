@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { requireContext, toErrorResponse } from "@/lib/auth";
+import { requireContext, scopeToCompany, toErrorResponse } from "@/lib/auth";
 
 /**
  * Financial health score.
@@ -16,7 +16,7 @@ export async function GET(request: Request) {
       .select("*")
       .order("created_at", { ascending: false })
       .limit(1);
-    if (context.tenantId) query = query.eq("company_id", context.tenantId);
+    query = scopeToCompany(query, context);
 
     const { data, error } = await query.maybeSingle();
     if (error) throw error;

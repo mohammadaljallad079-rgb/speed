@@ -449,6 +449,36 @@ that applies the filters it is given and returns only affected rows.
   It was executed end-to-end on PostgreSQL 17 (package applied, POST-FLIGHT green,
   11/11 assertions) — see `supabase/tests/004_harness/`.
 
+## AI report formatting (`src/lib/reporting/`)
+
+- **Formatting/structure only.** The assistant renders EXISTING report data; it
+  never writes invoices, journals, balances or tax values. A request that asks to
+  change amounts is classified as `intent: "data"`, flagged
+  (`dataChangeRequested`) and never executed — real data changes must go through
+  the guarded service layer (`postJournalEntry`, `sales/service.ts`).
+- **No free-form code from the model.** `intent.ts` is a deterministic bilingual
+  parser that emits a closed set of formatting primitives; nothing from the
+  prompt is ever executed as SQL/JS.
+- **Report glossary lives in one place:** `definitions.ts` (`REPORT_DEFINITIONS`).
+  Add a report/column there, not in the route or UI.
+- `vat.ts` implements the Bahrain VAT return structure (standard 10% / zero /
+  exempt / out-of-scope-unregistered) and validates arithmetic. It never invents
+  a treatment: a zero-VAT registered transaction is `unclassified` and surfaced
+  for review. Tax rates are never changed by AI.
+- `workbook.ts` (ExcelJS) writes real `SUM` formulas and `verifyWorkbookBuffer`
+  **re-opens** the buffer before download; a file that fails verification is
+  never offered. `.xlsx` is handled by ExcelJS; `xlsx`/SheetJS remains the
+  read-only analyzer in `ai-excel-analysis`.
+- `templates.ts` reuses the `settings` key/value store (`report_format_templates`),
+  tenant-scoped from the session — no new table.
+- `assistant.ts` is auth-free (identity injected), so it is unit-tested with a
+  recording PostgREST stub. Tenant filter is applied first.
+- **Missing in this snapshot (reported, not fabricated):** there is no
+  `speed_erp_progress.xlsx` and no `VAT Report format-template for Bahrain.xlsx`
+  in the repo, and no `src/lib/excel/` unified import/export engine despite
+  AGENTS.md referencing one. The Bahrain VAT definition is modelled on the
+  documented Bahrain VAT return, not on the absent template file.
+
 ## Login flow invariants (do not regress)
 
 - **The role is decided server-side, never by the login page.** `src/app/login/page.tsx`

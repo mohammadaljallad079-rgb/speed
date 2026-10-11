@@ -1,0 +1,72 @@
+import { NextResponse } from "next/server";
+
+import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import type { ReportingDb } from "@/lib/reporting/data";
+import { answerQuestion } from "@/lib/ai/assistant";
+import { loadAiSettings } from "@/lib/ai/settings";
+import { makeComplete } from "@/lib/ai/server";
+import { detectWriteIntent, redactSecrets } from "@/lib/ai/policy";
+
+/**
+ * In-ERP assistant endpoint.
+ *
+ * Read/analysis only. Identity, tenant and permissions come from the session
+ * via `requireContext`; the request body can only carry the question, an
+ * optional screen name and a date range. Answers are grounded in real,
+ * permission-gated tool results and every request is audited.
+ */
+
+export const dynamic = "force-dynamic";
+
+const MAX_PROMPT = 2000;
+
+export async function POST(request: Request) {
+  try {
+    const context = await requireContext(request, { module: "reports", action: "view" });
+
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const prompt = String(body.prompt ?? "").slice(0, MAX_PROMPT).trim();
+    if (!prompt) {
+      return NextResponse.json({ error: "A question is required", code: "bad_request" }, { status: 400 });
+    }
+    const screen = body.screen ? String(body.screen).slice(0, 60) : null;
+    const from = body.from ? String(body.from) : null;
+    const to = body.to ? String(body.to) : null;
+
+    const settings = await loadAiSettings(supabaseAdmin as never, context.tenantId);
+    const complete = makeComplete(settings);
+
+    const result = await answerQuestion(
+      context,
+      { db: supabaseAdmin as unknown as ReportingDb, tenantId: context.tenantId, prompt, screen, from, to },
+      { complete },
+    );
+
+    await logAudit(context, {
+      action: "export",
+      entity: "ai_assistant",
+      metadata: {
+        screen,
+        provider: result.provider ?? "none",
+        degraded: result.degraded,
+        sources: result.sources.length,
+        blocked_write_intent: detectWriteIntent(prompt).blocked,
+        tokens_in: result.usage?.inputTokens ?? 0,
+        tokens_out: result.usage?.outputTokens ?? 0,
+        cost_usd: result.usage?.costUsd ?? null,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      answer: redactSecrets(result.answer),
+      sources: result.sources,
+      degraded: result.degraded,
+      requiresApproval: result.requiresApproval,
+    });
+  } catch (error) {
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
+  }
+}

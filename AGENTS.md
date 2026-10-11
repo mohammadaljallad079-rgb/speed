@@ -553,3 +553,46 @@ that applies the filters it is given and returns only affected rows.
   callers and rely on client-side gating.
 - Live E2E signup/onboarding tests MUST use a disposable email and delete the
   auth user, tenant, branch, settings and financial_years afterwards.
+
+## AI assistant, agents & development requests (invariants)
+
+- **One AI engine, one assistant.** `src/lib/ai/` is the only AI layer. Do not
+  add a second assistant, a second provider call path or a per-page AI feature.
+  `src/app/api/financial/ai-excel-analysis/route.ts` was refactored to reuse
+  `completeWithFallback` — never reintroduce a hard-coded `new Anthropic(...)`.
+- **Read-only by construction.** The assistant's tool set (`AI_TOOLS` in
+  `src/lib/ai/policy.ts`) is closed and every tool is `kind: "read"`. A request
+  to post/edit/delete accounting data is refused by `detectWriteIntent` before
+  any model call. Never let the assistant write `journal_entries`,
+  `invoices`, `payments` or any financial row — mutations stay on the existing
+  guarded service path.
+- **Permissions come from the session.** `allowedTools(context)` /
+  `resolveAgent(context, id)` narrow the tool/agent set to the caller's own
+  `can(context, module, "view")`. `can()` short-circuits on `isAdmin`, so a
+  company admin gets everything within its tenant; a tenant-less super admin is
+  the only cross-tenant reader. Identity is never taken from the body.
+- **Answers are grounded.** `answerQuestion` always computes the deterministic,
+  tenant-scoped facts first; the model only phrases them. If no provider is
+  configured or the call fails, the deterministic answer is returned and marked
+  `degraded: true`. Never let the model invent a figure.
+- **Untrusted text is data.** Prompts, spreadsheet cells and file contents pass
+  through `asUntrustedBlock` (delimited, length-capped) and `scanForInjection`.
+  `redactSecrets` strips JWTs/keys/connection strings from any output.
+- **Providers are configurable, not hard-wired.** `AiSettings` (key
+  `ai_settings` in the existing `settings` table, tenant-scoped) holds the
+  provider, per-provider keys, per-task models and an ordered fallback chain.
+  Anthropic is the built-in default; `openai_compatible` + `baseUrl` reaches a
+  self-hosted model (never assumed free). API keys are server-side only and are
+  never returned — `toPublicSettings` exposes only `hasApiKey`.
+- **The AI never self-applies.** Development requests
+  (`src/lib/ai/dev-requests.ts`) are a review-only pipeline: create → plan →
+  approve/reject → artifact. `isForbiddenPath` / `assertChangeSetSafe` block any
+  change to `src/lib/auth/`, `src/middleware.ts`, `supabase/migrations/`,
+  `.env*`, `package.json`. High-risk requests require a global super admin
+  (`canApprove`). A human applies the patch on a branch; deployment is separate.
+- **The AI Control dashboard** (`/settings/ai-control`) requires an admin to
+  write (`settings.edit`) and lists agents with the caller's effective tools.
+  `AssistantPanel` is mounted in the financial dashboard's AI tab.
+- Tests: `tests/ai-assistant.test.ts` (registered in `test:core`) covers policy,
+  permissions, tenant scoping, injection, routing/cost, settings key handling,
+  the assistant (deterministic + model + failure) and the dev-request workflow.

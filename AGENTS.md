@@ -479,6 +479,38 @@ that applies the filters it is given and returns only affected rows.
   AGENTS.md referencing one. The Bahrain VAT definition is modelled on the
   documented Bahrain VAT return, not on the absent template file.
 
+### Dynamic report builder + validator (`catalog.ts`, `report-def.ts`, `validation.ts`, `dynamic.ts`)
+
+- **Field catalog is the single whitelist.** `catalog.ts` (`CATALOG`) declares
+  every reportable field with its real table/column, permission module, type and
+  `aliases`. A request can only reference catalog keys; unknown fields are
+  reported (`unknownFields`) and never invented. Add a field = one catalog entry
+  whose column exists — never a schema change for a report request.
+- **`report-def.ts`** parses Arabic/English requests deterministically (dataset,
+  fields, filters, group-by, aggregates, sort). `findTerm` is Arabic-prefix aware
+  (`و`/`ال` attach without a space). Only a closed set of filter ops
+  (`eq/gte/lte/overdue/contains`) is emitted — no SQL is built from the prompt.
+- **Every report keeps its identifying key** (`DatasetSource.keyField`, e.g.
+  `invoice_number`) even when the request omits it. Filter-only fields are loaded
+  but not displayed.
+- **`validation.ts` is the deterministic checker** (never the LLM). Findings
+  carry severity, category, evidence, current/expected, and a repair **class**:
+  1 = safe display, 2 = report-definition, 3 = sensitive accounting/data.
+  `applicableFixes` returns only class 1. Rounding/currency/refunds and negative
+  amounts are tolerated, not flagged.
+- **Data-change requests are refused.** A prompt that asks to change an amount,
+  balance, VAT or journal is flagged (`dataChangeRequested`) and never applied;
+  the UI shows the approved-path notice. There is no accounting write path here.
+- **Permission gating per field.** The route calls
+  `can(context, field.module, "view")` as the `allow` predicate; denied fields are
+  dropped from output and listed in `deniedFields`.
+- **Definitions are versioned** in the `settings` store (`report_definitions`),
+  tenant-scoped; `restoreDefinition` replays a prior version (bounded history).
+- **History reuses `activity_logs`** (`GET ...?what=history`); no second store.
+- Endpoints: `POST ?mode=build-preview|build-file|validate|save-definition|
+  restore-definition`, `GET ?what=definitions|history`. `sourceCount` (records
+  matched) vs rendered rows is compared to catch excluded records.
+
 ## Login flow invariants (do not regress)
 
 - **The role is decided server-side, never by the login page.** `src/app/login/page.tsx`

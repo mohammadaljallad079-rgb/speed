@@ -10,8 +10,10 @@ import { isReportKind } from "./definitions";
  */
 
 export const TEMPLATES_SETTING_KEY = "report_format_templates";
+export const DEFINITIONS_SETTING_KEY = "report_definitions";
 const MAX_TEMPLATES = 50;
 const MAX_NAME = 60;
+const MAX_VERSIONS = 10;
 
 /** Fluent query builder that also awaits, mirroring PostgREST's thenable builder. */
 interface SettingsQuery extends PromiseLike<{ data: { value?: unknown } | null; error: unknown }> {
@@ -92,4 +94,82 @@ export async function saveTemplate(
   );
   if (error) throw error;
   return next;
+}
+
+// --- Saved dynamic report definitions (with versions) -------------------------
+
+export interface SavedDefinitionVersion {
+  version: number;
+  savedAt: string;
+  /** The whitelisted, parsed request that can be replayed. */
+  request: unknown;
+}
+
+export interface SavedDefinition {
+  name: string;
+  dataset: string;
+  current: unknown;
+  versions: SavedDefinitionVersion[];
+}
+
+async function readDefinitions(db: SettingsDb, tenantId: string | null): Promise<SavedDefinition[]> {
+  let query = db.from("settings").select("value").eq("key", DEFINITIONS_SETTING_KEY);
+  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const { data, error } = await query.maybeSingle();
+  if (error || !data?.value) return [];
+  const raw = data.value;
+  const list = Array.isArray(raw) ? raw : [];
+  return list.filter((d): d is SavedDefinition => Boolean(d) && typeof (d as SavedDefinition).name === "string");
+}
+
+export async function loadDefinitions(db: SettingsDb, tenantId: string | null): Promise<SavedDefinition[]> {
+  return readDefinitions(db, tenantId);
+}
+
+export function findDefinition(defs: SavedDefinition[], name: string): SavedDefinition | null {
+  const needle = name.trim().toLowerCase();
+  return defs.find((d) => d.name.toLowerCase() === needle) ?? defs.find((d) => d.name.toLowerCase().includes(needle)) ?? null;
+}
+
+/**
+ * Saves a report definition, pushing the previous version onto a bounded
+ * history so a definition can be restored. Returns the updated list.
+ */
+export async function saveDefinition(
+  db: SettingsDb,
+  tenantId: string | null,
+  entry: { name: string; dataset: string; request: unknown },
+): Promise<SavedDefinition[]> {
+  const name = String(entry.name ?? "").trim().slice(0, MAX_NAME);
+  if (!name) throw new Error("Definition name required");
+  const existing = await readDefinitions(db, tenantId);
+  const prior = existing.find((d) => d.name.toLowerCase() === name.toLowerCase());
+  const versions = prior
+    ? [{ version: (prior.versions[prior.versions.length - 1]?.version ?? 0) + 1, savedAt: new Date().toISOString(), request: prior.current }, ...prior.versions].slice(0, MAX_VERSIONS)
+    : [];
+  const next: SavedDefinition[] = [
+    { name, dataset: entry.dataset, current: entry.request, versions },
+    ...existing.filter((d) => d.name.toLowerCase() !== name.toLowerCase()),
+  ].slice(0, MAX_TEMPLATES);
+  const { error } = await db.from("settings").upsert(
+    { key: DEFINITIONS_SETTING_KEY, value: next, ...(tenantId ? { tenant_id: tenantId } : {}), updated_at: new Date().toISOString() },
+    { onConflict: "tenant_id,key" },
+  );
+  if (error) throw error;
+  return next;
+}
+
+/** Restores a prior version as current, keeping the replaced one in history. */
+export async function restoreDefinition(
+  db: SettingsDb,
+  tenantId: string | null,
+  name: string,
+  version: number,
+): Promise<SavedDefinition[]> {
+  const existing = await readDefinitions(db, tenantId);
+  const def = existing.find((d) => d.name.toLowerCase() === name.trim().toLowerCase());
+  if (!def) throw new Error("Definition not found");
+  const target = def.versions.find((v) => v.version === version);
+  if (!target) throw new Error("Version not found");
+  return saveDefinition(db, tenantId, { name: def.name, dataset: def.dataset, request: target.request });
 }

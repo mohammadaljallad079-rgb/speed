@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import DashboardLayout from '@/components/DashboardLayout'
 import ReportFormatAssistant from '@/components/reporting/ReportFormatAssistant'
+import DynamicReportBuilder from '@/components/reporting/DynamicReportBuilder'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -915,6 +916,7 @@ function FinancialDashboardContent() {
 
           {/* AI EXCEL ANALYSIS TAB */}
           <TabsContent value="ai_excel" className="space-y-6">
+            <DynamicReportBuilder />
             <ReportFormatAssistant />
             <Card className="border-0 shadow-md">
               <CardHeader>

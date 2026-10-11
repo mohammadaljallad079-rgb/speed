@@ -1,5 +1,6 @@
 import type { ReportData, ReportKind, ReportRow } from "./types";
 import { buildVatResult, vatReportRows, type VatTransaction } from "./vat";
+import { CATALOG, DATASET_SOURCES, type CatalogField, type Dataset } from "./catalog";
 
 /**
  * Server-side report data providers.
@@ -39,13 +40,20 @@ const pick = (row: Record<string, unknown>, keys: string[]): unknown => {
   return undefined;
 };
 
+const DATE_COLUMN: Record<string, string> = {
+  invoices: "invoice_date",
+  purchase_invoices: "bill_date",
+  expenses: "expense_date",
+  payments: "payment_date",
+};
+
 function applyScope(q: ReportingQuery, query: ReportQuery, table: string): ReportingQuery {
   if (query.tenantId) q = q.eq("tenant_id", query.tenantId);
-  const dateCol = table === "invoices" || table === "purchase_invoices"
-    ? (table === "invoices" ? "invoice_date" : "bill_date")
-    : "expense_date";
-  if (query.from) q = q.gte(dateCol, query.from);
-  if (query.to) q = q.lte(dateCol, query.to);
+  const dateCol = DATE_COLUMN[table];
+  if (dateCol) {
+    if (query.from) q = q.gte(dateCol, query.from);
+    if (query.to) q = q.lte(dateCol, query.to);
+  }
   return q;
 }
 
@@ -170,3 +178,116 @@ export async function loadReportData(db: ReportingDb, kind: ReportKind, query: R
       return { ...base, rows: [] };
   }
 }
+
+// --- Dynamic-dataset access (field catalog) -----------------------------------
+
+function computeField(field: CatalogField, row: Record<string, unknown>, related: Record<string, unknown> | undefined): unknown {
+  const raw = field.column ? row[field.column] : row[field.key];
+  switch (field.key) {
+    case "subtotal":
+      return round3(num(raw ?? row["total_amount"]) - num(row["vat_amount"]));
+    case "remaining":
+      return round3(num(raw ?? row["total_amount"]) - num(row["paid_amount"]));
+    case "payment_status": {
+      const total = num(row["total_amount"]);
+      const paid = num(row["paid_amount"]) ?? 0;
+      if (total === null) return "";
+      if (paid >= total && total > 0) return "paid";
+      if (paid > 0) return "partial";
+      return "unpaid";
+    }
+    default:
+      if (field.via && related) return related[field.via.column];
+      return raw ?? null;
+  }
+}
+
+function round3(n: number): number {
+  return Math.round(n * 1000) / 1000;
+}
+
+export interface DynamicQuery extends ReportQuery {
+  fields: CatalogField[];
+  /** Client-side row predicates are applied after tenant/period scoping. */
+  predicates?: FieldPredicate[];
+}
+
+export type FieldPredicate = (row: ReportRow) => boolean;
+
+/**
+ * Fetches rows for a dynamic dataset, projecting only catalog fields.
+ * Relation fields are resolved with a second, tenant-scoped lookup that maps
+ * `localKey → via.column`, avoiding joins that would multiply rows.
+ */
+export async function loadDynamicRows(
+  db: ReportingDb,
+  dataset: Dataset,
+  query: ReportQuery,
+  fields: CatalogField[],
+): Promise<{ rows: ReportRow[]; sourceCount: number }> {
+  const source = DATASET_SOURCES[dataset];
+  const columns = new Set(source.columns);
+  for (const f of fields) if (f.column && !f.via) columns.add(f.column);
+  const { data, error } = await applyScope(
+    db.from(source.table).select([...columns].join(", ")),
+    query,
+    source.table,
+  );
+  if (error) throw error;
+  const rawRows = (data ?? []) as Record<string, unknown>[];
+
+  // Resolve relation fields in one extra query per related table.
+  const relatedTables = new Map<string, { table: string; column: string; localKey: string; ids: Set<string> }>();
+  for (const f of fields) {
+    if (!f.via) continue;
+    const key = `${f.via.table}:${f.via.localKey}:${f.via.column}`;
+    if (!relatedTables.has(key)) {
+      relatedTables.set(key, { table: f.via.table, column: f.via.column, localKey: f.via.localKey, ids: new Set() });
+    }
+    for (const r of rawRows) {
+      const id = r[f.via.localKey];
+      if (id !== null && id !== undefined) relatedTables.get(key)!.ids.add(String(id));
+    }
+  }
+
+  const relatedMaps = new Map<string, Map<string, Record<string, unknown>>>();
+  for (const [key, rel] of relatedTables) {
+    const map = new Map<string, Record<string, unknown>>();
+    if (rel.ids.size) {
+      const rq = applyScope(db.from(rel.table).select(`${rel.localKey === "id" ? "id" : "id"},${rel.column}`), query, rel.table);
+      const { data: relData, error: relError } = await rq;
+      if (relError) throw relError;
+      for (const row of (relData ?? []) as Record<string, unknown>[]) {
+        map.set(String(row["id"]), row);
+      }
+    }
+    relatedMaps.set(key, map);
+  }
+
+  const rows: ReportRow[] = rawRows.map((r) => {
+    const out: ReportRow = {};
+    for (const f of fields) {
+      let related: Record<string, unknown> | undefined;
+      if (f.via) {
+        const key = `${f.via.table}:${f.via.localKey}:${f.via.column}`;
+        related = relatedMaps.get(key)?.get(String(r[f.via.localKey]));
+      }
+      out[f.key] = computeField(f, r, related) as string | number | null;
+    }
+    return out;
+  });
+
+  return { rows, sourceCount: rawRows.length };
+}
+
+/** Applies a small whitelist of client-side predicates (never widens scope). */
+export function applyPredicates(rows: ReportRow[], predicates: FieldPredicate[]): ReportRow[] {
+  return predicates.reduce((acc, p) => acc.filter(p), rows);
+}
+
+export function catalogFieldsFor(dataset: Dataset): CatalogField[] {
+  const table = DATASET_SOURCES[dataset].table;
+  return CATALOG.filter((f) => f.source === table || f.via?.table === table);
+}
+
+void (undefined as unknown as Dataset);

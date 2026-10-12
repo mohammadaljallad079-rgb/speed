@@ -617,15 +617,52 @@ that applies the filters it is given and returns only affected rows.
   role and two tenants). `run.sh` needs a local PostgreSQL and the `postgres`
   superuser. Reuse it for any future isolation change. Migration 004 alone is
   covered by `supabase/tests/004_harness/` (11 assertions).
-- **The frozen activation package's banner hashes are STALE.** In
-  `supabase/PRODUCTION_ACTIVATION_001_002_003.sql` the recorded
-  `SHA-256 (body)` values do not match the embedded bodies. The embedded 001 is
-  the *corrected* version (RESTRICTIVE `activity_logs` policies +
-  `ai_recommendations` in the RLS-enable array), while `migrations/001` is the
-  pre-fix version; migration 002 supersedes 001, so applying either path ends
-  correct. Do not trust the banner as proof of byte-identity — recompute it.
+- **The frozen activation package's banner hashes were STALE; fixed in Exec 09.**
+  The recorded `SHA-256 (body)` values in
+  `supabase/PRODUCTION_ACTIVATION_001_002_003.sql` used to disagree with the
+  embedded bodies, and `migrations/001` was the pre-fix version while the
+  embedded 001 was corrected. Source 001 was brought up to the corrected version
+  and the package regenerated, so bodies and hashes now agree and are guarded by
+  `tests/activation-package-integrity.test.ts`. See the Exec 09 section below.
 - **Do not re-enable `ai_recommendations` import or grant it a tenant column
   casually.** It is company-scoped (`company_id`) and RLS-enabled by 002.
 - **`test:excel` / `test:accounting` are not real scripts** (the AGENTS.md
   Commands block is aspirational). The real suites are `test:core`, `test:ai`;
   `tests/saas-signup.test.ts` is now registered in `test:core`.
+
+## Execution 09 invariants (production security closure & release)
+
+- **The activation package banner is now authoritative, and kept that way.**
+  `supabase/migrations/001_core_security.sql` was brought up to the corrected
+  release version (RESTRICTIVE `activity_logs` policies + `ai_recommendations`
+  in the RLS-enable array), so source 001 == embedded 001. Regenerate the
+  package with `node supabase/tools/rebuild-activation-package.mjs` whenever a
+  migration body changes; it rewrites the three bodies and recomputes their
+  recorded SHA-256 while preserving the PRE-/POST-FLIGHT prose.
+  `tests/activation-package-integrity.test.ts` recomputes every hash and asserts
+  byte-identity for both `PRODUCTION_ACTIVATION_001_002_003.sql` and
+  `PRODUCTION_ACTIVATION_004.sql`; it is registered in `test:core`. Never edit an
+  embedded body by hand — a stale hash is a trust failure.
+- **`EXEC07_1_TENANT_POLICY_FIX.sql` does not exist.** The tenant-policy fix it
+  names (RESTRICTIVE `activity_logs_no_update/_delete`, `ai_recommendations`
+  coverage) lives inside migrations `001`/`002`; there is no separate file.
+- **Build needs Supabase env.** `next build` fails at "Collecting page data"
+  (`supabaseUrl is required`) when `NEXT_PUBLIC_SUPABASE_URL` /
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY` are absent, because several API routes create a
+  client at module scope. Supply them (real or placeholder) to build; this is
+  environmental, not a code defect.
+- **Architecture note (differs from older AGENTS.md prose).** On this branch the
+  ERP pages are browser-direct Supabase clients (`@/lib/supabase`) with RLS as
+  the enforcement boundary; there is no `src/lib/accounting/posting.ts`,
+  `src/lib/sales/service.ts` or `src/lib/excel/` engine in the tree. `src/lib/ai`
+  and `src/lib/reporting` are the server-side CORE capabilities. Do not
+  reintroduce a second posting path when touching a page.
+- **Administrator provisioning is idempotent and secret-safe.**
+  `scripts/provision-admin-accounts.mjs` (`npm run provision:admins`) creates or
+  repairs the two mandated identities (`speedadmin@speed.local` = `admin`, scoped
+  to the SPEED tenant; `admin@system.local` = `super_admin`, tenant-less) through
+  the existing Supabase Auth admin API and `public.users`. It never duplicates an
+  Auth identity, writes temporary passwords only to a `0600` file (not logs), and
+  rolls back a new Auth user if its mapping fails. `scripts/verify-admin-accounts.mjs`
+  (`npm run verify:admins`) proves the sign-in → `public.users` → role/tenant flow
+  end-to-end. Both require real Supabase credentials, which the sandbox lacks.

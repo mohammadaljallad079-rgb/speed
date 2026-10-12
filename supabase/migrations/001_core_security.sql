@@ -124,7 +124,7 @@ do $$
 declare
   t text;
   tables text[] := array[
-    'accounts','activity_logs','alert_logs','alert_rules',
+    'accounts','activity_logs','ai_recommendations','alert_logs','alert_rules',
     'attendance','bonuses','branches','car_loan_installments','car_loans','cars',
     'credits','customers','debit_notes','deductions','document_sequences',
     'documents','drivers','employees','expense_accounts','expenses',
@@ -305,11 +305,19 @@ create policy user_roles_read on public.user_roles
 
 -- ----------------------------------------------------------------------------
 -- 8. activity_logs is append-only from the application
+--
+--    These MUST be RESTRICTIVE. The generic tenant loop above creates
+--    permissive `activity_logs_tenant_update` / `_delete` policies; PostgreSQL
+--    ORs permissive policies together, so a permissive `using (false)` deny
+--    would be a no-op and a tenant could rewrite its own audit trail. A
+--    RESTRICTIVE policy is ANDed with every permissive policy, so `false` here
+--    removes UPDATE and DELETE for all authenticated callers. The service role
+--    (BYPASSRLS) is unaffected.
 -- ----------------------------------------------------------------------------
 drop policy if exists activity_logs_no_update on public.activity_logs;
 create policy activity_logs_no_update on public.activity_logs
-  for update to authenticated using (false);
+  as restrictive for update to authenticated using (false);
 
 drop policy if exists activity_logs_no_delete on public.activity_logs;
 create policy activity_logs_no_delete on public.activity_logs
-  for delete to authenticated using (false);
+  as restrictive for delete to authenticated using (false);

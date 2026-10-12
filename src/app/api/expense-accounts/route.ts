@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
+import { assertWritableTenant, logAudit, requireContext, toErrorResponse } from "@/lib/auth";
 
 /**
  * Expense-account creation.
  *
- * Privileged (service-role) endpoint; requires `expenses.create`.
- * `expense_accounts` is a shared chart table without a tenant column, so no
- * tenant value is written.
+ * Privileged (service-role) endpoint; requires `expenses.create`. The row is
+ * written into the caller's tenant (from the session, never the body) so it is
+ * never left tenant-less and visible to the NULL-tenant install.
  */
 
 const ALLOWED_FIELDS = ["code", "name", "name_ar", "parent_id", "is_indirect", "is_active"] as const;
@@ -28,6 +28,9 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+
+    const tenantId = assertWritableTenant(context, body.tenant_id);
+    if (tenantId) payload.tenant_id = tenantId;
 
     const { data, error } = await supabaseAdmin
       .from("expense_accounts")

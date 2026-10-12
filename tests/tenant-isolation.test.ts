@@ -1,5 +1,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   ApiError,
@@ -20,6 +22,8 @@ import {
 } from "../src/lib/auth/policy.ts";
 import { nextDocumentNumber } from "../src/lib/numbering.ts";
 import type { AuthContext, FinancialYear } from "../src/lib/auth/types.ts";
+
+const ROOT = path.join(import.meta.dirname, "..");
 
 function context(overrides: Partial<AuthContext> = {}): AuthContext {
   return {
@@ -227,6 +231,40 @@ describe("company scope is fail-closed", () => {
     scopeToCompany(q, context({ tenantId: null, isSuperAdmin: true }));
     assert.equal(q.calls.length, 0);
   });
+});
+
+describe("financial routes scope fail-closed (no unfiltered read for a tenant-less caller)", () => {
+  // Regression guard: an earlier fix migrated kpis/health-score/ratios/
+  // recommendations to `scopeToCompany` but left reports/calculate on a local
+  // helper that returned the query unfiltered when the caller had no tenant,
+  // which let an unresolved-tenant caller read every tenant's financial rows.
+  const ROUTES = [
+    "reports",
+    "calculate",
+    "kpis",
+    "health-score",
+    "ratios",
+    "recommendations",
+  ];
+
+  for (const name of ROUTES) {
+    const file = path.join(ROOT, "src/app/api/financial", name, "route.ts");
+    const source = fs.readFileSync(file, "utf8");
+
+    test(`${name}: uses the fail-closed scopeToCompany helper`, () => {
+      assert.match(source, /scopeToCompany/, `${name} must use scopeToCompany`);
+    });
+
+    test(`${name}: never returns an unfiltered query for a tenant-less caller`, () => {
+      // The exact fail-open shape that caused the leak: a falsy tenant check
+      // that returns the query untouched instead of confining it.
+      assert.doesNotMatch(
+        source,
+        /if\s*\(\s*!+\s*(?:context\.)?(tenantId|companyId)\s*\)\s*\{?\s*return\s+query/,
+        `${name} still returns the query unfiltered when the tenant is missing`,
+      );
+    });
+  }
 });
 
 describe("document numbering is idempotent-safe", () => {

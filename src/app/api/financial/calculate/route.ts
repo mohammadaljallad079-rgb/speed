@@ -1,60 +1,54 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
-import { assertBranchAccess, logAudit, requireContext, toErrorResponse } from '@/lib/auth'
+import { assertBranchAccess, logAudit, requireContext, scopeToCompany, toErrorResponse, type AuthContext } from '@/lib/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-// Applies tenant scoping to a service-role query when the caller has a tenant.
-function scoped<T>(query: T, tenantId: string | null): T {
-  if (!tenantId) return query
-  return (query as unknown as { eq: (column: string, value: string) => T }).eq('tenant_id', tenantId)
-}
-
 // Financial Ratios Calculations - Using REAL project tables
-async function calculateRatios(periodStart: string, periodEnd: string, tenantId: string | null) {
+async function calculateRatios(periodStart: string, periodEnd: string, context: AuthContext) {
   // Get rental contracts for revenue
-  const { data: rentals } = await scoped(
+  const { data: rentals } = await scopeToCompany(
     supabase
       .from('rental_contracts')
       .select('total_amount, status, start_date, end_date, daily_rate, total_days, subtotal, discount, vat_amount'),
-    tenantId,
+    context,
   )
     .gte('start_date', periodStart)
     .lte('start_date', periodEnd)
 
   // Get invoices
-  const { data: invoices } = await scoped(
+  const { data: invoices } = await scopeToCompany(
     supabase
       .from('invoices')
       .select('amount, vat_amount, total_amount, status, invoice_date, invoice_type'),
-    tenantId,
+    context,
   )
     .gte('invoice_date', periodStart)
     .lte('invoice_date', periodEnd)
 
   // Get expenses
-  const { data: expenses } = await scoped(
+  const { data: expenses } = await scopeToCompany(
     supabase.from('expenses').select('amount, expense_date, category'),
-    tenantId,
+    context,
   )
     .gte('expense_date', periodStart)
     .lte('expense_date', periodEnd)
 
   // Get cars (assets)
-  const { data: cars } = await scoped(
+  const { data: cars } = await scopeToCompany(
     supabase
       .from('cars')
       .select('id, purchase_price, daily_rate, weekly_rate, monthly_rate, status, make, model'),
-    tenantId,
+    context,
   )
 
   // Get payments
-  const { data: payments } = await scoped(
+  const { data: payments } = await scopeToCompany(
     supabase.from('payments').select('amount, payment_date, payment_type'),
-    tenantId,
+    context,
   )
     .gte('payment_date', periodStart)
     .lte('payment_date', periodEnd)
@@ -162,29 +156,29 @@ async function calculateRatios(periodStart: string, periodEnd: string, tenantId:
 }
 
 // KPI Calculations - Using REAL project tables
-async function calculateKPIs(periodStart: string, periodEnd: string, tenantId: string | null) {
+async function calculateKPIs(periodStart: string, periodEnd: string, context: AuthContext) {
   // Get rental data
-  const { data: rentals } = await scoped(
+  const { data: rentals } = await scopeToCompany(
     supabase
       .from('rental_contracts')
       .select('total_amount, status, start_date, end_date, car_id, daily_rate, total_days'),
-    tenantId,
+    context,
   )
     .gte('start_date', periodStart)
     .lte('start_date', periodEnd)
 
   // Get cars data
-  const { data: cars } = await scoped(
+  const { data: cars } = await scopeToCompany(
     supabase
       .from('cars')
       .select('id, status, purchase_price, daily_rate, weekly_rate, monthly_rate, make, model'),
-    tenantId,
+    context,
   )
 
   // Get maintenance expenses
-  const { data: maintenance } = await scoped(
+  const { data: maintenance } = await scopeToCompany(
     supabase.from('expenses').select('amount, expense_date, category'),
-    tenantId,
+    context,
   )
     .gte('expense_date', periodStart)
     .lte('expense_date', periodEnd)
@@ -440,14 +434,16 @@ export async function POST(request: Request) {
     // Branch access is enforced from the session; an unauthorized branch fails.
     assertBranchAccess(context, branch_id ?? null)
 
-    // The tenant is taken from the session, never from the request body.
+    // The tenant is taken from the session, never from the request body. Reads
+    // are scoped fail-closed through scopeToCompany (a tenant-less caller is
+    // confined to IS NULL rather than left unfiltered).
     const company_id = context.tenantId
 
     // Calculate ratios
-    const { ratios, totalRevenue, totalExpenses, netIncome, totalCarValue } = await calculateRatios(period_start, period_end, company_id)
+    const { ratios, totalRevenue, totalExpenses, netIncome, totalCarValue } = await calculateRatios(period_start, period_end, context)
 
     // Calculate KPIs
-    const { kpis, totalCars, rentedCars, totalRentalDays } = await calculateKPIs(period_start, period_end, company_id)
+    const { kpis, totalCars, rentedCars, totalRentalDays } = await calculateKPIs(period_start, period_end, context)
     
     // Calculate health score
     const healthScore = calculateHealthScore(ratios, kpis)

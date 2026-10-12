@@ -295,6 +295,29 @@ describe("privileged routes enforce authorization", () => {
     assert.deepEqual(offenders, [], `unguarded privileged routes: ${offenders.join(", ")}`);
   });
 
+  test("routes that insert tenant-owned rows set tenant_id from the session", () => {
+    // A tenant-owned row written without a tenant_id is an "orphan": it lands in
+    // the NULL-tenant bucket and becomes visible to the single-tenant install,
+    // which is exactly the write-isolation hole `assertWritableTenant` closes.
+    const tenantOwned = new Set(columnTargets);
+    const offenders: string[] = [];
+    for (const file of routeFiles()) {
+      const source = fs.readFileSync(file, "utf8");
+      const inserted = [...source.matchAll(/\.from\(\s*["'`]([a-z_]+)["'`]\s*\)\s*\.insert\(/gi)].map(
+        (m) => m[1],
+      );
+      const tenantTables = inserted.filter((t) => tenantOwned.has(t));
+      if (!tenantTables.length) continue;
+      const setsTenant = /assertWritableTenant|tenant_id\s*:/.test(source);
+      if (!setsTenant) offenders.push(`${file} [${tenantTables.join(",")}]`);
+    }
+    // customer-signup is public by design and deliberately creates a NULL-tenant
+    // customer in the single-tenant install (asserted by its own escalation test).
+    const allowed = ["customer-signup"];
+    const real = offenders.filter((o) => !allowed.some((a) => o.includes(a)));
+    assert.deepEqual(real, [], `tenant-owned inserts without a session tenant: ${real.join(", ")}`);
+  });
+
   test("public routes expose only a safe, explicit projection", () => {
     const vehicles = fs.readFileSync(
       path.join(ROOT, "src/app/api/public/vehicles/route.ts"),

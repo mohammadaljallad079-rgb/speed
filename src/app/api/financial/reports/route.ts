@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
-import { logAudit, requireContext, toErrorResponse } from '@/lib/auth'
+import { logAudit, requireContext, scopeToCompany, toErrorResponse } from '@/lib/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -13,12 +13,10 @@ export async function POST(request: Request) {
     const body = await request.json()
     const { report_type, period_start, period_end } = body
 
-    // Financial data is scoped to the caller's tenant/company.
-    const companyId = context.tenantId
-    const scoped = <T>(query: T): T =>
-      companyId
-        ? (query as unknown as { eq: (column: string, value: string) => T }).eq('company_id', companyId)
-        : query
+    // Financial data is scoped to the caller's company/tenant, fail-closed: a
+    // caller whose tenant cannot be resolved reads only the IS NULL (single
+    // tenant) artefacts rather than every tenant's. Super admins are unscoped.
+    const scoped = <T>(query: T): T => scopeToCompany(query, context)
 
     // Get data based on report type
     const [{ data: ratios }, { data: kpis }, { data: healthScore }, { data: recommendations }] = await Promise.all([

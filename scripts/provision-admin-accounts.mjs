@@ -131,8 +131,20 @@ async function resolveCompanyTenant(admin, { tenantId, companyName, companyAdmin
     .maybeSingle();
   if (match) return { tenant: match, created: false, reason: "name match" };
 
-  const { data: only } = await admin.from("tenants").select("id, name").limit(2);
-  if (only?.length === 1) return { tenant: only[0], created: false, reason: "single existing tenant" };
+  const { data: existing } = await admin.from("tenants").select("id, name").limit(2);
+  if (existing?.length === 1) {
+    return { tenant: existing[0], created: false, reason: "single existing tenant" };
+  }
+
+  // More than one tenant and none matched by name: creating another would
+  // duplicate the company. Fail closed and require the operator to pin the
+  // SPEED tenant explicitly rather than guessing.
+  if (existing?.length > 1) {
+    throw new Error(
+      `Multiple tenants exist and none matches "${companyName}"; refusing to create a ` +
+        `duplicate. Re-run with --tenant-id <uuid> to select the SPEED tenant.`,
+    );
+  }
 
   if (dryRun) {
     return { tenant: { id: "(would create)", name: companyName }, created: false, reason: "dry-run" };

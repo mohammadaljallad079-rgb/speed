@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import {
   assertReferences,
+  assertWritableTenant,
   logAudit,
   REF_CAR,
   REF_CUSTOMER,
@@ -14,7 +15,9 @@ import {
  *
  * Privileged (service-role) endpoint; requires `sales.create`. The referenced
  * customer and car must exist and belong to the caller's tenant, which prevents
- * a quotation from being attached to another tenant's records.
+ * a quotation from being attached to another tenant's records. The row's own
+ * `tenant_id` is taken from the session too, so a quotation is never left
+ * tenant-less (which would be visible to the NULL-tenant install).
  */
 
 const ALLOWED_FIELDS = [
@@ -44,6 +47,9 @@ export async function POST(request: Request) {
     }
 
     await assertReferences([REF_CUSTOMER, REF_CAR], payload, context);
+
+    const tenantId = assertWritableTenant(context, body.tenant_id);
+    if (tenantId) payload.tenant_id = tenantId;
 
     const { data, error } = await supabaseAdmin.from("quotations").insert(payload).select();
     if (error) throw error;

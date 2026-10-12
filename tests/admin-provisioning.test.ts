@@ -219,6 +219,35 @@ test("pinned tenantId is verified and refused when absent", async () => {
   );
 });
 
+test("multiple tenants and no name match: refuses to create a duplicate", async () => {
+  const { admin, state } = makeStub({
+    tenants: [
+      { id: "t1", name: "Alpha Motors" },
+      { id: "t2", name: "Beta Rentals" },
+    ],
+  });
+  await assert.rejects(() => provisionAdmins(admin), /refusing to create a duplicate/);
+  // Nothing was written: no tenant, no auth user, no app user.
+  assert.equal(state.tenants.length, 2);
+  assert.equal(state.authUsers.length, 0);
+  assert.equal(state.users.length, 0);
+});
+
+test("multiple tenants: a name match is reused, never duplicated", async () => {
+  const { admin, state } = makeStub({
+    tenants: [
+      { id: "t1", name: "Alpha Motors" },
+      { id: "t2", name: "SPEED Rentals" },
+    ],
+  });
+  const result = await provisionAdmins(admin);
+  assert.equal(result.tenantCreated, false);
+  assert.equal(result.tenant.id, "t2");
+  assert.equal(state.tenants.length, 2, "no duplicate tenant");
+  const company = state.users.find((u) => u.email === DEFAULTS.companyEmail);
+  assert.equal(company.tenant_id, "t2");
+});
+
 test("pinned tenantId is used verbatim and the company admin is scoped to it", async () => {
   const { admin, state } = makeStub({ tenants: [{ id: "speed-tenant", name: "SPEED" }] });
   const result = await provisionAdmins(admin, { tenantId: "speed-tenant" });

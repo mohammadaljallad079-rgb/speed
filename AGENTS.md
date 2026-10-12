@@ -666,3 +666,42 @@ that applies the filters it is given and returns only affected rows.
   rolls back a new Auth user if its mapping fails. `scripts/verify-admin-accounts.mjs`
   (`npm run verify:admins`) proves the sign-in â†’ `public.users` â†’ role/tenant flow
   end-to-end. Both require real Supabase credentials, which the sandbox lacks.
+
+## Execution 10 invariants (final closure)
+
+- **Financial tenant scope is fail-closed, everywhere.** `scopeToCompany`
+  (`src/lib/auth/policy.ts`) confines a tenant-less caller to `IS NULL`; only a
+  super admin reads unfiltered. `financial/reports` and `financial/calculate`
+  once used a local `if (!tenantId) return query` helper — that is the exact
+  fail-open shape to never reintroduce. `tests/tenant-isolation.test.ts`
+  ("financial routes scope fail-closed") scans every `financial/*/route.ts` and
+  fails if any uses a helper other than `scopeToCompany` or re-adds the
+  `if (!tenant) return query` pattern.
+- **Tenant-owned inserts must set `tenant_id` from the session.** A row written
+  into a tenant-owned table (per migration 002's `tables text[]` column list)
+  without a `tenant_id` is an orphan visible to the single-tenant install. Use
+  `assertWritableTenant(context, body.tenant_id)` then `if (tenantId) payload.tenant_id = tenantId`
+  — as `suppliers`, `expenses`, `quotations` and `expense-accounts` now do.
+  `tests/security-tenant-isolation.test.ts` ("routes that insert tenant-owned
+  rows set tenant_id from the session") enforces this by scanning every
+  `src/app/api/**/route.ts`. `customer-signup` is the one by-design exception
+  (public, NULL-tenant customer).
+- **`expense_accounts` IS tenant-owned** (it is in 002's tenant array and has a
+  `tenant_id` column). The old "shared chart, no tenant column" comment was
+  wrong; do not rely on it.
+- **Provisioning refuses to guess a tenant.** `resolveCompanyTenant` reuses a
+  pinned `--tenant-id`, the company admin's existing tenant, or a name match,
+  then a single existing tenant. With **multiple** tenants and no name match it
+  **throws** rather than creating a duplicate; pass `--tenant-id <uuid>`.
+- **Live activation is still an operator step.** Migrations 001–004 are not
+  applied on the live project and cannot be from the sandbox (no credentials, no
+  DDL path). The isolation + 004 harnesses (local PostgreSQL 17) prove the SQL;
+  they do not prove the live database. `EXEC07_1_TENANT_POLICY_FIX.sql` does not
+  exist in this branch — 002 is the authoritative isolation model.
+- **No universal Excel import/export engine exists in this branch.** Do not
+  assume `src/lib/excel/` is present; the only Excel surface is the AI analysis
+  route. Accounting/sales pages write Supabase directly (browser) plus guarded
+  API routes; there is no `src/lib/sales/service.ts` posting engine here.
+- **Report files are gitignored on purpose.** `SPEED_FINAL_COMPLETION_REPORT.md`
+  is listed in `.gitignore` because it may hold owner-only proposed credentials;
+  keep it uncommitted and never place a password in a tracked file or a log.

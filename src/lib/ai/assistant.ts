@@ -115,7 +115,13 @@ export async function answerQuestion(
   const errors: string[] = [];
   for (const tool of tools) {
     try {
-      results.push(await runTool(context, { db: input.db, tenantId: input.tenantId, from: input.from, to: input.to }, tool.name));
+      results.push(
+        await runTool(
+          context,
+          { db: input.db, tenantId: input.tenantId, from: input.from, to: input.to, prompt: input.prompt },
+          tool.name,
+        ),
+      );
     } catch (error) {
       errors.push(`${tool.name}: ${(error as Error).message}`);
     }

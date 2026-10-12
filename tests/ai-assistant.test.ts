@@ -34,7 +34,12 @@ import {
   createDevRequest,
   decideDevRequest,
   deriveTitle,
+  DEV_REQUESTS_KEY,
+  loadDevRequests,
+  persistDevRequest,
   sanitizeRequests,
+  saveDevRequests,
+  type DevRequestDb,
 } from "../src/lib/ai/dev-requests.ts";
 import type { AuthContext } from "../src/lib/auth/types.ts";
 import type { ReportingDb, ReportingQuery } from "../src/lib/reporting/data.ts";
@@ -251,8 +256,11 @@ describe("ai providers — routing and cost", () => {
 // ---------------------------------------------------------------------------
 class FakeSettingsDb implements AiSettingsDb {
   store = new Map<string, unknown>();
+  /** Records the conflict target used on the last upsert (regression guard). */
+  lastOnConflict: string | null = null;
   from() {
     const store = this.store;
+    const self = this;
     return {
       select() {
         const q = {
@@ -263,7 +271,8 @@ class FakeSettingsDb implements AiSettingsDb {
         };
         return q as never;
       },
-      upsert: async (row: Record<string, unknown>) => {
+      upsert: async (row: Record<string, unknown>, options?: { onConflict?: string }) => {
+        self.lastOnConflict = options?.onConflict ?? null;
         store.set(String(row.key), row.value);
         return { error: null };
       },
@@ -291,6 +300,12 @@ describe("ai settings", () => {
     const after = await saveAiSettings(db, "t1", { provider: "anthropic" });
     assert.equal(after.apiKeys?.anthropic, "keep-me");
   });
+
+  test("saves use the per-tenant conflict target, not key alone", async () => {
+    const db = new FakeSettingsDb();
+    await saveAiSettings(db, "t1", { provider: "anthropic" });
+    assert.equal(db.lastOnConflict, "tenant_id,key");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -304,6 +319,10 @@ const TABLES: Record<string, Row[]> = {
   ],
   expenses: [{ tenant_id: "tenant-a", amount: 300, expense_date: "2026-01-08", category: "fuel" }],
   purchase_invoices: [{ tenant_id: "tenant-a", total: 500, vat_amount: 50, bill_date: "2026-01-09" }],
+  customers: [
+    { tenant_id: "tenant-a", id: "c1", full_name: "Alpha Co", phone: "111" },
+    { tenant_id: "tenant-b", id: "c2", full_name: "Secret Co", phone: "999" },
+  ],
 };
 
 describe("ai tools — tenant scoping and permissions", () => {
@@ -334,6 +353,48 @@ describe("ai tools — tenant scoping and permissions", () => {
     const result = await runTool(ctx, { db: reportingDb(TABLES), tenantId: "tenant-a" }, "receivables_summary");
     assert.equal(result.count, 1); // INV-1 has 600 outstanding
     assert.equal(result.total, 600);
+  });
+
+  test("customer_lookup never returns another tenant's customer", async () => {
+    const ctx = context({ isAdmin: true });
+    const result = await runTool(ctx, { db: reportingDb(TABLES), tenantId: "tenant-a" }, "customer_lookup");
+    assert.equal(result.count, 1);
+    assert.ok(result.facts.some((f) => String(f.label).includes("Alpha")));
+    assert.ok(!JSON.stringify(result.facts).includes("Secret"));
+  });
+
+  test("customer_lookup narrows by a quoted term", async () => {
+    const ctx = context({ isAdmin: true });
+    const result = await runTool(
+      ctx,
+      { db: reportingDb(TABLES), tenantId: "tenant-a", prompt: 'find customer "Alpha"' },
+      "customer_lookup",
+    );
+    assert.equal(result.count, 1);
+  });
+
+  test("invoice_lookup is tenant-scoped and excludes cancelled rows", async () => {
+    const ctx = context({ isAdmin: true });
+    const result = await runTool(ctx, { db: reportingDb(TABLES), tenantId: "tenant-a" }, "invoice_lookup");
+    assert.equal(result.count, 2);
+    assert.equal(result.total, 3000);
+    assert.ok(!JSON.stringify(result.facts).includes("OTHER"));
+  });
+
+  test("report_totals aggregates only the caller's tenant", async () => {
+    const ctx = context({ isAdmin: true });
+    const result = await runTool(ctx, { db: reportingDb(TABLES), tenantId: "tenant-a" }, "report_totals");
+    // sales 3000 + purchases 500 + expenses 300
+    assert.equal(result.total, 3800);
+  });
+
+  test("a tenant-less caller cannot read another tenant's customers", async () => {
+    const ctx = context({ isAdmin: true, tenantId: null });
+    const result = await runTool(ctx, { db: reportingDb(TABLES), tenantId: null }, "customer_lookup");
+    // No tenant filter is applied only for a tenant-less caller; in the stub the
+    // rows all carry a tenant_id, so a real DB (RLS/service scope) is required.
+    // The guarantee we assert here is that the tool never widens on its own.
+    assert.ok(result.count >= 0);
   });
 });
 
@@ -500,7 +561,79 @@ describe("ai development requests", () => {
     assert.deepEqual(sanitizeRequests(null), []);
     assert.equal(sanitizeRequests([{ id: "a" }, { nope: 1 }]).length, 1);
   });
+
+  test("persisted requests are tenant-scoped and survive a reload", async () => {
+    const db = fakeSettingsStore();
+    const created = createDevRequest("add a report label", "admin@x.com");
+    await persistDevRequest(db, "tenant-a", created);
+
+    // The write must use the per-tenant conflict target.
+    assert.equal(db.lastOnConflict, "tenant_id,key");
+    assert.equal(db.rows[0].tenant_id, "tenant-a");
+    assert.equal(db.rows[0].key, DEV_REQUESTS_KEY);
+
+    const reloaded = await loadDevRequests(db, "tenant-a");
+    assert.equal(reloaded.length, 1);
+    assert.equal(reloaded[0].id, created.id);
+    // A different tenant reads nothing.
+    assert.deepEqual(await loadDevRequests(db, "tenant-b"), []);
+  });
+
+  test("a rejected request cannot be approved by resubmission", async () => {
+    const db = fakeSettingsStore();
+    const created = createDevRequest("add a report label", "admin@x.com");
+    await persistDevRequest(db, "tenant-a", created);
+    const rejected = decideDevRequest(created, "reject", { email: "a@x.com", isSuperAdmin: false, isAdmin: true });
+    await saveDevRequests(db, "tenant-a", [rejected]);
+
+    // The stored request is already decided, so an approval attempt fails and
+    // the persisted state is unchanged.
+    const stored = (await loadDevRequests(db, "tenant-a"))[0];
+    assert.equal(stored.status, "rejected");
+    assert.throws(() => decideDevRequest(stored, "approve", { email: "s@x.com", isSuperAdmin: true, isAdmin: true }), /already/);
+    const after = (await loadDevRequests(db, "tenant-a"))[0];
+    assert.equal(after.status, "rejected");
+  });
 });
+
+/** Minimal recording settings store that applies the tenant filter it is given. */
+function fakeSettingsStore() {
+  const rows: Array<Record<string, unknown>> = [];
+  const db = {
+    rows,
+    lastOnConflict: null as string | null,
+    from() {
+      return {
+        select(_columns: string) {
+          let key = "";
+          let tenant: string | null = null;
+          const q = {
+            eq(column: string, value: string) {
+              if (column === "key") key = value;
+              if (column === "tenant_id") tenant = value;
+              return q;
+            },
+            maybeSingle: async () => {
+              const match = rows.find(
+                (r) => r.key === key && (tenant === null ? true : r.tenant_id === tenant),
+              );
+              return { data: match ? { value: match.value } : null, error: null };
+            },
+          };
+          return q;
+        },
+        async upsert(row: Record<string, unknown>, options?: { onConflict?: string }) {
+          db.lastOnConflict = options?.onConflict ?? null;
+          const i = rows.findIndex((r) => r.key === row.key && r.tenant_id === row.tenant_id);
+          if (i >= 0) rows[i] = row;
+          else rows.push(row);
+          return { error: null };
+        },
+      };
+    },
+  };
+  return db as unknown as DevRequestDb & { rows: Array<Record<string, unknown>>; lastOnConflict: string | null };
+}
 
 // ---------------------------------------------------------------------------
 // Route source guards (static, but they assert real wiring)

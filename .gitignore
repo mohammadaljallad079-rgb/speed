@@ -18,6 +18,7 @@
 # reports credentials files contain temporary admin secrets — never commit them
 SPEED_FINAL_COMPLETION_REPORT.md
 SPEED_FINAL_ADMIN_SECURITY_CLOSURE_REPORT.md
+SPEED_EXECUTION_08_AI_VERIFICATION_REPORT.md
 .admin-credentials.local
 
 # testing

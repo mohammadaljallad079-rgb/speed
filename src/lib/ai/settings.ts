@@ -104,7 +104,9 @@ export async function saveAiSettings(
     updated_at: new Date().toISOString(),
   };
   if (tenantId) row.tenant_id = tenantId;
-  const { error } = await db.from("settings").upsert(row, { onConflict: "key" });
+  // Conflict target matches the canonical settings pattern: settings are keyed
+  // per tenant, so two tenants must be able to hold the same key independently.
+  const { error } = await db.from("settings").upsert(row, { onConflict: "tenant_id,key" });
   if (error) throw error;
   return merged;
 }

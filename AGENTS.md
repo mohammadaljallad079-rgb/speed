@@ -596,3 +596,36 @@ that applies the filters it is given and returns only affected rows.
 - Tests: `tests/ai-assistant.test.ts` (registered in `test:core`) covers policy,
   permissions, tenant scoping, injection, routing/cost, settings key handling,
   the assistant (deterministic + model + failure) and the dev-request workflow.
+
+## Execution 08 invariants (AI verification, integration & production readiness)
+
+- **The AI tools are real, not stubs.** `customer_lookup`, `invoice_lookup` and
+  `report_totals` in `src/lib/ai/tools.ts` run tenant-scoped queries with an
+  explicit safe column list (no `select('*')`). `extractLookupTerm` only narrows
+  a result set from a quoted string or a document number; it never widens it.
+  `customer_lookup`/`invoice_lookup` are gated by the `customers`/`invoices`
+  `view` permission, `report_totals` by `reports`.
+- **AI settings and dev-request lists share the canonical settings conflict
+  target `onConflict: "tenant_id,key"`** (the same one `reporting/templates.ts`
+  uses). A bare `onConflict: "key"` would let one tenant overwrite another's
+  `ai_settings` / `ai_dev_requests`. Regression-guarded in
+  `tests/ai-assistant.test.ts`.
+- **Two-tenant RLS verification by execution.**
+  `supabase/tests/isolation_harness/` builds a two-tenant base schema, applies
+  the real migrations `001 -> 004` (plus an idempotent re-apply), and asserts 17
+  cross-tenant behaviours with real authenticated identities (a `super_admin`
+  role and two tenants). `run.sh` needs a local PostgreSQL and the `postgres`
+  superuser. Reuse it for any future isolation change. Migration 004 alone is
+  covered by `supabase/tests/004_harness/` (11 assertions).
+- **The frozen activation package's banner hashes are STALE.** In
+  `supabase/PRODUCTION_ACTIVATION_001_002_003.sql` the recorded
+  `SHA-256 (body)` values do not match the embedded bodies. The embedded 001 is
+  the *corrected* version (RESTRICTIVE `activity_logs` policies +
+  `ai_recommendations` in the RLS-enable array), while `migrations/001` is the
+  pre-fix version; migration 002 supersedes 001, so applying either path ends
+  correct. Do not trust the banner as proof of byte-identity — recompute it.
+- **Do not re-enable `ai_recommendations` import or grant it a tenant column
+  casually.** It is company-scoped (`company_id`) and RLS-enabled by 002.
+- **`test:excel` / `test:accounting` are not real scripts** (the AGENTS.md
+  Commands block is aspirational). The real suites are `test:core`, `test:ai`;
+  `tests/saas-signup.test.ts` is now registered in `test:core`.

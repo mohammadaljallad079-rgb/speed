@@ -221,7 +221,9 @@ export async function saveDevRequests(db: DevRequestDb, tenantId: string | null,
     updated_at: new Date().toISOString(),
   };
   if (tenantId) row.tenant_id = tenantId;
-  const { error } = await db.from("settings").upsert(row, { onConflict: "key" });
+  // Match the canonical settings conflict target so tenants do not overwrite
+  // each other's request lists.
+  const { error } = await db.from("settings").upsert(row, { onConflict: "tenant_id,key" });
   if (error) throw error;
 }
 

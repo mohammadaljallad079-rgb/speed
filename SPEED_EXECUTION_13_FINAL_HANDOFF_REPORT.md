@@ -31,36 +31,51 @@ remote was added, removed, or repointed. No other repository was used.
 | My branch on remote? | **not yet** — first push in this execution |
 | Divergence | `feat/final-hardening-round5` is a **clean fast-forward** of `origin/main` (8 commits ahead, 0 behind) |
 
-## 3. Completed work (what is in the branch)
+## 3. Completed work (what is actually in this branch)
 
-The branch contains the full accumulated project history plus the Exec 10–13
-work. Verified in the current code:
+> **Accuracy note.** This branch is the *security-hardening / AI-reporting*
+> variant, not the large multi-engine ERP described in the older, top section of
+> `AGENTS.md`. Verified by directory inspection: there is **no** `src/lib/excel/`,
+> **no** `src/lib/sales/service.ts`, and **no** `src/lib/accounting/` here. The
+> AGENTS.md tail section already corrects this. The claims below match the code
+> that actually exists.
+
+What the branch contains (verified):
 
 - **Tenant isolation / RLS (security):**
   - Financial reads are **fail-closed** (`scopeToCompany`) in
-    `financial/reports`, `financial/calculate`, `financial/kpis`,
-    `financial/health-score`, `financial/ratios`, `financial/recommendations` —
-    a tenant-less caller is confined to `IS NULL`, never unfiltered.
-  - Tenant-owned inserts set `tenant_id` **from the session** (`quotations`,
-    `expense-accounts`, and the shared guard covers all `src/app/api/**`).
-  - No route trusts `tenant_id`/`role` from the request body.
-  - Migrations `001–004` + operator packages exist and were proven locally
-    (see §4).
-- **Accounting / sales / purchases / expenses / reports:** unchanged core; no
-  second posting path was introduced.
-- **Excel / AI:** the AI analysis surface is preserved; no duplicate engine and
-  no inventory subsystem.
-- **Login / auth:** server-authoritative (`/api/me` → `resolveAuthContext`);
-  inactive users rejected; missing mappings return `403 account_not_provisioned`.
+    `financial/reports`, `financial/calculate`, `financial/ratios` — a tenant-less
+    caller is confined to `IS NULL`, never unfiltered.
+  - Tenant-owned writes go through `assertWritableTenant` (`suppliers`,
+    `expenses`, `expense-accounts`, `quotations`).
+  - No route trusts `tenant_id`/`role` from the request body (only via the
+    session guard).
+  - Migrations `001–004` + operator packages exist and were proven locally (§4).
+- **Auth / RBAC / login:** `src/lib/auth/*` (policy, permissions, context,
+  api-guard, audit); server-authoritative `/api/me`; inactive users rejected;
+  missing mappings return `403 account_not_provisioned`.
+- **AI reporting intelligence:** `src/lib/reporting/*` (catalog, definitions,
+  dynamic, intent, plan, validation, vat, workbook) + `src/lib/ai/*` and the
+  `/api/ai/*` and `/api/financial/*` routes. No duplicate engine.
+- **SaaS signup / onboarding:** `/api/saas/signup`, `/api/saas/onboarding`,
+  `src/lib/saas/provisioning.ts`.
+- **Public site:** `/api/public/vehicles`, `/api/public/company-profile` with
+  explicit public-safe projections.
+- **Legacy ERP pages** (`accounting`, `invoices`, `purchases`, `rentals`,
+  `reports`, …) exist and, in this variant, **write Supabase directly from the
+  browser** plus guarded API routes — there is **no unified server-side posting
+  engine** (`postJournalEntry`) here. This is a property of the branch, not a
+  regression introduced now.
 - **Admin provisioning scripts:** idempotent, secret-safe, tenant-verified,
   rollback on failure (`scripts/provision-admin-accounts.mjs`,
   `scripts/verify-admin-accounts.mjs`).
+- **No inventory / warehouse subsystem** anywhere (verified).
 - **Hygiene:** no secrets tracked; `.env*`, `*.pem`, `*.bak`, `.admin-credentials.local`
   ignored.
-- **No inventory / warehouse subsystem** anywhere (verified).
 
 No new code changes were required this execution; the branch was already in a
-verified state. This execution's additions are the handoff report and the push.
+verified state. This execution's additions are the handoff report, the branch
+push, and removal of the exposed token from `.git/config` (§9).
 
 ## 4. Migrations — status and order (for production)
 
@@ -180,6 +195,12 @@ untouched**.
 The 6 skipped tests are the opt-in live probes (require a live DB); they are
 reported as **skipped, not passed**. No new regressions were introduced.
 
+**Reproduced first-hand in this execution:** PostgreSQL 17.11 was installed in the
+sandbox and the isolation harness (17/17), the 004 harness (PASS), the operator
+package double-apply (0 errors; 64 RLS tables, `41003` once, anon grants 0), and
+`tests/activation-package-integrity.test.ts` (9/9) were all re-run here — not
+copied from a prior report.
+
 ## 8. Remaining / not completed here (blocked by environment)
 
 1. **Live migration application** — no `DATABASE_URL`/DDL path in the sandbox.
@@ -189,9 +210,28 @@ reported as **skipped, not passed**. No new regressions were introduced.
 
 All of the above are owner-executed steps in §5. None is claimed as done.
 
-## 9. Status
+## 9. Security note — exposed credential (action required)
 
-**`PARTIAL`** — the project is complete and verified locally, and the branch has
-been pushed to the authorized repository with remote SHA verification. Live
-migration, admin provisioning, and deployment remain for the owner to execute
-per §5.
+During the final safety check, the sandbox's `origin` remote URL was found to
+have a **GitHub App user-to-server token (`ghu_…`)** embedded in `.git/config`
+(a pre-existing sandbox setup, **not** created by this execution). That value
+became visible in this session's tool output.
+
+- **Remediation performed:** `origin` was reset to the plain URL
+  `https://github.com/mohammadaljallad079-rgb/speed.git`; the token is no longer
+  in `.git/config`, any remote URL, or any committed file.
+- **Action required by the owner:** because the token's value was exposed in
+  session output, **rotate it** — GitHub → Settings → Applications → revoke/
+  regenerate the authorization for this token (or `gh auth refresh`). Treat the
+  previous value as compromised. This report intentionally does **not** contain
+  the value.
+- No other secret (Supabase service-role key, DB password, `.env`) was found
+  tracked or exposed.
+
+## 10. Status
+
+**`PARTIAL`** — the project is complete and verified locally; the branch
+`feat/final-hardening-round5` and `main` were pushed to the authorized repository
+with remote SHA verification, and the exposed `origin` token was removed. Live
+migration, admin provisioning, and deployment remain for the owner to execute per
+§5, and the token rotation in §9 is requested.

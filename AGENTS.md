@@ -705,3 +705,17 @@ that applies the filters it is given and returns only affected rows.
 - **Report files are gitignored on purpose.** `SPEED_FINAL_COMPLETION_REPORT.md`
   is listed in `.gitignore` because it may hold owner-only proposed credentials;
   keep it uncommitted and never place a password in a tracked file or a log.
+
+## Execution 13 invariants (repository + credential hygiene)
+
+- The authorized repository is **`mohammadaljallad079-rgb/speed`** (`origin`). Do
+  not push to `startgroup2022-tech/speed` or any other remote.
+- The sandbox's `origin` URL previously embedded a `ghu_` token in `.git/config`.
+  Never store a token in a remote URL; use a credential helper. If a token is
+  exposed, remove it from `.git/config` and **rotate it**.
+- `feat/final-hardening-round5` and `main` are the published branches; push with
+  plain fast-forward (`git push origin <branch>`), never `--force`/`reset --hard`.
+- Local proof for the migration SQL requires a reachable PostgreSQL superuser:
+  `bash supabase/tests/isolation_harness/run.sh` (17/17) and
+  `bash supabase/tests/004_harness/run.sh`. These prove the SQL, not the live DB.
+

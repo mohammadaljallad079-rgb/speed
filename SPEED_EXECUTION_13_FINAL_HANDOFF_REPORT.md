@@ -14,7 +14,7 @@ committed file. Environment variables are listed by **name only**.
 | `origin` remote | `https://github.com/mohammadaljallad079-rgb/speed.git` (correct — preserved) |
 | Branch pushed | `feat/final-hardening-round5` |
 | Base branch | `main` (`f02125d` on `origin`) |
-| Local HEAD before push | see §6 (push commit) |
+| Pushed commit (verified on remote) | `f291d74` (`f291d743ff2977943027c17304f21abd8bdd295f`) |
 | Working tree | clean (no uncommitted changes) |
 
 `origin` already pointed at the correct repository and was left unchanged. No
@@ -153,7 +153,13 @@ SUPER_ADMIN_EMAIL   / SUPER_ADMIN_PASSWORD     # provisioning
 | --- | --- |
 | Command | `git push origin feat/final-hardening-round5` (plain, no `--force`) |
 | History preserved | yes (fast-forward; no rewrite, no branch replacement) |
-| Remote verification | `git ls-remote origin refs/heads/feat/final-hardening-round5` re-checked after the push; the remote SHA is recorded in the "Verified remote SHA" line of the **follow-up commit** to this report (a report cannot contain the SHA of the very commit that introduces it). |
+| Remote verification | `git ls-remote origin refs/heads/feat/final-hardening-round5` re-checked after the push |
+
+**Verified remote SHA (post-push):** `f291d743ff2977943027c17304f21abd8bdd295f`
+(`f291d74`) — equals the local HEAD that was pushed; confirmed via
+`git ls-remote origin` and the GitHub branches API. Remote branches now:
+`main` @ `f02125d`, `feat/exec07-admin-superadmin-hardening` @ `a9f9a9a`,
+`feat/final-hardening-round5` @ `f291d74`.
 
 ## 7. Verification results (Phase 3)
 

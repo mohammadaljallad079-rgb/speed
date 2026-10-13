@@ -12,9 +12,9 @@ committed file. Environment variables are listed by **name only**.
 | --- | --- |
 | **Authorized repository** | `https://github.com/mohammadaljallad079-rgb/speed` |
 | `origin` remote | `https://github.com/mohammadaljallad079-rgb/speed.git` (correct — preserved) |
-| Branch pushed | `feat/final-hardening-round5` |
-| Base branch | `main` (`f02125d` on `origin`) |
-| Pushed commit (verified on remote) | `f291d74` (`f291d743ff2977943027c17304f21abd8bdd295f`) |
+| Branch pushed | `feat/final-hardening-round5` (and `main`, fast-forward) |
+| Base branch | `main` (`f02125d` on `origin` → fast-forwarded to `3cd6e59`) |
+| Pushed commit (verified on remote) | `3cd6e59` (`3cd6e593c657a2e1dc6276d74f9f486867a82554`) |
 | Working tree | clean (no uncommitted changes) |
 
 `origin` already pointed at the correct repository and was left unchanged. No
@@ -151,15 +151,15 @@ SUPER_ADMIN_EMAIL   / SUPER_ADMIN_PASSWORD     # provisioning
 
 | Item | Value |
 | --- | --- |
-| Command | `git push origin feat/final-hardening-round5` (plain, no `--force`) |
-| History preserved | yes (fast-forward; no rewrite, no branch replacement) |
-| Remote verification | `git ls-remote origin refs/heads/feat/final-hardening-round5` re-checked after the push |
+| Command | `git push origin feat/final-hardening-round5` then `git push origin HEAD:main` (both plain, no `--force`) |
+| History preserved | yes (both fast-forward; no rewrite, no branch replacement) |
+| Remote verification | `git ls-remote origin` re-checked after the pushes |
 
-**Verified remote SHA (post-push):** `f291d743ff2977943027c17304f21abd8bdd295f`
-(`f291d74`) — equals the local HEAD that was pushed; confirmed via
-`git ls-remote origin` and the GitHub branches API. Remote branches now:
-`main` @ `f02125d`, `feat/exec07-admin-superadmin-hardening` @ `a9f9a9a`,
-`feat/final-hardening-round5` @ `f291d74`.
+**Verified remote SHAs (post-push):** `refs/heads/feat/final-hardening-round5`
+and `refs/heads/main` both = `3cd6e593c657a2e1dc6276d74f9f486867a82554`
+(`3cd6e59`) — equal to local HEAD. The existing
+`feat/exec07-admin-superadmin-hardening` @ `a9f9a9a` was **left untouched**.
+Confirmed via `git ls-remote origin` and the GitHub branches API.
 
 ## 7. Verification results (Phase 3)
 

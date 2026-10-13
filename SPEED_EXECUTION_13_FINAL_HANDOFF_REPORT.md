@@ -156,10 +156,14 @@ SUPER_ADMIN_EMAIL   / SUPER_ADMIN_PASSWORD     # provisioning
 | Remote verification | `git ls-remote origin` re-checked after the pushes |
 
 **Verified remote SHAs (post-push):** `refs/heads/feat/final-hardening-round5`
-and `refs/heads/main` both = `3cd6e593c657a2e1dc6276d74f9f486867a82554`
-(`3cd6e59`) — equal to local HEAD. The existing
-`feat/exec07-admin-superadmin-hardening` @ `a9f9a9a` was **left untouched**.
-Confirmed via `git ls-remote origin` and the GitHub branches API.
+and `refs/heads/main` were verified to equal the local HEAD after the push (both
+were `3cd6e593c657a2e1dc6276d74f9f486867a82554` at the time this section was
+written). Because this report is itself committed, the branch tip advances by one
+report-only commit per edit; the **authoritative** tip is whatever
+`git ls-remote origin refs/heads/feat/final-hardening-round5` reports, and the
+final verified tip is recorded in the handoff message accompanying this report.
+The existing `feat/exec07-admin-superadmin-hardening` @ `a9f9a9a` was **left
+untouched**.
 
 ## 7. Verification results (Phase 3)
 

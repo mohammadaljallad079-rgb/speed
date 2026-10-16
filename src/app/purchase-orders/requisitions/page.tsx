@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect, useMemo } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, PurchaseRequisition, generateReqNumber } from "@/lib/supabase"
+import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import {
   FilePlus, Plus, Search, Save, Trash2, CheckCircle, XCircle, ArrowRight,
@@ -254,8 +255,9 @@ function PurchaseRequisitionsPageContent() {
     setConverting(true)
     try {
       const { data: reqItems } = await supabase.from('purchase_requisition_items').select('*').eq('purchase_requisition_id', convertReq.id)
+      const poNumber = await nextDocumentNumber(supabase as any, 'purchase_order', 'PO')
       const { data: poData, error: poError } = await supabase.from('purchase_orders').insert([{
-        po_number: 'PO-' + Date.now().toString().slice(-8),
+        po_number: poNumber,
         supplier_id: convertSupplierId,
         order_date: new Date().toISOString().split('T')[0],
         status: 'draft',

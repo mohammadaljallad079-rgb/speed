@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { nextDocumentNumber } from '@/lib/numbering'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -165,14 +166,18 @@ function PayrollContent() {
       }
 
       // Create journal entry
+      const payrollJournalNumber = await nextDocumentNumber(supabase as any, 'payroll', 'PAY')
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
         .insert({
-          journal_number: 'PAY-' + Date.now(),
+          journal_number: payrollJournalNumber,
           entry_date: payrollDate,
           description: isRTL ? 'دفع رواتب شهرية' : 'Monthly salary payment',
           entry_type: 'payroll',
           status: 'posted',
+          total_debit: totalPayroll,
+          total_credit: totalPayroll,
+          is_balanced: true,
         })
         .select()
         .single()
@@ -197,7 +202,7 @@ function PayrollContent() {
         }
       ]
 
-      const { error: linesError } = await supabase.from('journal_entry_lines').insert(lines)
+      const { error: linesError } = await supabase.from('journal_lines').insert(lines)
       if (linesError) throw linesError
 
       // Update balances

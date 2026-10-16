@@ -27,18 +27,24 @@ function DashboardContent() {
 
   useEffect(() => {
     async function load() {
-      const [carsRes, paymentsRes, contractsRes, allCarsRes, recentContracts] = await Promise.all([
+      const [carsRes, invoicesRes, paymentsRes, contractsRes, allCarsRes, recentContracts] = await Promise.all([
         supabase.from("cars").select("*").order("created_at", { ascending: false }).limit(5),
-        supabase.from("payments").select("amount,created_at").eq("status","completed"),
+        supabase.from("invoices").select("amount,discount_amount,vat_amount,total_amount,status,invoice_date"),
+        supabase.from("payments").select("amount,payment_date,status"),
         supabase.from("rental_contracts").select("status,end_date"),
         supabase.from("cars").select("status,category,plate_number,make,model"),
         supabase.from("rental_contracts").select("*,customers(full_name),cars(make,model,plate_number)").order("created_at",{ascending:false}).limit(5),
       ])
       const all = allCarsRes.data || []
+      // Revenue is recognised from issued sales/rental invoices (excluding VAT and
+      // cancelled documents), never from customer receipts - a receipt only
+      // settles a receivable and must not be counted as new revenue.
+      const invoices = (invoicesRes.data || []).filter((i:any) => i.status !== "cancelled")
       const payments = paymentsRes.data || []
+      const invoiceRevenue = (i:any) => Number(i.total_amount || 0) - Number(i.vat_amount || 0)
       const contracts = contractsRes.data || []
       setStats({
-        revenue: payments.reduce((s:number,p:any) => s + Number(p.amount||0), 0),
+        revenue: invoices.reduce((s:number,i:any) => s + invoiceRevenue(i), 0),
         bookings: contracts.length,
         rented: all.filter((c:any) => c.status==="rented").length,
         available: all.filter((c:any) => c.status==="available").length,
@@ -47,8 +53,8 @@ function DashboardContent() {
       const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug"]
       setEarningsData(months.map((m,i) => ({
         month: m,
-        value: payments.filter((p:any) => new Date(p.created_at).getMonth()===i)
-          .reduce((s:number,p:any) => s+Number(p.amount||0), 0)
+        value: invoices.filter((i:any) => i.invoice_date && new Date(i.invoice_date).getMonth()===i)
+          .reduce((s:number,i:any) => s + invoiceRevenue(i), 0)
       })))
       const tot = contracts.length || 1
       setRentStatus([

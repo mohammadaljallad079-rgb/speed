@@ -31,6 +31,8 @@ function SalesPurchaseAnalysisPageContent() {
   const [statusFilter, setStatusFilter] = useState('all')
   const [startDate, setStartDate] = useState(formatDateInput(new Date(Date.now() - 30 * dayMs)))
   const [endDate, setEndDate] = useState(formatDateInput(new Date()))
+  const [startDraft, setStartDraft] = useState(formatDateInput(new Date(Date.now() - 30 * dayMs)))
+  const [endDraft, setEndDraft] = useState(formatDateInput(new Date()))
   const [sales, setSales] = useState<Sale[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -47,6 +49,8 @@ function SalesPurchaseAnalysisPageContent() {
   useEffect(() => {
     fetchSales()
   }, [selectedCarId, statusFilter, startDate, endDate])
+
+  function applyDates() { setStartDate(startDraft); setEndDate(endDraft) }
 
   async function fetchSales() {
     setLoading(true)
@@ -127,8 +131,8 @@ function SalesPurchaseAnalysisPageContent() {
               </SelectContent>
             </Select>
 
-            <Input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} className="h-12 rounded-xl" />
-            <Input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} className="h-12 rounded-xl" />
+            <Input type="date" value={startDraft} onChange={(event) => setStartDraft(event.target.value)} className="h-12 rounded-xl" />
+            <Input type="date" value={endDraft} onChange={(event) => setEndDraft(event.target.value)} className="h-12 rounded-xl" />
           </div>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -152,6 +156,9 @@ function SalesPurchaseAnalysisPageContent() {
               </Button>
               <Button type="button" variant="outline" onClick={() => applyPreset(365)}>
                 {t.lastYear}
+              </Button>
+              <Button type="button" onClick={applyDates} className="bg-indigo-500 hover:bg-indigo-600 text-white">
+                {isRTL ? 'عرض' : 'GO'}
               </Button>
             </div>
           </div>

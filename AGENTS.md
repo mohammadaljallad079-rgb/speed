@@ -719,3 +719,46 @@ that applies the filters it is given and returns only affected rows.
   `bash supabase/tests/isolation_harness/run.sh` (17/17) and
   `bash supabase/tests/004_harness/run.sh`. These prove the SQL, not the live DB.
 
+## Execution 16 invariants (accounting integrity)
+
+- **One document-number mechanism.** Never build a document number from
+  `Date.now()` (or any timestamp). Every document and journal number comes from
+  `nextDocumentNumber` (`src/lib/numbering.ts` -> `generate_document_number`).
+  A timestamp changes on retry and defeats the duplicate guard. As of Exec 16 no
+  `Date.now()`-based numbers remain in the sales/purchase/posting pages.
+- **One canonical journal-line table: `journal_lines`.** `journal_entry_lines`
+  exists in the schema but has **zero readers** - writing lines there makes an
+  entry invisible to every report. All four financial reports, the sales engine,
+  the manual journal editor and `payment-posting.ts` read/write `journal_lines`.
+  Never write journal lines to `journal_entry_lines`.
+- **Journal headers must carry `total_debit`, `total_credit`, `is_balanced`.**
+  The integrity view (`v_journal_integrity_issues`) and the unbalanced-header
+  check rely on them; an entry posted with only `journal_number`/`entry_date`
+  looks unbalanced.
+- **A posted sale is immutable.** `src/lib/accounting/invoice-guards.ts`
+  (`isSaleInvoicePosted`) is checked before editing/deleting an invoice in
+  `invoices/[id]`. Reverse a posted sale with a credit note/return; never edit or
+  delete it.
+- **A supplier payment posts one journal:** Dr AP (21001) / Cr Cash (11001) or
+  Bank (11002). It must never touch revenue. `postSupplierPayment` in
+  `src/lib/accounting/payment-posting.ts` owns this; `supplier-payments` reads the
+  bill's **current** `paid_amount` from the DB (not a stale list) and compensates
+  (deletes the payment) if posting fails.
+- **Migration `005_accounting_integrity.sql`** adds a partial unique index
+  (`entry_type, reference_number` where `status='posted'` and `entry_type in
+  ('sale_invoice','supplier_payment')`) - the DB half of the retry/double-post
+  guard - plus a lookup index and the read-only integrity view. Additive,
+  idempotent, guarded; rollback drops exactly those three objects. **Not applied
+  live** (no DDL path from the sandbox).
+- **Ledger integrity is detected, not assumed.** `src/lib/accounting/integrity.ts`
+  is pure/read-only (duplicate journals, orphaned lines, unbalanced entries,
+  stale invoice balances). Nothing there writes.
+- **Known, documented, not fixed here:** the four financial reports fail open when
+  `tenant_id` is null; `update_account_balance` has no definition in the repo and
+  an inconsistent sign convention; `accounts.balance` may drift from the ledger.
+  These need a live DB and a dedicated task.
+- **Verify a migration by executing it.** A local PostgreSQL 17 with a minimal
+  journal schema is enough to prove 005 (apply, idempotent re-apply, behavioural
+  duplicate block, rollback, no-op on a schema without `journal_entries`). Do not
+  claim a DDL change works from parsing alone.
+

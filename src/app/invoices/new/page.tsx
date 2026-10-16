@@ -35,7 +35,7 @@ function NewInvoiceContent() {
 
   const today = new Date().toISOString().split("T")[0]
   const [form, setForm] = useState({
-    invoice_number: "INV-" + Date.now().toString().slice(-6),
+    invoice_number: "",
     invoice_date: today,
     due_date: today,
     status: "pending",
@@ -56,6 +56,10 @@ function NewInvoiceContent() {
   })
 
   useEffect(() => {
+    supabase.rpc("generate_document_number", { p_doc_type: "sale_invoice" })
+      .then(({ data, error }) => {
+        if (!error && data) setForm(prev => (prev.invoice_number ? prev : { ...prev, invoice_number: data }))
+      })
     supabase.from("customers").select("id,full_name,name,phone").order("full_name")
       .then(({ data }) => setCustomers(data || []))
     supabase.from("rental_contracts").select("id,contract_number,car_id,customer_id,start_date,end_date,daily_rate,total_amount,cars(make,model,plate_number)")
@@ -117,8 +121,9 @@ function NewInvoiceContent() {
     if (!form.payment_term) { alert(isRTL ? "اختر شروط الدفع" : "Select payment terms"); return }
     setLoading(true)
     try {
+      const invoiceNumber = form.invoice_number || (await nextDocumentNumber(supabase, "sale_invoice", "INV"))
       const { data: newInvoice, error } = await supabase.from("invoices").insert([{
-        invoice_number: form.invoice_number,
+        invoice_number: invoiceNumber,
         invoice_date: form.invoice_date,
         due_date: form.due_date,
         status: form.status,

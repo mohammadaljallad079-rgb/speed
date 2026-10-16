@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ArrowLeft, Save, FileText, User, DollarSign, Trash2, CreditCard } from 'lucide-react'
 import Link from 'next/link'
 import { Customer, RentalContract } from '@/lib/supabase'
+import { isSaleInvoicePosted } from '@/lib/accounting/invoice-guards'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -43,6 +44,7 @@ function PageContent() {
   const [customers, setCustomers] = useState<Customer[]>([])
   const [rentals, setRentals] = useState<RentalContract[]>([])
   const [filteredRentals, setFilteredRentals] = useState<RentalContract[]>([])
+  const [isPosted, setIsPosted] = useState(false)
   const [form, setForm] = useState({
     invoice_number: '',
     customer_id: '',
@@ -83,6 +85,7 @@ function PageContent() {
     setFetching(true)
     const { data } = await supabase.from('invoices').select('*, rental_contracts(car:cars(make,model,plate_number,license_plate))').eq('id', id).single()
     if (data) {
+      setIsPosted(await isSaleInvoicePosted(supabase as any, data.invoice_number || ''))
       setForm(prev => ({
         ...prev,
         invoice_number: data.invoice_number || '',
@@ -127,6 +130,10 @@ function PageContent() {
   }
 
   async function handleSubmit() {
+    if (isPosted) {
+      alert(isRTL ? 'لا يمكن تعديل فاتورة مرحّلة محاسبيًا. استخدم إشعار دائن/مرتجع لعكسها ثم أنشئ فاتورة جديدة.' : 'This invoice is posted to the ledger and cannot be edited. Reverse it with a credit note/return, then create a new invoice.')
+      return
+    }
     if (!form.customer_id) { alert(isRTL ? 'يرجى اختيار العميل' : 'Please select a customer'); return }
     if (!form.amount) { alert(isRTL ? 'يرجى إدخال المبلغ' : 'Please enter an amount'); return }
     setLoading(true)
@@ -159,6 +166,10 @@ function PageContent() {
   }
 
   async function handleDelete() {
+    if (isPosted) {
+      alert(isRTL ? 'لا يمكن حذف فاتورة مرحّلة محاسبيًا. استخدم إشعار دائن/مرتجع لعكسها.' : 'This invoice is posted to the ledger and cannot be deleted. Reverse it with a credit note/return instead.')
+      return
+    }
     if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذه الفاتورة؟' : 'Are you sure you want to delete this invoice?')) return
     setDeleting(true)
     try {
@@ -201,11 +212,18 @@ function PageContent() {
               <p className="text-slate-500 text-sm">{form.invoice_number}</p>
             </div>
           </div>
-          <Button onClick={handleDelete} disabled={deleting} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50">
+          <Button onClick={handleDelete} disabled={deleting || isPosted} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50">
             <Trash2 className="w-4 h-4 mr-2 ml-2" />
             {deleting ? (isRTL ? "جاري الحذف..." : "Deleting...") : (isRTL ? "حذف" : "Delete")}
           </Button>
         </div>
+        {isPosted && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+            {isRTL
+              ? 'هذه الفاتورة مرحّلة إلى دفتر اليومية، لذلك لا يمكن تعديلها أو حذفها. لعكسها استخدم إشعار دائن/مرتجع.'
+              : 'This invoice is posted to the general ledger, so it cannot be edited or deleted. Reverse it with a credit note/return instead.'}
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
             <Card className="border-0 shadow-md">
@@ -380,7 +398,7 @@ function PageContent() {
             </Card>
             <Card className="border-0 shadow-md">
               <CardContent className="pt-6 space-y-3">
-                <Button onClick={handleSubmit} disabled={loading} className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-lg">
+                <Button onClick={handleSubmit} disabled={loading || isPosted} className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-lg disabled:opacity-50">
                   <Save className="w-4 h-4 mr-2 ml-2" />
                   {loading ? (isRTL ? "جاري الحفظ..." : "Saving...") : (isRTL ? "حفظ التعديلات" : "Save Changes")}
                 </Button>

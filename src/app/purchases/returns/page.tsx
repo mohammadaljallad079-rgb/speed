@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, DebitNote, Supplier, PurchaseInvoice } from "@/lib/supabase"
+import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
 import {
   RotateCcw, Plus, Search, Save, Trash2, ArrowLeft, FileText, AlertTriangle
@@ -71,8 +72,9 @@ function DebitNotesPageContent() {
 
     setSaving(true)
     try {
+      const noteNumber = await nextDocumentNumber(supabase as any, 'debit_note', 'DN')
       const { error } = await supabase.from('debit_notes').insert([{
-        note_number: `DN-${Date.now().toString().slice(-6)}`,
+        note_number: noteNumber,
         supplier_id: form.supplier_id,
         purchase_invoice_id: form.purchase_invoice_id || null,
         amount: parseFloat(form.amount),

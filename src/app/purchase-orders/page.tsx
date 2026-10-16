@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect, useMemo } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, Supplier, PurchaseOrder, PurchaseOrderItem, generatePONumber } from "@/lib/supabase"
+import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import {
   ClipboardList, Plus, Search, Save, Trash2, CheckCircle, XCircle, Clock,
@@ -210,8 +211,9 @@ function PurchaseOrdersPageContent() {
     setConverting(true)
     try {
       const { data: poItems } = await supabase.from('purchase_order_items').select('*').eq('purchase_order_id', convertOrder.id)
+      const invoiceNumber = await nextDocumentNumber(supabase as any, 'purchase_invoice', 'INV')
       const { data: invData, error: invError } = await supabase.from('purchase_invoices').insert([{
-        invoice_number: 'INV-' + Date.now().toString().slice(-8),
+        invoice_number: invoiceNumber,
         supplier_id: convertOrder.supplier_id,
         bill_date: new Date().toISOString().split('T')[0],
         due_date: null,

@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { nextDocumentNumber } from '@/lib/numbering'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -76,15 +77,19 @@ function BankTransferContent() {
     setSaving(true)
     try {
       // 1. Create journal entry
+      const journalNumber = await nextDocumentNumber(supabase as any, 'bank_transfer', 'BT')
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
         .insert({
-          journal_number: 'BT-' + Date.now(),
+          journal_number: journalNumber,
           entry_date: transferDate,
           reference_number: reference || null,
           description: notes || (isRTL ? 'تحويل بنكي' : 'Bank Transfer'),
           entry_type: 'bank_transfer',
           status: 'posted',
+          total_debit: transferAmount,
+          total_credit: transferAmount,
+          is_balanced: true,
         })
         .select()
         .single()
@@ -109,7 +114,7 @@ function BankTransferContent() {
         }
       ]
 
-      const { error: linesError } = await supabase.from('journal_entry_lines').insert(lines)
+      const { error: linesError } = await supabase.from('journal_lines').insert(lines)
       if (linesError) throw linesError
 
       // 3. Update account balances

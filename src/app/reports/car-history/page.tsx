@@ -31,6 +31,8 @@ function CarHistoryReportPageContent() {
   const [selectedCarId, setSelectedCarId] = useState('')
   const [startDate, setStartDate] = useState(formatDateInput(new Date(Date.now() - 30 * dayMs)))
   const [endDate, setEndDate] = useState(formatDateInput(new Date()))
+  const [startDraft, setStartDraft] = useState(formatDateInput(new Date(Date.now() - 30 * dayMs)))
+  const [endDraft, setEndDraft] = useState(formatDateInput(new Date()))
   const [loading, setLoading] = useState(false)
   const [sales, setSales] = useState<Sale[]>([])
   const [maintenance, setMaintenance] = useState<Maintenance[]>([])
@@ -55,6 +57,8 @@ function CarHistoryReportPageContent() {
     if (!selectedCarId || !startDate || !endDate) return
     fetchReport()
   }, [selectedCarId, startDate, endDate])
+
+  function applyDates() { setStartDate(startDraft); setEndDate(endDraft) }
 
   async function fetchReport() {
     setLoading(true)
@@ -177,14 +181,14 @@ function CarHistoryReportPageContent() {
 
             <Input
               type="date"
-              value={startDate}
-              onChange={(event) => setStartDate(event.target.value)}
+              value={startDraft}
+              onChange={(event) => setStartDraft(event.target.value)}
               className="h-12 rounded-xl"
             />
             <Input
               type="date"
-              value={endDate}
-              onChange={(event) => setEndDate(event.target.value)}
+              value={endDraft}
+              onChange={(event) => setEndDraft(event.target.value)}
               className="h-12 rounded-xl"
             />
           </div>
@@ -197,6 +201,9 @@ function CarHistoryReportPageContent() {
             </Button>
             <Button type="button" variant="outline" onClick={() => applyPreset(365)}>
               {t.lastYear}
+            </Button>
+            <Button type="button" onClick={applyDates} className="bg-indigo-500 hover:bg-indigo-600 text-white">
+              {isRTL ? 'عرض' : 'GO'}
             </Button>
           </div>
         </div>

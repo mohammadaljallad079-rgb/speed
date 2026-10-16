@@ -59,12 +59,16 @@ function TrialBalanceContent() {
   const [loading, setLoading] = useState(true)
   const [fromDate, setFromDate] = useState('2026-01-01')
   const [toDate, setToDate] = useState('2026-12-31')
+  const [fromDraft, setFromDraft] = useState('2026-01-01')
+  const [toDraft, setToDraft] = useState('2026-12-31')
   const [selectedAccount, setSelectedAccount] = useState<TrialBalanceRow | null>(null)
   const [journalLines, setJournalLines] = useState<JournalLine[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogLoading, setDialogLoading] = useState(false)
 
   useEffect(() => { loadData() }, [fromDate, toDate])
+
+  function applyDates() { setFromDate(fromDraft); setToDate(toDraft) }
 
   function formatNum(n: number | null | undefined): number {
     return Number(n || 0)
@@ -439,15 +443,18 @@ function TrialBalanceContent() {
                   <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'من' : 'From'}</Label>
                   <div className="relative">
                     <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <Input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)} className="pl-10 rounded-lg" />
+                    <Input type="date" value={fromDraft} onChange={e => setFromDraft(e.target.value)} className="pl-10 rounded-lg" />
                   </div>
                 </div>
                 <div className="flex-1">
                   <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'إلى' : 'To'}</Label>
                   <div className="relative">
                     <Calendar className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <Input type="date" value={toDate} onChange={e => setToDate(e.target.value)} className="pl-10 rounded-lg" />
+                    <Input type="date" value={toDraft} onChange={e => setToDraft(e.target.value)} className="pl-10 rounded-lg" />
                   </div>
+                </div>
+                <div className="flex items-end">
+                  <Button onClick={applyDates} className="rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white">{isRTL ? 'عرض' : 'GO'}</Button>
                 </div>
               </div>
             </CardContent>

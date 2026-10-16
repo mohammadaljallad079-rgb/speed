@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { nextDocumentNumber } from '@/lib/numbering'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -77,15 +78,19 @@ function RefundDepositContent() {
       }
 
       // 2. Create journal entry
+      const refundJournalNumber = await nextDocumentNumber(supabase as any, 'deposit_refund', 'DEP-REF')
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
         .insert({
-          journal_number: 'DEP-REF-' + Date.now(),
+          journal_number: refundJournalNumber,
           entry_date: refundDate,
           reference_number: contract.contract_number,
           description: notes || (isRTL ? 'استرجاع وديعة تأمين' : 'Security deposit refund'),
           entry_type: 'deposit_refund',
           status: 'posted',
+          total_debit: parseFloat(refundAmount),
+          total_credit: parseFloat(refundAmount),
+          is_balanced: true,
         })
         .select()
         .single()
@@ -110,7 +115,7 @@ function RefundDepositContent() {
         }
       ]
 
-      const { error: linesError } = await supabase.from('journal_entry_lines').insert(lines)
+      const { error: linesError } = await supabase.from('journal_lines').insert(lines)
       if (linesError) throw linesError
 
       // 4. Update account balances

@@ -37,6 +37,8 @@ function ProfitLossContent() {
   const [exporting, setExporting] = useState(false)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [dateFromDraft, setDateFromDraft] = useState('')
+  const [dateToDraft, setDateToDraft] = useState('')
   const [sections, setSections] = useState<PLSection[]>([])
   const [grossProfit, setGrossProfit] = useState(0)
   const [netProfit, setNetProfit] = useState(0)
@@ -47,6 +49,11 @@ function ProfitLossContent() {
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo])
+
+  function applyDates() {
+    setDateFrom(dateFromDraft)
+    setDateTo(dateToDraft)
+  }
 
   async function fetchData() {
     setLoading(true)
@@ -495,14 +502,14 @@ function ProfitLossContent() {
               <div className="flex gap-3 flex-wrap items-end">
                 <div>
                   <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'من تاريخ' : 'From'}</Label>
-                  <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-9 rounded-lg w-44" />
+                  <Input type="date" value={dateFromDraft} onChange={e => setDateFromDraft(e.target.value)} className="h-9 rounded-lg w-44" />
                 </div>
                 <div>
                   <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'إلى تاريخ' : 'To'}</Label>
-                  <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-9 rounded-lg w-44" />
+                  <Input type="date" value={dateToDraft} onChange={e => setDateToDraft(e.target.value)} className="h-9 rounded-lg w-44" />
                 </div>
-                <Button size="sm" onClick={fetchData} className="h-9 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white">
-                  {isRTL ? 'تحديث' : 'Refresh'}
+                <Button size="sm" onClick={applyDates} className="h-9 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white">
+                  {isRTL ? 'عرض' : 'GO'}
                 </Button>
               </div>
             </div>

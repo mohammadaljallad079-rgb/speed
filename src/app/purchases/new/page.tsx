@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, Supplier, Car, generateSupplierBillNumber } from "@/lib/supabase"
+import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency } from "@/lib/utils"
 import {
   ShoppingBag, Save, ArrowLeft, Plus, Trash2, Car as CarIcon, User, FileText
@@ -139,8 +140,9 @@ function NewBillPageContent() {
       await supabase.from('purchase_invoice_items').insert(itemsToInsert)
 
       if (advancePayment > 0) {
+        const receiptNumber = await nextDocumentNumber(supabase as any, 'receipt', 'PAY')
         const { error: paymentError } = await supabase.from('payments').insert({
-          receipt_number: `PAY-${Date.now().toString().slice(-8)}`,
+          receipt_number: receiptNumber,
           purchase_id: billId,
           payment_type: 'payment',
           amount: advancePayment,

@@ -226,3 +226,166 @@ export function assertChangeSetSafe(paths: string[]): void {
     throw Object.assign(new Error(`Change targets a human-only path: ${bad.join(", ")}`), { status: 403 });
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Repair / reconciliation request classification                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The kind of defect a report/function complaint most likely represents. Kept
+ * deliberately small and deterministic: the AI only *labels* the complaint, it
+ * never decides the numbers. The matching deterministic source (a report, a
+ * validation rule or an Execution 19 reconciliation block) is named so the
+ * caller can run real evidence before proposing anything.
+ */
+export type RepairErrorType = "display" | "query" | "data" | "posting" | "unknown";
+
+export interface RepairClassification {
+  /** The area the complaint is about. */
+  module:
+    | "vat"
+    | "revenue"
+    | "dashboard"
+    | "sales_numbering"
+    | "ledger_balance"
+    | "receivables"
+    | "trial_balance"
+    | "general";
+  /** The shape of the complaint. */
+  symptom: "mismatch" | "format" | "missing" | "duplicate" | "balance" | "unknown";
+  errorType: RepairErrorType;
+  /**
+   * The deterministic source that must supply the real numbers/evidence. The
+   * model is never the source of truth for a figure.
+   */
+  deterministicSource: string;
+  /** Whether a *real* fix would require a write (which always needs approval). */
+  requiresWrite: boolean;
+  /** A short, human-readable next step. Bilingual. */
+  suggestedAction: { ar: string; en: string };
+  reasons: string[];
+}
+
+const MODULE_HINTS: Array<{ module: RepairClassification["module"]; re: RegExp; source: string; needsWrite: boolean; ar: string; en: string }> = [
+  {
+    module: "vat",
+    re: /vat|ضريبة|ضريبه|قيمة\s*مضافة/i,
+    source: "reports/vat + EXEC19 block 4 (VAT base by source)",
+    needsWrite: false,
+    ar: "طابق تقرير VAT مع مصادره (فواتير/مشتريات/مصاريف) عبر مجموعات Exec 19، ثم أعد ضبط التصنيف الضريبي إن ثبت خطؤه.",
+    en: "Reconcile the VAT report with its sources (invoices/purchases/expenses) via the Exec 19 blocks, then correct the tax classification if proven wrong.",
+  },
+  {
+    module: "revenue",
+    re: /revenue|income|إيراد|ايراد|دخل/i,
+    source: "src/lib/reporting/revenue.ts + invoices vs GL revenue",
+    needsWrite: false,
+    ar: "قارن الإيراد المعترف به (صافي الضريبة، عند الإصدار، ناقص المرتجعات) مع فواتير المبيعات ومع حساب الإيراد في دفتر الأستاذ.",
+    en: "Compare recognised revenue (net of VAT, at issue, minus returns) with sales invoices and the revenue GL account.",
+  },
+  {
+    module: "dashboard",
+    re: /dashboard|لوحة|الرئيسية|الرئيسيه/i,
+    source: "src/app/dashboard/page.tsx (summarizeRevenue)",
+    needsWrite: false,
+    ar: "المطابقة عبر شريط مطابقة الإيرادات في اللوحة: إجمالي الفواتير/الضريبة/الصافي/المرتجعات.",
+    en: "Use the dashboard's revenue reconciliation strip: invoices gross / VAT / net / returns.",
+  },
+  {
+    module: "sales_numbering",
+    re: /رقم\s*(الفاتورة|القيد)|serial|تسلسل|number(ing)?|duplicate\s*number|رقم\s*مكرر/i,
+    source: "document_sequences + EXEC19 blocks 1-3 (sequence, last 5, dup/empty)",
+    needsWrite: false,
+    ar: "افحص صف تسلسل sale_invoice وآخر الفواتير والأرقام الفارغة/المكررة؛ إصلاح الرقم يحتاج موافقة ولا يعيد ترقيم الفواتير التاريخية.",
+    en: "Inspect the sale_invoice sequence row, the last invoices and empty/duplicate numbers; fixing a number needs approval and never renumbers historical invoices.",
+  },
+  {
+    module: "ledger_balance",
+    re: /رصيد\s*الحساب|ledger|دفتر\s*الأستاذ|دفتر\s*الاستاذ|account\s*balance|drift|انحراف/i,
+    source: "ACCOUNT_BALANCE_VERIFICATION.sql + EXEC19 block 6 (ledger vs accounts.balance)",
+    needsWrite: false,
+    ar: "طابق accounts.balance مع sum(journal_lines.debit-credit) واقرأ تعريف update_account_balance؛ لا تفترض اتجاه الإشارة.",
+    en: "Match accounts.balance against sum(journal_lines.debit-credit) and read the update_account_balance definition; do not assume the sign convention.",
+  },
+  {
+    module: "receivables",
+    re: /ذمم|مستحق|مديون|receivable|outstanding|عميل.*(مدين|دائن)/i,
+    source: "invoices (total - paid) vs GL 12001",
+    needsWrite: false,
+    ar: "قارن مجموع (total_amount - paid_amount) للفواتير المفتوحة مع حساب الذمم 12001.",
+    en: "Compare the sum of (total_amount - paid_amount) for open invoices with AR account 12001.",
+  },
+  {
+    module: "trial_balance",
+    re: /ميزان\s*المراجعة|trial\s*balance|balance\s*sheet|الميزانية|قائمة\s*المركز/i,
+    source: "journal_entries + journal_lines (posted), Dr=Cr",
+    needsWrite: false,
+    ar: "تحقق أن مجموع المدين = مجموع الدائن على القيود المرحّلة، وأن الأصول = الالتزامات + حقوق الملكية.",
+    en: "Verify total debit = total credit on posted entries and assets = liabilities + equity.",
+  },
+];
+
+const SYMPTOM_HINTS: Array<{ symptom: RepairClassification["symptom"]; re: RegExp }> = [
+  { symptom: "mismatch", re: /لا\s*يطابق|لا\s*يتطابق|مختلف|اختلاف|يتعارض|تعارض|فرق|difference|mismatch|does\s*not\s*match|disagree|not\s*equal/i },
+  { symptom: "format", re: /تنسيق|عمود|ترتيب|format|column|layout|reorder|shape|display/i },
+  { symptom: "missing", re: /لا\s*يظهر|عدم\s*ظهور|مفقود|غير\s*ظاهر|missing|not\s*showing|absent|does\s*not\s*appear/i },
+  { symptom: "duplicate", re: /مكرر|تكرار|duplicate|twice|double/i },
+  { symptom: "balance", re: /رصيد|balance|unbalanced|غير\s*متوازن/i },
+];
+
+/**
+ * Classifies a "this report/function is wrong" request into a module, symptom
+ * and most-likely error type, and names the deterministic source to run. Pure
+ * and side-effect free: it never touches data and never decides a figure.
+ */
+export function classifyRepairRequest(prompt: string): RepairClassification {
+  const reasons: string[] = [];
+  let area: RepairClassification["module"] = "general";
+  let deterministicSource = "reporting/validation.ts + the relevant report's own source";
+  let requiresWrite = false;
+  let suggestedAction = {
+    ar: "حدّد الوحدة والتقرير المتأثر، ثم شغّل التحقق الحتمي قبل أي اقتراح.",
+    en: "Identify the affected module and report, then run the deterministic check before proposing anything.",
+  };
+  for (const hint of MODULE_HINTS) {
+    if (hint.re.test(prompt)) {
+      area = hint.module;
+      deterministicSource = hint.source;
+      requiresWrite = hint.needsWrite;
+      suggestedAction = { ar: hint.ar, en: hint.en };
+      reasons.push(`module:${hint.module}`);
+      break;
+    }
+  }
+
+  let symptom: RepairClassification["symptom"] = "unknown";
+  for (const s of SYMPTOM_HINTS) {
+    if (s.re.test(prompt)) {
+      symptom = s.symptom;
+      reasons.push(`symptom:${s.symptom}`);
+      break;
+    }
+  }
+
+  // Distinguish display vs query vs data vs posting from the wording.
+  let errorType: RepairErrorType = "unknown";
+  if (/تنسيق|عمود|ترتيب|format|column|layout|style|لون|title|عنوان/i.test(prompt)) {
+    errorType = "display";
+  } else if (/قيد|قيود|journal|posting|ترحيل|مُرحّل|مرحل|ledger|دفتر|تسجيل/i.test(prompt)) {
+    errorType = "posting";
+  } else if (/لا\s*يظهر|عدم\s*ظهور|مفقود|missing|not\s*showing|بيانات\s*ناقصة|data/i.test(prompt)) {
+    errorType = "data";
+  } else if (/فلتر|filter|فترة|period|تاريخ|date|استعلام|query|لا\s*يطابق|mismatch|مختلف/i.test(prompt)) {
+    errorType = "query";
+  }
+  if (errorType !== "unknown") reasons.push(`errorType:${errorType}`);
+
+  // Any real correction of accounting data is a write and must be approved; the
+  // classifier never enables a write itself.
+  if (/(عدّل|عدل|صحّح|صحح|أنشئ|انشئ|سجّل|سجل|احذف|fix|correct|create|post|insert|delete|update)/i.test(prompt)) {
+    requiresWrite = true;
+    reasons.push("may-require-write");
+  }
+
+  return { module: area, symptom, errorType, deterministicSource, requiresWrite, suggestedAction, reasons };
+}

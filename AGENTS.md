@@ -592,6 +592,32 @@ that applies the filters it is given and returns only affected rows.
 - The pack is preparation only; running it against production requires separate,
   explicit authorization. No migration is applied and no row is written by Exec 19.
 
+## Execution 20 invariants (AI audit + repair capability)
+
+- **One AI layer** (`src/lib/ai/`) and **one reporting layer** (`src/lib/reporting/`).
+  Never add a second AI engine, a second report engine, or a second Excel engine.
+  `src/lib/reporting/*` is the deterministic source of truth for figures; the model
+  only phrases a pre-computed facts block (`asUntrustedBlock("FACTS", …)`).
+- **No provider call may hang.** `withTimeout` in `src/lib/ai/providers.ts` bounds
+  every provider call (default `DEFAULT_TIMEOUT_MS`), threads through
+  `completeWithFallback`, and aborts the underlying fetch/SDK; an outer signal is
+  chained. A timed-out call rejects so the caller's fallback/degradation runs.
+  Do not call a provider without it.
+- **Repair complaints are classified deterministically**, never by the model:
+  `classifyRepairRequest` in `policy.ts` returns a module, symptom, likely
+  `errorType` (display/query/data/posting), the `deterministicSource` to run
+  (EXEC19 blocks, `ACCOUNT_BALANCE_VERIFICATION.sql`, `revenue.ts`, …) and a
+  `requiresWrite` flag. `answerQuestion` appends the diagnosis to the answer; a
+  write is **never** enabled by the diagnosis — it only raises the approval flag.
+- **Route hygiene (guarded by `tests/exec20-ai-audit-repair.test.ts`):** every AI
+  route calls `requireContext`; no route trusts `tenant_id`/`role` from the body;
+  no route introduces `exec_sql`/`eval`/`new Function`/`child_process`.
+- **Lint gotcha:** never name a local variable `module` (Next.js
+  `no-assign-module-variable`). Use `area` etc. — this bit Exec 20.
+- AI provider settings live in the existing `settings` table (`ai_settings`),
+  tenant-scoped; the key is written but never read back (`toPublicSettings`).
+  `ai_recommendations` is company-scoped and isolated by migration 002.
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

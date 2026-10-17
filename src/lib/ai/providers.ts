@@ -29,12 +29,67 @@ export const DEFAULT_MODELS: Record<AiProviderId, string> = {
 
 const OPENAI_BASE = "https://api.openai.com/v1";
 
+/**
+ * Default per-call deadline. A provider that hangs must not hang the request:
+ * the call is aborted and the caller's fallback/degradation path takes over.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
 export interface ProviderCallInput {
   apiKey: string;
   baseUrl?: string | null;
   request: AiCompletionRequest;
   model: string;
   signal?: AbortSignal;
+  /** Per-call deadline; defaults to DEFAULT_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
+
+/**
+ * Races a provider call against a deadline. When the caller supplies no signal
+ * a fresh one is created so the underlying fetch/SDK request is actually
+ * aborted; an existing signal is chained so an outer cancel still wins.
+ */
+export async function withTimeout<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  outer?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  let rejectGuard: (e: Error) => void = () => {};
+  const guard = new Promise<never>((_, reject) => {
+    rejectGuard = reject;
+  });
+  // An abort (outer cancel) rejects the race immediately; a timeout sets the
+  // flag first so its own abort does not masquerade as a cancel.
+  controller.signal.addEventListener(
+    "abort",
+    () => {
+      if (!timedOut) rejectGuard(new Error("AI provider call aborted"));
+    },
+    { once: true },
+  );
+  const onOuter = () => controller.abort();
+  if (outer) {
+    if (outer.aborted) controller.abort();
+    else outer.addEventListener("abort", onOuter, { once: true });
+  }
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+    rejectGuard(new Error(`AI provider timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  try {
+    const runPromise = run(controller.signal);
+    // If the guard wins, the losing provider promise may reject later (aborted
+    // fetch). Swallow it so it never becomes an unhandled rejection.
+    runPromise.catch(() => {});
+    return await Promise.race([runPromise, guard]);
+  } finally {
+    clearTimeout(timer);
+    if (outer) outer.removeEventListener("abort", onOuter);
+  }
 }
 
 /** Resolves the model for a task class, falling back to the default model. */
@@ -129,14 +184,21 @@ async function callOpenAiLike(
   };
 }
 
-/** Dispatches to the provider adapter for a single call. */
+/** Dispatches to the provider adapter for a single call, bounded by a deadline. */
 export async function completeWithProvider(
   provider: AiProviderId,
   input: ProviderCallInput,
 ): Promise<AiCompletionResult> {
-  if (provider === "anthropic") return callAnthropic(input);
-  if (provider === "openai") return callOpenAiLike(input, "openai");
-  return callOpenAiLike(input, "openai_compatible");
+  return withTimeout(
+    (signal) => {
+      const bounded: ProviderCallInput = { ...input, signal };
+      if (provider === "anthropic") return callAnthropic(bounded);
+      if (provider === "openai") return callOpenAiLike(bounded, "openai");
+      return callOpenAiLike(bounded, "openai_compatible");
+    },
+    input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    input.signal,
+  );
 }
 
 export interface RoutedResult extends AiCompletionResult {
@@ -159,6 +221,7 @@ export async function completeWithFallback(
   routes: RouteEntry[],
   request: AiCompletionRequest,
   signal?: AbortSignal,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<RoutedResult> {
   if (routes.length === 0) throw new Error("No AI provider is configured");
   const attempted: AiProviderId[] = [];
@@ -172,6 +235,7 @@ export async function completeWithFallback(
         model: route.model,
         request: { ...request, model: route.model },
         signal,
+        timeoutMs,
       });
       return { ...result, attempted };
     } catch (error) {

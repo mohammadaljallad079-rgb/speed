@@ -1,6 +1,6 @@
 import type { AuthContext } from "@/lib/auth/types";
 import type { ReportingDb } from "@/lib/reporting/data";
-import { allowedTools, asUntrustedBlock, detectWriteIntent, redactSecrets, scanForInjection, type AiToolSpec } from "./policy";
+import { allowedTools, asUntrustedBlock, classifyRepairRequest, detectWriteIntent, redactSecrets, scanForInjection, type AiToolSpec } from "./policy";
 import { runTool, type ToolResult } from "./tools";
 import type { AiCompletionResult, AiMessage, AssistantAnswer, AssistantSource, AiTaskKind } from "./types";
 
@@ -130,9 +130,28 @@ export async function answerQuestion(
   const sources: AssistantSource[] = results.flatMap((r) => r.facts);
   const base = deterministicSummary(results, lang);
 
-  // 4. Phrase the grounded summary with the model when available.
+  // 4. A "this report/function is wrong" complaint gets a deterministic
+  //    diagnosis (module, symptom, likely error type, the real source to run).
+  //    It is evidence to act on, never a financial figure, and it never enables
+  //    a write by itself.
+  const diagnosis = classifyRepairRequest(input.prompt);
+  const diagnosisText =
+    diagnosis.module !== "general" || diagnosis.symptom !== "unknown"
+      ? [
+          "",
+          lang === "ar" ? "التشخيص المقترح:" : "Suggested diagnosis:",
+          `- ${lang === "ar" ? "الوحدة" : "Module"}: ${diagnosis.module}`,
+          `- ${lang === "ar" ? "نوع العَرَض" : "Symptom"}: ${diagnosis.symptom}`,
+          `- ${lang === "ar" ? "نوع الخطأ المحتمل" : "Likely error type"}: ${diagnosis.errorType}`,
+          `- ${lang === "ar" ? "المصدر الحتمي للتحقق" : "Deterministic source to verify"}: ${diagnosis.deterministicSource}`,
+          `- ${lang === "ar" ? "الخطوة المقترحة" : "Suggested step"}: ${lang === "ar" ? diagnosis.suggestedAction.ar : diagnosis.suggestedAction.en}`,
+        ].join("\n")
+      : "";
+  const baseWithDiagnosis = base + diagnosisText;
+
+  // 5. Phrase the grounded summary with the model when available.
   if (!deps.complete) {
-    return { answer: base, sources, degraded: true, usage: null, provider: null, requiresApproval: false };
+    return { answer: baseWithDiagnosis, sources, degraded: true, usage: null, provider: null, requiresApproval: diagnosis.requiresWrite };
   }
 
   const system = [
@@ -149,28 +168,31 @@ export async function answerQuestion(
   const factsBlock = [
     asUntrustedBlock("USER REQUEST", input.prompt),
     asUntrustedBlock("FACTS", base),
-  ].join("\n\n");
+    diagnosisText ? asUntrustedBlock("DIAGNOSIS", diagnosisText) : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   try {
     const completion = await deps.complete("assistant", [{ role: "user", content: factsBlock }], system);
-    const answer = redactSecrets(completion.text || base);
+    const answer = redactSecrets(completion.text || baseWithDiagnosis);
     return {
-      answer,
+      answer: answer + diagnosisText,
       sources,
       degraded: false,
       usage: completion.usage,
       provider: completion.usage.provider,
-      requiresApproval: false,
+      requiresApproval: diagnosis.requiresWrite,
     };
   } catch {
     // Provider outage must degrade to the deterministic answer, not fail.
     return {
-      answer: base + (errors.length ? `\n\n(${lang === "ar" ? "تعذّر الاتصال بمزوّد النموذج" : "model provider unavailable"})` : ""),
+      answer: baseWithDiagnosis + (errors.length ? `\n\n(${lang === "ar" ? "تعذّر الاتصال بمزوّد النموذج" : "model provider unavailable"})` : ""),
       sources,
       degraded: true,
       usage: null,
       provider: null,
-      requiresApproval: false,
+      requiresApproval: diagnosis.requiresWrite,
     };
   }
 }

@@ -241,17 +241,20 @@ that applies the filters it is given and returns only affected rows.
   against a PostgREST stub; `supabaseAdmin` and `assertReference` take an injectable
   client for this.
 
-## Execution 05.1 вҖ” Financial-year enforcement (server side)
+## Execution 05.1 — Financial-year enforcement (server side)
 
-- `resolveAuthContext` (`src/lib/auth/context.ts`) now resolves the tenant's
-  active financial year and puts it on `AuthContext.financialYearId`. It used to
-  be hardcoded `null`, which silently disabled year validation on every API
-  route. Do not revert it to `null`.
-- `src/lib/sales/service.ts` calls `assertPostingYear(client, context, date)`
-  before every financial write (invoice, payment, return). It resolves the year
-  through the caller's own client, tenant-scoped, and skips validation when the
-  tenant has no year (backward compatible). Any new financial service must call
-  it too.
+- Financial-year enforcement is real but lives at the **route** level:
+  `/api/invoices` and `/api/expenses` call `getActiveFinancialYear(context.tenantId)`
+  and then `assertDateInOpenFinancialYear(year, date, ...)` before the write. A
+  tenant with no configured year is skipped (backward compatible).
+- `AuthContext.financialYearId` is currently always `null` — `resolveAuthContext`
+  does NOT populate it. Do not assume it is set; resolve the year with
+  `getActiveFinancialYear` where it is needed (that is what the routes do).
+  (`/api/invoices` only *uses* `context.financialYearId` as an optional stamp on
+  the invoice row, so the column is left unset today.)
+- `src/lib/sales/service.ts` and `assertPostingYear` referenced by earlier notes do
+  NOT exist in this snapshot; the sales posting path is
+  `src/lib/accounting/sales-posting.ts` + `/api/invoices`.
 - Migrations `001`, `002`, `003` are still NOT applied to the live database
   (direct Postgres access is blocked from the dev environment; the anon key can
   still read/write). Applying them is the one remaining operator step.

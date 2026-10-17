@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getActiveFinancialYear, resolveAuthContext } from "./context";
-import { can } from "./policy";
-import { forbidden, toErrorResponse, unauthorized } from "./errors";
+import { ApiError, forbidden, toErrorResponse, unauthorized } from "./errors";
 import { logAudit, type AuditEvent } from "./audit";
+import { can } from "./policy";
 import type { AuthContext } from "./types";
 import type { PermissionAction } from "./permissions";
 
@@ -37,6 +37,38 @@ function assertRole(context: AuthContext, options: GuardOptions): void {
 }
 
 /**
+ * The pure authorization decision behind every guarded route. Returns the
+ * resolved context on success and throws the exact `ApiError` (401/403) a route
+ * must return otherwise, so the rules are exercised without a Next request:
+ *
+ *   - no context + auth required          -> 401 `unauthenticated`
+ *   - no context + `requireAuth: false`   -> null (anonymous handler)
+ *   - `requireSuperAdmin` & not super      -> 403 `forbidden` (global-only)
+ *   - `requireAdmin` & not admin           -> 403 `forbidden`
+ *   - `allowRoles` miss                    -> 403 `forbidden`
+ *   - module/action permission miss        -> 403 `forbidden`
+ *   - otherwise                            -> the context
+ *
+ * A valid administrator passes; an inactive or unmapped account resolves to no
+ * context and is rejected exactly like an anonymous caller.
+ */
+export function authorize(
+  context: AuthContext | null,
+  options: GuardOptions,
+): AuthContext | null {
+  const requireAuth = options.requireAuth !== false;
+  if (!context) {
+    if (requireAuth) throw unauthorized();
+    return null;
+  }
+  assertRole(context, options);
+  if (options.module && options.action && !can(context, options.module, options.action)) {
+    throw forbidden(`Missing permission: ${options.module}.${options.action}`);
+  }
+  return context;
+}
+
+/**
  * Central entry point for every privileged route handler.
  *
  * It performs, in order:
@@ -54,20 +86,8 @@ export async function withAuth<T>(
   handler: (context: AuthContext) => Promise<T>,
 ): Promise<NextResponse> {
   try {
-    const requireAuth = options.requireAuth !== false;
-    const context = await resolveAuthContext(request);
-
-    if (!context) {
-      if (requireAuth) throw unauthorized();
-      return NextResponse.json(await handler(null as unknown as AuthContext));
-    }
-
-    assertRole(context, options);
-    if (options.module && options.action && !can(context, options.module, options.action)) {
-      throw forbidden(`Missing permission: ${options.module}.${options.action}`);
-    }
-
-    const result = await handler(context);
+    const context = authorize(await resolveAuthContext(request), options);
+    const result = await handler(context as AuthContext);
     return NextResponse.json(result);
   } catch (error) {
     const { status, body } = toErrorResponse(error);
@@ -82,20 +102,8 @@ export async function withAuthResponse(
   handler: (context: AuthContext) => Promise<NextResponse>,
 ): Promise<NextResponse> {
   try {
-    const requireAuth = options.requireAuth !== false;
-    const context = await resolveAuthContext(request);
-
-    if (!context) {
-      if (requireAuth) throw unauthorized();
-      return await handler(null as unknown as AuthContext);
-    }
-
-    assertRole(context, options);
-    if (options.module && options.action && !can(context, options.module, options.action)) {
-      throw forbidden(`Missing permission: ${options.module}.${options.action}`);
-    }
-
-    return await handler(context);
+    const context = authorize(await resolveAuthContext(request), options);
+    return await handler(context as AuthContext);
   } catch (error) {
     const { status, body } = toErrorResponse(error);
     return NextResponse.json(body, { status });
@@ -110,14 +118,9 @@ export async function requireContext(
   request: Request,
   options: GuardOptions = {},
 ): Promise<AuthContext> {
-  const context = await resolveAuthContext(request);
-  if (!context) throw unauthorized();
-  assertRole(context, options);
-  if (options.module && options.action && !can(context, options.module, options.action)) {
-    throw forbidden(`Missing permission: ${options.module}.${options.action}`);
-  }
-  return context;
+  const context = authorize(await resolveAuthContext(request), options);
+  return context as AuthContext;
 }
 
-export { getActiveFinancialYear, logAudit, can };
+export { getActiveFinancialYear, logAudit, can, ApiError };
 export type { AuditEvent, AuthContext };

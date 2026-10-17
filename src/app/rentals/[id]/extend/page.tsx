@@ -97,29 +97,29 @@ export default function ExtendContractPage() {
 
       if (updateError) throw updateError
 
-      const { data: invoiceData, error: invoiceError } = await supabase
-        .from('invoices')
-        .insert({
-          invoice_number: 'EXT-' + Date.now(),
-          invoice_date: new Date().toISOString().split('T')[0],
-          due_date: newEndDate,
-          status: 'unpaid',
-          invoice_type: 'extension',
-          customer_id: contract.customer_id,
-          rental_contract_id: contractId,
-          total_amount: additionalAmount,
-          paid_amount: 0,
-          discount_amount: 0,
-          vat_amount: 0,
-          vat_tax_id: null,
-          payment_method: 'cash',
-          payment_term: 'immediate',
-          notes: isRTL ? 'فاتورة تمديد عقد' : 'Contract Extension Invoice'
+      // Issue the extension invoice through the single server-side posting path:
+      // the row-locked numbering RPC, the session tenant/financial year and the
+      // balanced rental-revenue journal. The browser no longer writes the
+      // invoice (Exec 34, Item 7).
+      if (additionalAmount > 0) {
+        const invoiceRes = await fetch('/api/invoices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: contract.customer_id,
+            rental_contract_id: contractId,
+            invoice_date: new Date().toISOString().split('T')[0],
+            due_date: newEndDate,
+            invoice_type: 'extension',
+            amount: additionalAmount,
+            payment_method: 'cash',
+            payment_term: 'immediate',
+            notes: isRTL ? 'فاتورة تمديد عقد' : 'Contract Extension Invoice',
+          }),
         })
-        .select()
-        .single()
-
-      if (invoiceError) throw invoiceError
+        const invoicePayload = await invoiceRes.json().catch(() => ({}))
+        if (!invoiceRes.ok) throw new Error(invoicePayload?.error || 'Failed to create the extension invoice')
+      }
 
       alert(isRTL ? 'تم تمديد العقد بنجاح' : 'Contract extended successfully')
       router.push('/rentals')

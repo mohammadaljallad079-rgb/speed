@@ -49,6 +49,9 @@ type Body = {
   /** "sale" (default) or "rental". A rental posts to 41001 and is a rental_invoice. */
   invoice_type?: string;
   rental_days?: number | string;
+  /** Amount already collected at issue (a rental's advance payment). */
+  paid_amount?: number | string;
+  payment_type?: string | null;
 };
 
 const num = (v: unknown): number => {
@@ -59,6 +62,7 @@ const round3 = (n: number) => Math.round(n * 1000) / 1000;
 
 export async function POST(request: Request) {
   let createdInvoiceId: string | null = null;
+  let createdJournalId: string | null = null;
   try {
     const context = await requireContext(request, { module: "sales", action: "create" });
     const body = ((await request.json()) ?? {}) as Body;
@@ -85,10 +89,13 @@ export async function POST(request: Request) {
     const remaining = round3(total - advancePayment);
     const paymentMethod = typeof body.payment_method === "string" && body.payment_method ? body.payment_method : "cash";
     const invoiceDate = body.invoice_date ?? new Date().toISOString().slice(0, 10);
-    // A rental invoice is the same posting shape but hits 41001 (rental revenue)
-    // and carries its own entry_type, so reports can separate the two.
+    // A rental invoice (and a rental extension, which is more rental days) is
+    // the same posting shape but hits 41001 (rental revenue) and carries a
+    // rental entry_type, so reports can separate it from a sale.
     const isRental = body.invoice_type === "rental";
-    const invoiceType = isRental ? "rental" : "sale";
+    const isExtension = body.invoice_type === "extension";
+    const postsAsRental = isRental || isExtension;
+    const invoiceType = isRental ? "rental" : isExtension ? "extension" : "sale";
 
     // Cross-tenant foreign keys are an application-layer responsibility: verify
     // the referenced customer/contract belong to the caller's tenant.
@@ -97,6 +104,30 @@ export async function POST(request: Request) {
       { customer_id: customerId, rental_contract_id: body.rental_contract_id ?? undefined },
       context,
     );
+
+    // Idempotency for a rental: a contract may be invoiced exactly once. A
+    // retry of the rental form (double click, network retry) must not mint a
+    // second invoice and a second journal entry, so return the existing one.
+    if (isRental && body.rental_contract_id) {
+      let existingQuery = supabaseAdmin
+        .from("invoices")
+        .select("id,invoice_number,total_amount,status")
+        .eq("rental_contract_id", body.rental_contract_id)
+        .eq("invoice_type", "rental");
+      existingQuery = context.tenantId
+        ? existingQuery.eq("tenant_id", context.tenantId)
+        : existingQuery.is("tenant_id", null);
+      const { data: existing } = await existingQuery.maybeSingle();
+      if (existing) {
+        return NextResponse.json({
+          id: existing.id,
+          invoice_number: existing.invoice_number,
+          total_amount: existing.total_amount,
+          status: existing.status,
+          idempotent: true,
+        });
+      }
+    }
 
     const tenantId = assertWritableTenant(context, (body as { tenant_id?: unknown }).tenant_id);
     const year = await getActiveFinancialYear(context.tenantId);
@@ -110,7 +141,15 @@ export async function POST(request: Request) {
         isRental ? "RI" : "SI",
       ));
 
-    const status = advancePayment <= 0 ? "pending" : remaining <= 0 ? "paid" : "partial";
+    // Paid amount and status are DERIVED from the amounts, never trusted from
+    // the body: a client-supplied `paid_amount` could otherwise contradict the
+    // advance the journal posts. `paid_amount` (a rental's "paid") and
+    // `advance_payment` (a sale's advance) are the same money.
+    const paidAmount = round3(
+      Math.min(Math.max(body.paid_amount !== undefined ? num(body.paid_amount) : advancePayment, 0), total),
+    );
+    const remainingAfterPaid = round3(total - paidAmount);
+    const status = remainingAfterPaid <= 0 ? "paid" : paidAmount > 0 ? "partial" : "pending";
 
     const invoiceRow: Record<string, unknown> = {
       invoice_number: invoiceNumber,
@@ -128,12 +167,17 @@ export async function POST(request: Request) {
       discount_amount: discount,
       vat_amount: vat,
       vat_tax_id: typeof body.vat_tax_id === "string" && body.vat_tax_id ? body.vat_tax_id : null,
-      paid_amount: 0,
+      paid_amount: paidAmount,
       payment_method: paymentMethod,
       payment_term: body.payment_term || null,
       notes: body.notes || null,
     };
-    if (isRental && body.rental_days !== undefined) invoiceRow.rental_days = num(body.rental_days);
+    // A rental keeps the payment type the contract was created with, so the
+    // invoice reads exactly as it did when the browser built it.
+    if (postsAsRental && typeof body.payment_type === "string" && body.payment_type) {
+      invoiceRow.payment_type = body.payment_type;
+    }
+    if (postsAsRental && body.rental_days !== undefined) invoiceRow.rental_days = num(body.rental_days);
     if (tenantId) invoiceRow.tenant_id = tenantId;
     if (context.financialYearId) invoiceRow.financial_year_id = context.financialYearId;
 
@@ -145,34 +189,37 @@ export async function POST(request: Request) {
     if (invErr) throw invErr;
     createdInvoiceId = (invoice as { id: string }).id;
 
-    const amounts: SaleAmounts = { amount, discount, vat, advancePayment, remaining };
+    const amounts: SaleAmounts = { amount, discount, vat, advancePayment: paidAmount, remaining: remainingAfterPaid };
     const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "journal_entry", "JV");
     const { journalId, created } = await postSaleInvoice(supabaseAdmin as never, {
       ...amounts,
       journalNumber,
       invoiceNumber,
       entryDate: invoiceDate,
-      description: isRental ? `Rental invoice - ${invoiceNumber}` : `Sale invoice - ${invoiceNumber}`,
+      description: postsAsRental ? `Rental invoice - ${invoiceNumber}` : `Sale invoice - ${invoiceNumber}`,
       customerId,
       paymentMethod,
-      entryType: isRental ? "rental_invoice" : "sale_invoice",
-      revenueCode: isRental ? SALE_ACCOUNT_CODES.rentalRevenue : SALE_ACCOUNT_CODES.revenue,
+      entryType: postsAsRental ? "rental_invoice" : "sale_invoice",
+      revenueCode: postsAsRental ? SALE_ACCOUNT_CODES.rentalRevenue : SALE_ACCOUNT_CODES.revenue,
     });
+    createdJournalId = journalId;
 
     // Record the advance receipt as a payment row (settles AR; not revenue).
-    if (advancePayment > 0) {
+    if (paidAmount > 0) {
       const receiptNumber = await nextDocumentNumber(supabaseAdmin as never, "receipt", "REC");
       const paymentRow: Record<string, unknown> = {
         receipt_number: receiptNumber,
         invoice_id: createdInvoiceId,
         customer_id: customerId,
         payment_type: "receipt",
-        amount: advancePayment,
+        amount: paidAmount,
         payment_method: paymentMethod,
         payment_date: invoiceDate,
         status: "completed",
       };
       if (tenantId) paymentRow.tenant_id = tenantId;
+      if (body.rental_contract_id) paymentRow.rental_contract_id = body.rental_contract_id;
+      if (context.financialYearId) paymentRow.financial_year_id = context.financialYearId;
       const { error: payErr } = await supabaseAdmin.from("payments").insert(paymentRow);
       if (payErr) throw payErr;
     }
@@ -197,6 +244,10 @@ export async function POST(request: Request) {
     // reports revenue the ledger does not know about. Remove it.
     if (createdInvoiceId) {
       try {
+        if (createdJournalId) {
+          await supabaseAdmin.from("journal_lines").delete().eq("journal_entry_id", createdJournalId);
+          await supabaseAdmin.from("journal_entries").delete().eq("id", createdJournalId);
+        }
         await supabaseAdmin.from("invoices").delete().eq("id", createdInvoiceId);
       } catch {
         /* best effort */

@@ -7,7 +7,6 @@ import { useRouter } from "next/navigation"
 import { jsPDF } from "jspdf"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering";
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -100,7 +99,7 @@ function NewRentalForm() {
     { id: 'exp2', expense_type: 'Registration', account_code: '', amount: '', vat_percent: '0' },
     { id: 'exp3', expense_type: 'Maintenance' },
     { id: 'exp4', expense_type: 'Fuel', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp5', expense_type: 'Damage', account_code: '', amount: '', vat_percent: '0', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp5', expense_type: 'Damage', account_code: '', amount: '', vat_percent: '0' },
   ])
 
   const [contract, setContract] = useState({
@@ -455,7 +454,23 @@ function NewRentalForm() {
         pdfUrlData = urlResult
       }
 
+      // Resolve the tenant from the authenticated session - never from any
+      // caller input - so the contract is written tenant-scoped. Without this
+      // the contract was created tenant-less, a cross-tenant leak on a
+      // multi-tenant install (Exec 34, Item 3).
+      let tenantId: string | null = null
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          const { data: profile } = await supabase.from("users").select("tenant_id").eq("id", user.id).maybeSingle()
+          tenantId = profile?.tenant_id || null
+        }
+      } catch {
+        /* stay tenant-less on the single-tenant install */
+      }
+
       const { data: newContract, error } = await supabase.from("rental_contracts").insert({
+        ...(tenantId ? { tenant_id: tenantId } : {}),
         contract_number: contract.contract_number,
         contract_type: contract.contract_type,
         customer_id: contract.customer_id,
@@ -490,89 +505,38 @@ function NewRentalForm() {
       }).select().single()
       if (error) throw error
 
+      // 3. Issue the rental invoice through the single server-side posting path.
+      //    The server allocates the number (row-locked), takes the tenant and
+      //    financial year from the authenticated session, derives the paid
+      //    amount/status from the amounts, and posts the balanced journal
+      //    (41001 rental revenue). Posting is idempotent per contract, so a
+      //    retry returns the existing invoice instead of double-posting
+      //    (Exec 34, Items 2-5).
       try {
-        const { data: fy } = await supabase.from("financial_years").select("id").eq("is_current", true).single()
-        const { data: invNumberData } = await supabase.rpc("generate_document_number", { p_doc_type: "rental_invoice" })
-        const invoiceNumber = invNumberData as string
-        const remaining = totalAmount - paidNum
-        const invoiceStatus = remaining <= 0 ? "paid" : (paidNum > 0 ? "partial" : "unpaid")
-
-        const { data: newInvoice, error: invoiceError } = await supabase.from("invoices").insert({
-          invoice_number: invoiceNumber,
-          customer_id: contract.customer_id,
-          rental_contract_id: newContract.id,
-          invoice_date: new Date().toISOString().slice(0, 10),
-          due_date: contract.end_date,
-          amount: subtotal,
-          discount_amount: discountNum,
-          vat_amount: vatAmount,
-          total_amount: totalAmount,
-          paid_amount: paidNum,
-          status: invoiceStatus,
-          payment_method: contract.payment_type,
-          payment_type: contract.payment_type,
-          payment_term: contract.payment_term,
-          invoice_type: "rental",
-          rental_days: billable,
-          financial_year_id: fy?.id || null,
-          tenant_id: newContract.tenant_id,
-        }).select().single()
-        if (invoiceError) throw invoiceError
-        if (!newInvoice) throw new Error("Invoice insert returned no data")
-
-        const cashOrBankCode = contract.payment_type === "cash" ? "11001" : "11002"
-        const { data: accountsData } = await supabase.from("accounts").select("id, code").in("code", [cashOrBankCode, "12001", "41001", "24000"])
-        const acc = (code: string) => accountsData?.find((a: any) => a.code === code)?.id
-
-        if (paidNum > 0) {
-          const receiptNumber = await nextDocumentNumber(supabase, "receipt", "REC")
-          const { error: paymentError } = await supabase.from("payments").insert({
-            receipt_number: receiptNumber,
-            invoice_id: newInvoice.id,
+        const invoiceRes = await fetch("/api/invoices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
             customer_id: contract.customer_id,
             rental_contract_id: newContract.id,
-            payment_type: "receipt",
-            amount: paidNum,
+            invoice_date: new Date().toISOString().slice(0, 10),
+            due_date: contract.end_date,
+            invoice_type: "rental",
+            amount: subtotal,
+            discount: discountNum,
+            vat: vatAmount,
+            paid_amount: paidNum,
             payment_method: contract.payment_type,
-            payment_date: new Date().toISOString().slice(0, 10),
-            account_code: cashOrBankCode,
-            status: "completed",
-            tenant_id: newContract.tenant_id,
-            financial_year_id: fy?.id || null,
-          })
-          if (paymentError) throw paymentError
-        }
-
-        const { data: jvNumberData } = await supabase.rpc("generate_document_number", { p_doc_type: "journal_entry" })
-        const { data: newJournal } = await supabase.from("journal_entries").insert({
-          journal_number: jvNumberData,
-          entry_date: new Date().toISOString().slice(0, 10),
-          reference_number: invoiceNumber,
-          description: isRTL ? `فاتورة إيجار - عقد ${contract.contract_number}` : `Rental invoice - Contract ${contract.contract_number}`,
-          total_debit: totalAmount,
-          total_credit: totalAmount,
-          is_balanced: true,
-          status: "posted",
-          entry_type: "rental_invoice",
-          financial_year_id: fy?.id || null,
-        }).select().single()
-
-        const lines: any[] = []
-        let lineOrder = 1
-        if (paidNum > 0) {
-          lines.push({ journal_entry_id: newJournal.id, account_id: acc(cashOrBankCode), debit: paidNum, credit: 0, description: isRTL ? "دفعة مقبوضة" : "Received payment", rental_contract_id: newContract.id, customer_id: contract.customer_id, line_order: lineOrder++ })
-        }
-        if (remaining > 0) {
-          lines.push({ journal_entry_id: newJournal.id, account_id: acc("12001"), debit: remaining, credit: 0, description: isRTL ? "رصيد مستحق على العميل" : "Amount due from customer", rental_contract_id: newContract.id, customer_id: contract.customer_id, line_order: lineOrder++ })
-        }
-        lines.push({ journal_entry_id: newJournal.id, account_id: acc("41001"), debit: 0, credit: subtotal - discountNum, description: isRTL ? "إيراد تأجير" : "Rental revenue", rental_contract_id: newContract.id, customer_id: contract.customer_id, line_order: lineOrder++ })
-        if (vatAmount > 0) {
-          lines.push({ journal_entry_id: newJournal.id, account_id: acc("24000"), debit: 0, credit: vatAmount, description: isRTL ? "ضريبة القيمة المضافة" : "VAT payable", rental_contract_id: newContract.id, customer_id: contract.customer_id, line_order: lineOrder++ })
-        }
-        await supabase.from("journal_lines").insert(lines)
+            payment_type: contract.payment_type,
+            payment_term: contract.payment_term,
+            rental_days: billable,
+          }),
+        })
+        const invoicePayload = await invoiceRes.json().catch(() => ({}))
+        if (!invoiceRes.ok) throw new Error(invoicePayload?.error || "Failed to create the rental invoice")
       } catch (invoiceErr: any) {
-        console.error("Invoice auto-generation failed:", invoiceErr)
-        alert("فشل توليد الفاتورة: " + (invoiceErr?.message || JSON.stringify(invoiceErr)))
+        console.error("Invoice generation failed:", invoiceErr)
+        alert((isRTL ? "تم إنشاء العقد لكن فشل توليد الفاتورة: " : "Contract created but invoice generation failed: ") + (invoiceErr?.message || ""))
       }
 
       router.push("/rentals")

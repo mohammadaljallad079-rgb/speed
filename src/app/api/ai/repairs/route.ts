@@ -1,0 +1,172 @@
+import { NextResponse } from "next/server";
+
+import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import type { ReportingDb } from "@/lib/reporting/data";
+import { loadTemplates, saveTemplate, type SettingsDb } from "@/lib/reporting/templates";
+import { allowedRepairActions, getRepairAction, selectRepairActions } from "@/lib/ai/repair-catalog";
+import {
+  createMemoryIdempotency,
+  executeRepair,
+  proposeRepair,
+  type RepairDeps,
+  type RepairProposal,
+} from "@/lib/ai/repair-workflow";
+
+/**
+ * Safe AI repair endpoint (Execution 21, Phase R1).
+ *
+ * POST ?op=catalog  → the actions the caller may run.
+ * POST ?op=propose  → diagnosis + candidate actions + a deterministic preview.
+ * POST ?op=execute  → executes an approved proposal through the server only.
+ *
+ * Identity, tenant and permissions always come from the session via
+ * `requireContext`; nothing is taken from the body. Execution re-checks the
+ * permission, the approval and the plan fingerprint. Every step is audited.
+ * The only persisted effect is a tenant-scoped report-format template.
+ */
+
+export const dynamic = "force-dynamic";
+
+// Best-effort, per-process idempotency. A durable store would need a settings
+// row; the audit trail is the authoritative record of what ran.
+const idempotency = createMemoryIdempotency();
+
+function buildDeps(context: { tenantId: string | null }): RepairDeps {
+  return {
+    db: supabaseAdmin as unknown as ReportingDb,
+    tenantId: context.tenantId,
+    loadTemplates: (tenantId) => loadTemplates(supabaseAdmin as unknown as SettingsDb, tenantId),
+    saveTemplate: (tenantId, template) => saveTemplate(supabaseAdmin as unknown as SettingsDb, tenantId, template),
+  };
+}
+
+export async function POST(request: Request) {
+  try {
+    const context = await requireContext(request, { module: "reports", action: "view" });
+    const url = new URL(request.url);
+    const op = url.searchParams.get("op") ?? "catalog";
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+
+    if (op === "catalog") {
+      return NextResponse.json({
+        success: true,
+        actions: allowedRepairActions(context).map((a) => ({
+          id: a.id,
+          titleAr: a.titleAr,
+          titleEn: a.titleEn,
+          modules: a.modules,
+          effect: a.effect,
+          risk: a.risk,
+          requiresApproval: a.requiresApproval,
+          inputSchema: a.inputSchema,
+          descriptionAr: a.descriptionAr,
+          descriptionEn: a.descriptionEn,
+        })),
+      });
+    }
+
+    if (op === "propose") {
+      const prompt = String(body.prompt ?? "").slice(0, 4000);
+      const candidates = selectRepairActions(context, prompt);
+      const chosenId = body.action ? String(body.action) : candidates[0]?.action;
+      if (!chosenId) {
+        return NextResponse.json(
+          { success: false, error: "No permitted repair action applies to this request", code: "no_action" },
+          { status: 400 },
+        );
+      }
+      const proposal = await proposeRepair(
+        context,
+        chosenId,
+        { prompt, name: body.name, from: body.from, to: body.to },
+        buildDeps(context),
+      );
+      await logAudit(context, {
+        action: "export",
+        entity: "ai_repair_proposal",
+        entityId: proposal.proposalId,
+        metadata: {
+          action: proposal.action,
+          status: proposal.status,
+          kind: proposal.kind,
+          effect: proposal.effect,
+          requires_approval: proposal.requiresApproval,
+          candidates: candidates.map((c) => c.action),
+        },
+      });
+      return NextResponse.json({ success: true, proposal, candidates });
+    }
+
+    if (op === "execute") {
+      const proposal = body.proposal as RepairProposal | undefined;
+      if (!proposal || typeof proposal !== "object" || !proposal.action || !proposal.proposalId) {
+        return NextResponse.json({ success: false, error: "A proposal is required", code: "bad_request" }, { status: 400 });
+      }
+      const approval = (body.approval ?? null) as { approved?: boolean; fingerprint?: string; idempotencyKey?: string } | null;
+      const result = await executeRepair(
+        context,
+        proposal,
+        approval
+          ? {
+              proposalId: proposal.proposalId,
+              approved: approval.approved === true,
+              fingerprint: String(approval.fingerprint ?? ""),
+              idempotencyKey: approval.idempotencyKey ? String(approval.idempotencyKey) : undefined,
+            }
+          : null,
+        buildDeps(context),
+        { idempotency },
+      );
+      await logAudit(context, {
+        action: result.ok ? "update" : "export",
+        entity: "ai_repair_execution",
+        entityId: proposal.proposalId,
+        metadata: {
+          action: proposal.action,
+          status: result.status,
+          verified: result.verification.ok,
+          idempotency_key: result.idempotencyKey,
+          reference: result.reference,
+          // Log the shape of the change, not raw financial values.
+          changed_keys: result.changed ? Object.keys(result.changed).slice(0, 20) : [],
+          reason: result.error?.code ?? null,
+        },
+      });
+      const status =
+        result.status === "forbidden"
+          ? 403
+          : result.error?.code === "unknown_action"
+            ? 400
+            : result.status === "conflict" || result.status === "duplicate" || result.status === "expired"
+              ? 409
+              : 200;
+      return NextResponse.json({ success: result.ok, result }, { status });
+    }
+
+    return NextResponse.json({ success: false, error: "Unknown operation", code: "bad_request" }, { status: 400 });
+  } catch (error) {
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
+  }
+}
+
+export async function GET(request: Request) {
+  try {
+    const context = await requireContext(request, { module: "reports", action: "view" });
+    const url = new URL(request.url);
+    const action = url.searchParams.get("action");
+    if (action) {
+      const spec = getRepairAction(action);
+      if (!spec) return NextResponse.json({ success: false, error: "Unknown action", code: "not_found" }, { status: 404 });
+      return NextResponse.json({ success: true, action: spec });
+    }
+    return NextResponse.json({
+      success: true,
+      actions: allowedRepairActions(context).map((a) => ({ id: a.id, titleAr: a.titleAr, titleEn: a.titleEn, effect: a.effect, risk: a.risk })),
+    });
+  } catch (error) {
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
+  }
+}

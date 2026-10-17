@@ -23,17 +23,17 @@ npm run test:excel   # Excel engine
 - `npm run typecheck` reports **129 errors** in the legacy ERP pages. This is the
   baseline; new code must not increase it. Verify with
   `npm run typecheck 2>&1 | grep -c "error TS"`.
-- `npm run lint` fails with `Converting circular structure to JSON` — a broken
+- `npm run lint` fails with `Converting circular structure to JSON` вҖ” a broken
   ESLint config, unrelated to source code. Lint is **not usable** as a gate here.
 
 ## Architecture that must not be bypassed
 
 ```
-src/lib/auth/api-guard.ts   requireContext / withAuth — the only entry point for API auth
+src/lib/auth/api-guard.ts   requireContext / withAuth вҖ” the only entry point for API auth
 src/lib/auth/policy.ts      can(), tenant/branch/financial-year assertions (pure)
 src/lib/auth/context.ts     resolveAuthContext, getActiveFinancialYear (server-only)
 src/lib/auth/permissions.ts module x action catalogue
-src/lib/auth/audit.ts       logAudit — sanitises metadata before writing
+src/lib/auth/audit.ts       logAudit вҖ” sanitises metadata before writing
 src/lib/supabase-admin.ts   service-role client (server-only)
 ```
 
@@ -53,17 +53,17 @@ Rules learned the hard way:
 
 ## Excel service (`src/lib/excel/`)
 
-Reusable CORE capability — import/export for any module, not a business module.
+Reusable CORE capability вҖ” import/export for any module, not a business module.
 
-- `registry.ts` — module specs (fields, labels, aliases, types, permissions).
+- `registry.ts` вҖ” module specs (fields, labels, aliases, types, permissions).
   Add a module here; nothing else hardcodes module knowledge.
-- Pipeline: `parse` → `mapper` → `normalize` → `validateRow` → `references` →
-  `duplicates` → `importer`.
+- Pipeline: `parse` вҶ’ `mapper` вҶ’ `normalize` вҶ’ `validateRow` вҶ’ `references` вҶ’
+  `duplicates` вҶ’ `importer`.
 - `client.ts` exposes an injectable `ExcelDb`; production passes nothing and gets
   `supabaseAdmin`. Tests inject a recording stub.
 - Import is limited to modules whose table has a `tenant_id` column. Tables without
   one are export-only until the RLS migration adds it.
-- `src/components/excel/` — `<ExcelImportButton />` and `<ExcelExportButton />`,
+- `src/components/excel/` вҖ” `<ExcelImportButton />` and `<ExcelExportButton />`,
   both driven by `use-excel.ts`. `Toaster` (sonner) is mounted in `src/app/layout.tsx`.
 
 ### Wiring into module pages (Phase 3)
@@ -83,19 +83,19 @@ Reusable CORE capability — import/export for any module, not a business module
   change must take effect without a reload.
 - `tax_settings` and `tax_rates` are **different real tables**. The Tax Settings pages
   use `tax_settings`. Verify a table's live columns before wiring a module.
-- 20 pages are wired; `tests/excel-module-integration.test.ts` asserts the page↔module
+- 20 pages are wired; `tests/excel-module-integration.test.ts` asserts the pageвҶ”module
   mapping. Adding a wired page means updating that list.
 
 ### Import safety invariant (do not weaken)
 
 - **A module may only be importable if it declares a `tenantColumn`.** The importer
   scopes writes with `if (tenantId && module.tenantColumn)`, so a tenant-less module
-  would scope updates by `id` alone — letting one tenant overwrite another's row.
+  would scope updates by `id` alone вҖ” letting one tenant overwrite another's row.
   `importSafety()` in `gates.ts` enforces this fail-closed, and
   `tests/core-security-migration.test.ts` asserts every importable module passes it.
 - Import safety needs three things to agree at once: the registry marks the module
   `importable: true`, it declares a `tenantColumn`, and **the live table actually has
-  that column**. Never enable import from the registry alone — confirm the column
+  that column**. Never enable import from the registry alone вҖ” confirm the column
   exists in the live database first.
 
 ### Database access from this environment
@@ -107,7 +107,7 @@ Reusable CORE capability — import/export for any module, not a business module
   is reported `NOT VERIFIED`.
 - PostgREST **is** reachable with the service key, so the live schema and the current
   RLS state can be verified at the data level. A useful read-only probe: `GET
-  /rest/v1/<table>?select=id&limit=1` with the anon key — a `content-range` header on
+  /rest/v1/<table>?select=id&limit=1` with the anon key вҖ” a `content-range` header on
   a table that should be protected means RLS is not yet enabled.
 - `supabase/migrations/001_core_security.sql` is **not applied** on the live project:
   `activity_logs` does not exist, the tenant-less tables still have no `tenant_id`,
@@ -151,7 +151,7 @@ that applies the filters it is given and returns only affected rows.
   isolation semantics. Reuse this pattern for any future DDL change.
 - Two predicates, deliberately different:
   - `can_read_tenant` is NULL-tolerant (`is not distinct from`), so the current
-    single-tenant install — every `tenant_id` NULL — keeps working unchanged.
+    single-tenant install вҖ” every `tenant_id` NULL вҖ” keeps working unchanged.
   - `can_write_tenant` is strict: a tenanted caller may not create tenant-less rows
     (no "orphans" that would leak into the NULL-tenant install) and may not write into
     another tenant. `assertWritableTenant` in `src/lib/auth/policy.ts` mirrors this.
@@ -185,7 +185,7 @@ that applies the filters it is given and returns only affected rows.
   the group as an error, and commit writes groups through the injected `writeGroup`,
   never a generic table insert.
 - Journal import must go through `postJournalEntry` (`src/lib/excel/journal-group.ts`).
-  Never write `journal_entries`/`journal_lines` directly from the engine — a second
+  Never write `journal_entries`/`journal_lines` directly from the engine вҖ” a second
   accounting path is exactly what the core forbids.
 - `postJournalEntry` resolves the tenant **before** its duplicate guard, and scopes the
   guard by `tenant_id` (`.is("tenant_id", null)` for a tenant-less caller). Matching on
@@ -195,7 +195,7 @@ that applies the filters it is given and returns only affected rows.
   tenant-less chart is accepted for any caller.
 - `GET /api/excel/import-history` reads the existing `activity_logs` audit trail; do not
   create a second import-history store.
-- The error report carries a "الحل المقترح" / "Resolution" column sourced from the
+- The error report carries a "Ш§Щ„ШӯЩ„ Ш§Щ„Щ…ЩӮШӘШұШӯ" / "Resolution" column sourced from the
   `RESOLUTIONS` map in `exporter.ts`; add a code there when adding an error code.
 - `npm run test:excel` includes `tests/excel-duplicates-and-groups.test.ts`;
   `npm run test:accounting` includes `tests/accounting-tenant-guard.test.ts`.
@@ -223,7 +223,7 @@ that applies the filters it is given and returns only affected rows.
   `tests/session-context.test.ts` asserts this.
 - **Numbering is one mechanism.** `src/lib/documents/numbering.ts`
   (`nextDocumentNumber`) wraps `generate_document_number`. Never reintroduce
-  `REC-${Date.now()}`-style numbers — a timestamp changes on retry and defeats the
+  `REC-${Date.now()}`-style numbers вҖ” a timestamp changes on retry and defeats the
   duplicate guard.
 - **Account codes.** `ACCOUNT_CODES` in `accounting/posting.ts`. `41003`
   (salesReturns) is a contra-revenue account that may **not exist** on a live
@@ -234,14 +234,14 @@ that applies the filters it is given and returns only affected rows.
   was never applied. `supabase/migrations/003_sales_lifecycle.sql` adds the missing
   columns and the `receipt`/`sales_return` sequences (additive, idempotent).
   `src/lib/db/columns.ts` (`hasColumn`, `insertTolerant`) lets the app run before and
-  after the migration — writes drop only columns the DB lacks instead of failing.
+  after the migration вҖ” writes drop only columns the DB lacks instead of failing.
 - **Tests need the server condition.** `npm test` uses
   `node --conditions=react-server --import tsx ...` so `server-only` modules
   (`supabase-admin`) load. `tests/sales-lifecycle.test.ts` runs the real service
   against a PostgREST stub; `supabaseAdmin` and `assertReference` take an injectable
   client for this.
 
-## Execution 05.1 — Financial-year enforcement (server side)
+## Execution 05.1 вҖ” Financial-year enforcement (server side)
 
 - `resolveAuthContext` (`src/lib/auth/context.ts`) now resolves the tenant's
   active financial year and puts it on `AuthContext.financialYearId`. It used to
@@ -335,7 +335,7 @@ that applies the filters it is given and returns only affected rows.
 
 ## Execution 05.5 - Production migration package (owner-executed)
 
-- **Deliverable:** `supabase/PRODUCTION_ACTIVATION_001_002_003.sql` — the frozen
+- **Deliverable:** `supabase/PRODUCTION_ACTIVATION_001_002_003.sql` вҖ” the frozen
   migrations 001 -> 002 -> 003 embedded **byte-identical** (SHA-256 of each body
   is recorded in a banner at its header) between a read-only PRE-FLIGHT and a
   read-only POST-FLIGHT. Do not edit the embedded bodies; regenerate the file from
@@ -361,7 +361,7 @@ that applies the filters it is given and returns only affected rows.
 
 
 
-## Execution 06 — Public SaaS + Free Account (invariants)
+## Execution 06 вҖ” Public SaaS + Free Account (invariants)
 
 - **Public SaaS routes** (no ERP data, static marketing only): `/`, `/features`,
   `/solutions`, `/pricing`, `/faq`, `/privacy`, `/terms`. Chrome:
@@ -389,7 +389,7 @@ that applies the filters it is given and returns only affected rows.
   explicit safe column projection. RLS stays enabled.
 
 
-## Execution 07 — administrator accounts, global super admin, login hardening
+## Execution 07 вҖ” administrator accounts, global super admin, login hardening
 
 - **Two distinct administrator roles.** `admin` is the company administrator and
   is tenant-scoped. `super_admin` (`is_super_admin()` / `AuthContext.isSuperAdmin`)
@@ -420,7 +420,7 @@ that applies the filters it is given and returns only affected rows.
   update a tenanted row. 004's `tenants_read`/`users_self_select`/
   `users_self_update`/`users_admin_insert` close all three. The service-role
   `users` API is unaffected (it bypasses RLS). **Run this harness for any future
-  identity-policy change** — parsing alone would not have caught these.
+  identity-policy change** вҖ” parsing alone would not have caught these.
 - **`supabaseAdmin` initialises lazily.** Importing a module that references it no
   longer throws when the service-role key is absent (tests, static analysis); the
   client still fails hard on first use. Do not revert to a top-level `throw`.
@@ -436,7 +436,7 @@ that applies the filters it is given and returns only affected rows.
     DB). Keep it dependency-injected; do not reach for `supabaseAdmin` inside it.
   - It **never resets an existing user's password** unless `--rotate-passwords` (or
     an explicit password) is given, and it rolls back a newly-created Auth identity
-    if its `public.users` mapping fails — no half-provisioned privileged account.
+    if its `public.users` mapping fails вҖ” no half-provisioned privileged account.
   - It writes temporary passwords to `.admin-credentials.local` (0600, gitignored);
     printing them to stdout requires `--print-passwords`.
   - The company admin must be pinned to a real tenant (`--tenant-id`); the super
@@ -447,14 +447,14 @@ that applies the filters it is given and returns only affected rows.
   `PRODUCTION_ACTIVATION_001_002_003.sql`. Regenerate it from
   `supabase/migrations/004_global_super_admin.sql` rather than editing the body.
   It was executed end-to-end on PostgreSQL 17 (package applied, POST-FLIGHT green,
-  11/11 assertions) — see `supabase/tests/004_harness/`.
+  11/11 assertions) вҖ” see `supabase/tests/004_harness/`.
 
 ## AI report formatting (`src/lib/reporting/`)
 
 - **Formatting/structure only.** The assistant renders EXISTING report data; it
   never writes invoices, journals, balances or tax values. A request that asks to
   change amounts is classified as `intent: "data"`, flagged
-  (`dataChangeRequested`) and never executed — real data changes must go through
+  (`dataChangeRequested`) and never executed вҖ” real data changes must go through
   the guarded service layer (`postJournalEntry`, `sales/service.ts`).
 - **No free-form code from the model.** `intent.ts` is a deterministic bilingual
   parser that emits a closed set of formatting primitives; nothing from the
@@ -470,7 +470,7 @@ that applies the filters it is given and returns only affected rows.
   never offered. `.xlsx` is handled by ExcelJS; `xlsx`/SheetJS remains the
   read-only analyzer in `ai-excel-analysis`.
 - `templates.ts` reuses the `settings` key/value store (`report_format_templates`),
-  tenant-scoped from the session — no new table.
+  tenant-scoped from the session вҖ” no new table.
 - `assistant.ts` is auth-free (identity injected), so it is unit-tested with a
   recording PostgREST stub. Tenant filter is applied first.
 - **Missing in this snapshot (reported, not fabricated):** there is no
@@ -485,11 +485,11 @@ that applies the filters it is given and returns only affected rows.
   every reportable field with its real table/column, permission module, type and
   `aliases`. A request can only reference catalog keys; unknown fields are
   reported (`unknownFields`) and never invented. Add a field = one catalog entry
-  whose column exists — never a schema change for a report request.
+  whose column exists вҖ” never a schema change for a report request.
 - **`report-def.ts`** parses Arabic/English requests deterministically (dataset,
   fields, filters, group-by, aggregates, sort). `findTerm` is Arabic-prefix aware
-  (`و`/`ال` attach without a space). Only a closed set of filter ops
-  (`eq/gte/lte/overdue/contains`) is emitted — no SQL is built from the prompt.
+  (`ЩҲ`/`Ш§Щ„` attach without a space). Only a closed set of filter ops
+  (`eq/gte/lte/overdue/contains`) is emitted вҖ” no SQL is built from the prompt.
 - **Every report keeps its identifying key** (`DatasetSource.keyField`, e.g.
   `invoice_number`) even when the request omits it. Filter-only fields are loaded
   but not displayed.
@@ -520,10 +520,10 @@ that applies the filters it is given and returns only affected rows.
   `users`/`user_metadata`/`app_metadata`.
 - **Error text is centralized** in `src/lib/auth/login-errors.ts` (pure). Never echo
   the provider's raw message (it varies by `@supabase/supabase-js` version and can
-  leak detail). `loginErrorMessage` maps `invalid_credentials`/400/429/… to safe,
+  leak detail). `loginErrorMessage` maps `invalid_credentials`/400/429/вҖҰ to safe,
   localized strings.
 - **Credentials are normalised** (`.trim()`) and the email input sets
-  `autoCapitalize="none" autoCorrect="off"` — an autocapitalized or space-padded
+  `autoCapitalize="none" autoCorrect="off"` вҖ” an autocapitalized or space-padded
   email is the classic cause of an intermittent `400 /token?grant_type=password`.
 - **Config consistency is checkable** via `src/lib/supabase-config.ts`
   (`supabaseConfigConsistent`): a `NEXT_PUBLIC_SUPABASE_URL` whose project ref does
@@ -575,7 +575,7 @@ that applies the filters it is given and returns only affected rows.
   the live `sale_invoice` sequence, last sales invoices, empty/duplicate numbers,
   VAT base by source, revenue vs returns, `update_account_balance` + account drift,
   and tenant distribution. It is **strictly read-only**: only `select` /
-  `with � select`, no writes, no DDL, no `set role`, no temp table, and it never
+  `with … select`, no writes, no DDL, no `set role`, no temp table, and it never
   *calls* `update_account_balance`/`generate_document_number` (it only reads the
   former's definition from `pg_proc`). `tests/exec19-readonly-reconciliation.test.ts`
   strips comments/string literals and enforces this, plus a no-PII column rule.
@@ -597,7 +597,7 @@ that applies the filters it is given and returns only affected rows.
 - **One AI layer** (`src/lib/ai/`) and **one reporting layer** (`src/lib/reporting/`).
   Never add a second AI engine, a second report engine, or a second Excel engine.
   `src/lib/reporting/*` is the deterministic source of truth for figures; the model
-  only phrases a pre-computed facts block (`asUntrustedBlock("FACTS", �)`).
+  only phrases a pre-computed facts block (`asUntrustedBlock("FACTS", …)`).
 - **No provider call may hang.** `withTimeout` in `src/lib/ai/providers.ts` bounds
   every provider call (default `DEFAULT_TIMEOUT_MS`), threads through
   `completeWithFallback`, and aborts the underlying fetch/SDK; an outer signal is
@@ -606,17 +606,46 @@ that applies the filters it is given and returns only affected rows.
 - **Repair complaints are classified deterministically**, never by the model:
   `classifyRepairRequest` in `policy.ts` returns a module, symptom, likely
   `errorType` (display/query/data/posting), the `deterministicSource` to run
-  (EXEC19 blocks, `ACCOUNT_BALANCE_VERIFICATION.sql`, `revenue.ts`, �) and a
+  (EXEC19 blocks, `ACCOUNT_BALANCE_VERIFICATION.sql`, `revenue.ts`, …) and a
   `requiresWrite` flag. `answerQuestion` appends the diagnosis to the answer; a
-  write is **never** enabled by the diagnosis � it only raises the approval flag.
+  write is **never** enabled by the diagnosis — it only raises the approval flag.
 - **Route hygiene (guarded by `tests/exec20-ai-audit-repair.test.ts`):** every AI
   route calls `requireContext`; no route trusts `tenant_id`/`role` from the body;
   no route introduces `exec_sql`/`eval`/`new Function`/`child_process`.
 - **Lint gotcha:** never name a local variable `module` (Next.js
-  `no-assign-module-variable`). Use `area` etc. � this bit Exec 20.
+  `no-assign-module-variable`). Use `area` etc. — this bit Exec 20.
 - AI provider settings live in the existing `settings` table (`ai_settings`),
   tenant-scoped; the key is written but never read back (`toPublicSettings`).
   `ai_recommendations` is company-scoped and isolated by migration 002.
+
+## Execution 21 invariants (safe AI repair workflow — Phase R1)
+
+- **One repair catalogue** (`src/lib/ai/repair-catalog.ts`). The AI repair flow may
+  only run actions declared there; an unknown action id is rejected. The model
+  never invents an action or supplies SQL/code/parameters outside a whitelisted
+  schema. Each spec declares modules, permission, effect (`read`/`settings`),
+  risk, approval need and input schema.
+- **The cycle** (`src/lib/ai/repair-workflow.ts`): request → diagnosis →
+  allowed action → preview → approval → execute → verify → audit. `proposeRepair`
+  writes nothing; `executeRepair` re-checks permission, approval, plan
+  fingerprint and expiry, re-computes the preview and aborts with `conflict` if
+  the content changed, and refuses a repeated idempotency key.
+- **Approval is bound to the plan**: `planFingerprint` hashes action+kind+params;
+  an approval whose fingerprint does not match the executed plan is refused
+  (`plan_changed`). Re-check permissions at execution, never trust the UI alone.
+- **No accounting writes.** R1 actions are read-only or write a tenant-scoped
+  report-format template in the existing `settings` store. Financial corrections
+  must go through the existing posting/reversal services (a later phase) — never
+  a new path.
+- **Verification is honest**: a failed post-execution verification returns
+  `status: "failed"`, never `verified`. Audit logs record action/status/verified/
+  idempotency_key/reference and only the *keys* of the change, never raw values.
+- **Route:** `POST /api/ai/repairs?op=catalog|propose|execute`, session-gated via
+  `requireContext`; identity/tenant/permission always from the session. Guarded by
+  `tests/exec21-safe-ai-repair.test.ts` (no `exec_sql`/`eval`/`Function`/`child_process`).
+- Idempotency is per-process best-effort (`createMemoryIdempotency`); a durable
+  store would need a `settings` row and is a documented follow-up. The audit
+  trail is the authoritative record of what ran.
 
 ## Deployment (production)
 
@@ -641,12 +670,12 @@ that applies the filters it is given and returns only affected rows.
 - **One AI engine, one assistant.** `src/lib/ai/` is the only AI layer. Do not
   add a second assistant, a second provider call path or a per-page AI feature.
   `src/app/api/financial/ai-excel-analysis/route.ts` was refactored to reuse
-  `completeWithFallback` — never reintroduce a hard-coded `new Anthropic(...)`.
+  `completeWithFallback` вҖ” never reintroduce a hard-coded `new Anthropic(...)`.
 - **Read-only by construction.** The assistant's tool set (`AI_TOOLS` in
   `src/lib/ai/policy.ts`) is closed and every tool is `kind: "read"`. A request
   to post/edit/delete accounting data is refused by `detectWriteIntent` before
   any model call. Never let the assistant write `journal_entries`,
-  `invoices`, `payments` or any financial row — mutations stay on the existing
+  `invoices`, `payments` or any financial row вҖ” mutations stay on the existing
   guarded service path.
 - **Permissions come from the session.** `allowedTools(context)` /
   `resolveAgent(context, id)` narrow the tool/agent set to the caller's own
@@ -665,10 +694,10 @@ that applies the filters it is given and returns only affected rows.
   provider, per-provider keys, per-task models and an ordered fallback chain.
   Anthropic is the built-in default; `openai_compatible` + `baseUrl` reaches a
   self-hosted model (never assumed free). API keys are server-side only and are
-  never returned — `toPublicSettings` exposes only `hasApiKey`.
+  never returned вҖ” `toPublicSettings` exposes only `hasApiKey`.
 - **The AI never self-applies.** Development requests
-  (`src/lib/ai/dev-requests.ts`) are a review-only pipeline: create → plan →
-  approve/reject → artifact. `isForbiddenPath` / `assertChangeSetSafe` block any
+  (`src/lib/ai/dev-requests.ts`) are a review-only pipeline: create вҶ’ plan вҶ’
+  approve/reject вҶ’ artifact. `isForbiddenPath` / `assertChangeSetSafe` block any
   change to `src/lib/auth/`, `src/middleware.ts`, `supabase/migrations/`,
   `.env*`, `package.json`. High-risk requests require a global super admin
   (`canApprove`). A human applies the patch on a branch; deployment is separate.
@@ -724,7 +753,7 @@ that applies the filters it is given and returns only affected rows.
   `tests/activation-package-integrity.test.ts` recomputes every hash and asserts
   byte-identity for both `PRODUCTION_ACTIVATION_001_002_003.sql` and
   `PRODUCTION_ACTIVATION_004.sql`; it is registered in `test:core`. Never edit an
-  embedded body by hand — a stale hash is a trust failure.
+  embedded body by hand вҖ” a stale hash is a trust failure.
 - **`EXEC07_1_TENANT_POLICY_FIX.sql` does not exist.** The tenant-policy fix it
   names (RESTRICTIVE `activity_logs_no_update/_delete`, `ai_recommendations`
   coverage) lives inside migrations `001`/`002`; there is no separate file.
@@ -746,7 +775,7 @@ that applies the filters it is given and returns only affected rows.
   the existing Supabase Auth admin API and `public.users`. It never duplicates an
   Auth identity, writes temporary passwords only to a `0600` file (not logs), and
   rolls back a new Auth user if its mapping fails. `scripts/verify-admin-accounts.mjs`
-  (`npm run verify:admins`) proves the sign-in → `public.users` → role/tenant flow
+  (`npm run verify:admins`) proves the sign-in вҶ’ `public.users` вҶ’ role/tenant flow
   end-to-end. Both require real Supabase credentials, which the sandbox lacks.
 
 ## Execution 10 invariants (final closure)
@@ -754,7 +783,7 @@ that applies the filters it is given and returns only affected rows.
 - **Financial tenant scope is fail-closed, everywhere.** `scopeToCompany`
   (`src/lib/auth/policy.ts`) confines a tenant-less caller to `IS NULL`; only a
   super admin reads unfiltered. `financial/reports` and `financial/calculate`
-  once used a local `if (!tenantId) return query` helper � that is the exact
+  once used a local `if (!tenantId) return query` helper — that is the exact
   fail-open shape to never reintroduce. `tests/tenant-isolation.test.ts`
   ("financial routes scope fail-closed") scans every `financial/*/route.ts` and
   fails if any uses a helper other than `scopeToCompany` or re-adds the
@@ -763,7 +792,7 @@ that applies the filters it is given and returns only affected rows.
   into a tenant-owned table (per migration 002's `tables text[]` column list)
   without a `tenant_id` is an orphan visible to the single-tenant install. Use
   `assertWritableTenant(context, body.tenant_id)` then `if (tenantId) payload.tenant_id = tenantId`
-  � as `suppliers`, `expenses`, `quotations` and `expense-accounts` now do.
+  — as `suppliers`, `expenses`, `quotations` and `expense-accounts` now do.
   `tests/security-tenant-isolation.test.ts` ("routes that insert tenant-owned
   rows set tenant_id from the session") enforces this by scanning every
   `src/app/api/**/route.ts`. `customer-signup` is the one by-design exception
@@ -775,11 +804,11 @@ that applies the filters it is given and returns only affected rows.
   pinned `--tenant-id`, the company admin's existing tenant, or a name match,
   then a single existing tenant. With **multiple** tenants and no name match it
   **throws** rather than creating a duplicate; pass `--tenant-id <uuid>`.
-- **Live activation is still an operator step.** Migrations 001�004 are not
+- **Live activation is still an operator step.** Migrations 001–004 are not
   applied on the live project and cannot be from the sandbox (no credentials, no
   DDL path). The isolation + 004 harnesses (local PostgreSQL 17) prove the SQL;
   they do not prove the live database. `EXEC07_1_TENANT_POLICY_FIX.sql` does not
-  exist in this branch � 002 is the authoritative isolation model.
+  exist in this branch — 002 is the authoritative isolation model.
 - **No universal Excel import/export engine exists in this branch.** Do not
   assume `src/lib/excel/` is present; the only Excel surface is the AI analysis
   route. Accounting/sales pages write Supabase directly (browser) plus guarded

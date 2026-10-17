@@ -41,8 +41,12 @@ begin;
 -- ----------------------------------------------------------------------------
 do $$
 begin
-  if exists (select 1 from information_schema.tables
-             where table_schema = 'public' and table_name = 'journal_entries') then
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'entry_type')
+     and exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'reference_number') then
     execute 'create index if not exists journal_entries_type_ref_idx
              on public.journal_entries (entry_type, reference_number)';
   end if;
@@ -78,13 +82,27 @@ end $$;
 
 -- ----------------------------------------------------------------------------
 -- 3. Read-only integrity view: duplicate posted journals and unbalanced headers.
---    Never used by a write path; safe to select at any time. Guarded so the
---    migration is a clean no-op on a schema that has no `journal_entries`.
+--    Never used by a write path; safe to select at any time. Guarded on column
+--    existence so the migration is a clean no-op when `journal_entries` lacks
+--    the columns it reads.
 -- ----------------------------------------------------------------------------
 do $$
 begin
-  if exists (select 1 from information_schema.tables
-             where table_schema = 'public' and table_name = 'journal_entries') then
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'entry_type')
+     and exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'reference_number')
+     and exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'total_debit')
+     and exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'total_credit')
+     and exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'journal_entries'
+               and column_name = 'status') then
     execute $v$
       create or replace view public.v_journal_integrity_issues as
         select 'duplicate_posted_journal'::text as issue,

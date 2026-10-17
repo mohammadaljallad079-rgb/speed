@@ -762,3 +762,41 @@ that applies the filters it is given and returns only affected rows.
   duplicate block, rollback, no-op on a schema without `journal_entries`). Do not
   claim a DDL change works from parsing alone.
 
+## Execution 17 invariants (tenant fail-closed + ledger balance reconciliation)
+
+- **The four financial report pages fail closed.** `profit-loss`,
+  `balance-sheet`, `trial-balance` and `cash-flow` are client components that
+  query Supabase directly. They used to read `journal_entries`/`journal_lines`
+  with NO tenant filter. They now resolve scope server-side via `useReportScope`
+  (`/api/me`) and filter every journal read through `applyReportScope`
+  (`src/lib/auth/scope.ts`). Never reintroduce a raw `from('journal_entries')`
+  read in a report page; `tests/exec17-report-tenant-isolation.test.ts` guards it.
+- **Scope rules are pure and fail closed.** `resolveReportScope`: super admin ->
+  `all`; `admin`/`staff` with a tenant -> `tenant`; `admin`/`staff` without a
+  tenant -> `null` (single-tenant rows, never every tenant); any other role or no
+  identity -> `denied`. A `denied` scope filters to the nil UUID, never
+  unfiltered. Tenant identity is never read from a URL/form field.
+- **`accounts.balance` is a cache; `journal_lines` is authoritative.** Every
+  report derives balances from the ledger; only the petty-cash screen reads the
+  cached column. `update_account_balance` is NOT defined in any migration, so its
+  sign cannot be verified from source and is NOT changed. All 10 call sites go
+  through `applyAccountBalanceDelta` (`src/lib/accounting/account-balance.ts`),
+  which preserves the amount and surfaces failure instead of swallowing it.
+  Run `supabase/ACCOUNT_BALANCE_VERIFICATION.sql` (read-only) before changing a
+  sign. The deposit-refund module is a documented deviation.
+- **Manual postings use pure builders.** Bank transfer, petty cash, payroll and
+  deposit refund build their journals through
+  `src/lib/accounting/manual-postings.ts` (`buildBankTransferJournal`,
+  `buildPettyCashJournal`, `buildPayrollJournal`, `buildDepositRefundJournal`)
+  and write to `journal_lines`. The builders return `null` for a non-positive
+  amount, so a zero/negative entry cannot post.
+- **Migration 005 is column-guarded.** Its lookup index and view are guarded on
+  column existence (not just table existence), so it is a clean no-op on a schema
+  whose `journal_entries` lacks `entry_type`/`reference_number`/`total_debit`/
+  `total_credit`. Verified by execution: `supabase/tests/005_harness/run.sh`.
+- **Verify DDL by execution.** `supabase/tests/isolation_harness/run.sh` (17/17),
+  `004_harness/run.sh` and `005_harness/run.sh` (10/10) run against a local
+  PostgreSQL 17 with two tenants. 001/002/004 are NOT no-ops on a schema missing
+  `profiles`/`tenants`/`users`; that is pre-existing and expected (Supabase always
+  has them), not a live risk.
+

@@ -5,6 +5,8 @@ import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
+import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
+import { buildPettyCashJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -83,41 +85,37 @@ function PettyCashContent() {
 
       // Create journal entry
       const pettyJournalNumber = await nextDocumentNumber(supabase as any, 'petty_cash', 'PC')
+      const journal = buildPettyCashJournal({
+        journalNumber: pettyJournalNumber,
+        date: new Date().toISOString().split('T')[0],
+        description: description || (modalType === 'fund' ? (isRTL ? 'تمويل الصندوق الصغير' : 'Petty cash funding') : (isRTL ? 'مصروف صندوق صغير' : 'Petty cash expense')),
+        amount: numAmount,
+        kind: modalType,
+        pettyAccountId: pettyAccount.id,
+        expenseAccountId: cashAccount.id,
+        fundDescription: isRTL ? 'تمويل الصندوق' : 'Fund petty cash',
+        expenseDescription: description || (isRTL ? 'مصروف' : 'Expense'),
+      })
+      if (!journal) throw new Error('Invalid petty cash journal')
+
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
-        .insert({
-          journal_number: pettyJournalNumber,
-          entry_date: new Date().toISOString().split('T')[0],
-          description: description || (modalType === 'fund' ? (isRTL ? 'تمويل الصندوق الصغير' : 'Petty cash funding') : (isRTL ? 'مصروف صندوق صغير' : 'Petty cash expense')),
-          entry_type: modalType === 'fund' ? 'petty_cash_fund' : 'petty_cash_expense',
-          status: 'posted',
-          total_debit: numAmount,
-          total_credit: numAmount,
-          is_balanced: true,
-        })
+        .insert(journal.header)
         .select()
         .single()
 
       if (jeError) throw jeError
 
+      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
+      await supabase.from('journal_lines').insert(lines)
       if (modalType === 'fund') {
         // Dr Petty Cash / Cr Cash
-        const lines = [
-          { journal_entry_id: jeData.id, account_id: pettyAccount.id, debit: numAmount, credit: 0, description: isRTL ? 'تمويل الصندوق' : 'Fund petty cash' },
-          { journal_entry_id: jeData.id, account_id: cashAccount.id, debit: 0, credit: numAmount, description: isRTL ? 'سحب من الصندوق الرئيسي' : 'Withdraw from main cash' }
-        ]
-        await supabase.from('journal_lines').insert(lines)
-        await supabase.rpc('update_account_balance', { account_id: pettyAccount.id, amount: numAmount })
-        await supabase.rpc('update_account_balance', { account_id: cashAccount.id, amount: -numAmount })
+        await applyAccountBalanceDelta(supabase, pettyAccount.id, numAmount)
+        await applyAccountBalanceDelta(supabase, cashAccount.id, -numAmount)
       } else {
         // Dr Expense / Cr Petty Cash
-        const lines = [
-          { journal_entry_id: jeData.id, account_id: cashAccount.id, debit: numAmount, credit: 0, description: description || (isRTL ? 'مصروف' : 'Expense') },
-          { journal_entry_id: jeData.id, account_id: pettyAccount.id, debit: 0, credit: numAmount, description: isRTL ? 'دفع من الصندوق الصغير' : 'Petty cash payment' }
-        ]
-        await supabase.from('journal_lines').insert(lines)
-        await supabase.rpc('update_account_balance', { account_id: cashAccount.id, amount: numAmount })
-        await supabase.rpc('update_account_balance', { account_id: pettyAccount.id, amount: -numAmount })
+        await applyAccountBalanceDelta(supabase, cashAccount.id, numAmount)
+        await applyAccountBalanceDelta(supabase, pettyAccount.id, -numAmount)
       }
 
       // Record transaction

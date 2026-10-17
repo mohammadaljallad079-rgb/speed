@@ -5,6 +5,8 @@ import { Suspense, useState, useEffect } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
+import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
+import { buildDepositRefundJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -79,48 +81,34 @@ function RefundDepositContent() {
 
       // 2. Create journal entry
       const refundJournalNumber = await nextDocumentNumber(supabase as any, 'deposit_refund', 'DEP-REF')
+      const journal = buildDepositRefundJournal({
+        journalNumber: refundJournalNumber,
+        date: refundDate,
+        description: notes || (isRTL ? 'استرجاع وديعة تأمين' : 'Security deposit refund'),
+        amount: parseFloat(refundAmount),
+        depositAccountId: depositAccount.id,
+        cashAccountId: cashAccount.id,
+        reference: contract.contract_number,
+      })
+      if (!journal) throw new Error('Invalid deposit refund journal')
+
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
-        .insert({
-          journal_number: refundJournalNumber,
-          entry_date: refundDate,
-          reference_number: contract.contract_number,
-          description: notes || (isRTL ? 'استرجاع وديعة تأمين' : 'Security deposit refund'),
-          entry_type: 'deposit_refund',
-          status: 'posted',
-          total_debit: parseFloat(refundAmount),
-          total_credit: parseFloat(refundAmount),
-          is_balanced: true,
-        })
+        .insert(journal.header)
         .select()
         .single()
 
       if (jeError) throw jeError
 
       // 3. Create journal lines: Dr Deposit Liability / Cr Cash
-      const lines = [
-        {
-          journal_entry_id: jeData.id,
-          account_id: depositAccount.id,
-          debit: parseFloat(refundAmount),
-          credit: 0,
-          description: isRTL ? 'استرجاع وديعة' : 'Deposit refund',
-        },
-        {
-          journal_entry_id: jeData.id,
-          account_id: cashAccount.id,
-          debit: 0,
-          credit: parseFloat(refundAmount),
-          description: isRTL ? 'دفع نقدي' : 'Cash payment',
-        }
-      ]
+      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
 
       const { error: linesError } = await supabase.from('journal_lines').insert(lines)
       if (linesError) throw linesError
 
       // 4. Update account balances
-      await supabase.rpc('update_account_balance', { account_id: depositAccount.id, amount: -parseFloat(refundAmount) })
-      await supabase.rpc('update_account_balance', { account_id: cashAccount.id, amount: -parseFloat(refundAmount) })
+      await applyAccountBalanceDelta(supabase, depositAccount.id, -parseFloat(refundAmount))
+      await applyAccountBalanceDelta(supabase, cashAccount.id, -parseFloat(refundAmount))
 
       // 5. Update contract
       await supabase.from('rental_contracts').update({

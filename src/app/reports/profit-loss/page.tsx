@@ -2,6 +2,8 @@
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { applyReportScope } from '@/lib/auth/scope'
+import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -44,11 +46,13 @@ function ProfitLossContent() {
   const [netProfit, setNetProfit] = useState(0)
   const [totalRevenue, setTotalRevenue] = useState(0)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['revenue', 'cogs', 'opex']))
+  const scopeState = useReportScope()
 
   useEffect(() => {
+    if (scopeState.status !== 'ready') return
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo])
+  }, [dateFrom, dateTo, scopeState.status])
 
   function applyDates() {
     setDateFrom(dateFromDraft)
@@ -58,6 +62,19 @@ function ProfitLossContent() {
   async function fetchData() {
     setLoading(true)
     try {
+      const scope =
+        scopeState.status === 'ready'
+          ? effectiveReportScope(scopeState.scope, scopeState.hasTenantColumn)
+          : ({ kind: 'denied', reason: 'unauthenticated' } as const)
+      if (scope.kind === 'denied') {
+        setSections([])
+        setGrossProfit(0)
+        setNetProfit(0)
+        setTotalRevenue(0)
+        setLoading(false)
+        return
+      }
+
       // 1. Get all revenue and expense accounts
       const { data: accounts, error: accError } = await supabase
         .from('accounts')
@@ -72,8 +89,11 @@ function ProfitLossContent() {
         return
       }
 
-      // 2. Get journal entries within the date range (posted only)
+      // 2. Get journal entries within the date range (posted only), scoped to
+      //    the caller's tenant so one company's ledger is never summed into
+      //    another's report.
       let jeQuery = supabase.from('journal_entries').select('id,entry_date,status')
+      jeQuery = applyReportScope(jeQuery, scope)
       if (dateFrom) jeQuery = jeQuery.gte('entry_date', dateFrom)
       if (dateTo) jeQuery = jeQuery.lte('entry_date', dateTo)
       const { data: journalEntries, error: jeError } = await jeQuery
@@ -474,6 +494,13 @@ function ProfitLossContent() {
   return (
     <DashboardLayout>
       <div className="max-w-5xl mx-auto p-4 space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
+        {scopeState.status === 'ready' && scopeState.scope.kind === 'denied' && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {isRTL
+              ? 'لا تتوفر صلاحية عرض التقارير المالية لهذا الحساب.'
+              : 'Your account is not permitted to view financial reports.'}
+          </div>
+        )}
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white flex items-center gap-2">

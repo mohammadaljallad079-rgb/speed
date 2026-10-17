@@ -5,6 +5,8 @@ import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
+import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
+import { buildBankTransferJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -76,50 +78,36 @@ function BankTransferContent() {
 
     setSaving(true)
     try {
-      // 1. Create journal entry
+      // 1. Build the balanced journal (Dr destination / Cr source)
       const journalNumber = await nextDocumentNumber(supabase as any, 'bank_transfer', 'BT')
+      const journal = buildBankTransferJournal({
+        journalNumber,
+        date: transferDate,
+        description: notes || (isRTL ? 'تحويل بنكي' : 'Bank Transfer'),
+        amount: transferAmount,
+        fromAccountId: fromAccount,
+        toAccountId: toAccount,
+        reference: reference || null,
+      })
+      if (!journal) throw new Error('Invalid bank transfer journal')
+
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
-        .insert({
-          journal_number: journalNumber,
-          entry_date: transferDate,
-          reference_number: reference || null,
-          description: notes || (isRTL ? 'تحويل بنكي' : 'Bank Transfer'),
-          entry_type: 'bank_transfer',
-          status: 'posted',
-          total_debit: transferAmount,
-          total_credit: transferAmount,
-          is_balanced: true,
-        })
+        .insert(journal.header)
         .select()
         .single()
 
       if (jeError) throw jeError
 
       // 2. Create journal lines
-      const lines = [
-        {
-          journal_entry_id: jeData.id,
-          account_id: toAccount,
-          debit: transferAmount,
-          credit: 0,
-          description: notes || (isRTL ? 'إيداع نقدي في البنك' : 'Cash deposit to bank'),
-        },
-        {
-          journal_entry_id: jeData.id,
-          account_id: fromAccount,
-          debit: 0,
-          credit: transferAmount,
-          description: notes || (isRTL ? 'سحب نقدي للبنك' : 'Cash withdrawal for bank'),
-        }
-      ]
+      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
 
       const { error: linesError } = await supabase.from('journal_lines').insert(lines)
       if (linesError) throw linesError
 
       // 3. Update account balances
-      await supabase.rpc('update_account_balance', { account_id: fromAccount, amount: -transferAmount })
-      await supabase.rpc('update_account_balance', { account_id: toAccount, amount: transferAmount })
+      await applyAccountBalanceDelta(supabase, fromAccount, -transferAmount)
+      await applyAccountBalanceDelta(supabase, toAccount, transferAmount)
 
       alert(isRTL ? 'تم التحويل بنجاح' : 'Transfer completed successfully')
       router.push('/accounting/journal-entries')

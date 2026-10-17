@@ -2,6 +2,8 @@
 import { Suspense, useState, useEffect } from 'react'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
+import { applyReportScope } from '@/lib/auth/scope'
+import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -64,8 +66,18 @@ function CashFlowContent() {
   const [journalLines, setJournalLines] = useState<JournalLine[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogLoading, setDialogLoading] = useState(false)
+  const scopeState = useReportScope()
 
-  useEffect(() => { loadData() }, [fromDate, toDate])
+  const currentScope =
+    scopeState.status === 'ready'
+      ? effectiveReportScope(scopeState.scope, scopeState.hasTenantColumn)
+      : ({ kind: 'denied', reason: 'unauthenticated' } as const)
+
+  useEffect(() => {
+    if (scopeState.status !== 'ready') return
+    loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromDate, toDate, scopeState.status])
 
   function applyDates() { setFromDate(fromDraft); setToDate(toDraft) }
 
@@ -89,11 +101,22 @@ function CashFlowContent() {
   async function loadData() {
     setLoading(true)
     try {
+      if (currentScope.kind === 'denied') {
+        setOperating([])
+        setInvesting([])
+        setFinancing([])
+        setLoading(false)
+        return
+      }
+
       const { data: accounts } = await supabase
         .from('accounts').select('*').eq('is_active', true).order('code')
 
-      const { data: journalEntries } = await supabase
-        .from('journal_entries').select('id,entry_date').gte('entry_date', fromDate).lte('entry_date', toDate)
+      const { data: journalEntries } = await applyReportScope(
+        supabase
+          .from('journal_entries').select('id,entry_date').gte('entry_date', fromDate).lte('entry_date', toDate),
+        currentScope,
+      )
 
       const entryIds = (journalEntries || []).map((e: any) => e.id)
 
@@ -155,8 +178,11 @@ function CashFlowContent() {
     setDialogOpen(true)
     setDialogLoading(true)
     try {
-      const { data: journalEntries } = await supabase
-        .from('journal_entries').select('id,entry_date').gte('entry_date', fromDate).lte('entry_date', toDate)
+      const { data: journalEntries } = await applyReportScope(
+        supabase
+          .from('journal_entries').select('id,entry_date').gte('entry_date', fromDate).lte('entry_date', toDate),
+        currentScope,
+      )
 
       const entryIds = (journalEntries || []).map((e: any) => e.id)
 
@@ -347,6 +373,13 @@ function CashFlowContent() {
 
       <div className="min-h-screen bg-[#f0f2f5]" dir={isRTL ? "rtl" : "ltr"}>
         <div className="p-6 max-w-5xl mx-auto space-y-6">
+          {scopeState.status === 'ready' && scopeState.scope.kind === 'denied' && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 no-print">
+              {isRTL
+                ? 'لا تتوفر صلاحية عرض التقارير المالية لهذا الحساب.'
+                : 'Your account is not permitted to view financial reports.'}
+            </div>
+          )}
           {/* HEADER */}
           <div className="flex items-center justify-between no-print">
             <div className="flex items-center gap-4">

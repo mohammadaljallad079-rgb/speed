@@ -5,6 +5,8 @@ import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
+import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
+import { buildPayrollJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -167,47 +169,33 @@ function PayrollContent() {
 
       // Create journal entry
       const payrollJournalNumber = await nextDocumentNumber(supabase as any, 'payroll', 'PAY')
+      const journal = buildPayrollJournal({
+        journalNumber: payrollJournalNumber,
+        date: payrollDate,
+        description: isRTL ? 'دفع رواتب شهرية' : 'Monthly salary payment',
+        amount: totalPayroll,
+        salaryAccountId: salaryAccount.id,
+        cashAccountId: cashAccount.id,
+      })
+      if (!journal) throw new Error('Invalid payroll journal')
+
       const { data: jeData, error: jeError } = await supabase
         .from('journal_entries')
-        .insert({
-          journal_number: payrollJournalNumber,
-          entry_date: payrollDate,
-          description: isRTL ? 'دفع رواتب شهرية' : 'Monthly salary payment',
-          entry_type: 'payroll',
-          status: 'posted',
-          total_debit: totalPayroll,
-          total_credit: totalPayroll,
-          is_balanced: true,
-        })
+        .insert(journal.header)
         .select()
         .single()
 
       if (jeError) throw jeError
 
       // Create journal lines: Dr Salaries / Cr Cash
-      const lines = [
-        {
-          journal_entry_id: jeData.id,
-          account_id: salaryAccount.id,
-          debit: totalPayroll,
-          credit: 0,
-          description: isRTL ? 'رواتب موظفين' : 'Employee salaries',
-        },
-        {
-          journal_entry_id: jeData.id,
-          account_id: cashAccount.id,
-          debit: 0,
-          credit: totalPayroll,
-          description: isRTL ? 'دفع نقدي' : 'Cash payment',
-        }
-      ]
+      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
 
       const { error: linesError } = await supabase.from('journal_lines').insert(lines)
       if (linesError) throw linesError
 
       // Update balances
-      await supabase.rpc('update_account_balance', { account_id: salaryAccount.id, amount: totalPayroll })
-      await supabase.rpc('update_account_balance', { account_id: cashAccount.id, amount: -totalPayroll })
+      await applyAccountBalanceDelta(supabase, salaryAccount.id, totalPayroll)
+      await applyAccountBalanceDelta(supabase, cashAccount.id, -totalPayroll)
 
       // Record payroll
       const payrollRecords = Array.from(selectedEmployees).map(empId => ({

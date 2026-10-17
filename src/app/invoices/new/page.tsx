@@ -137,6 +137,7 @@ function NewInvoiceContent() {
           amount,
           discount,
           vat,
+          vat_tax_id: form.vat_tax_id || null,
           advance_payment: advancePayment,
           payment_method: form.payment_method,
           payment_term: form.payment_term,

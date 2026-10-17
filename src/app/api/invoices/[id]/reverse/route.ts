@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { nextDocumentNumber } from "@/lib/numbering";
-import { reverseSaleInvoice, type SaleAmounts } from "@/lib/accounting/sales-posting";
+import { reverseSaleInvoice, SALE_ACCOUNT_CODES, type SaleAmounts } from "@/lib/accounting/sales-posting";
 import {
   badRequest,
   logAudit,
@@ -51,6 +51,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const amounts: SaleAmounts = { amount, discount, vat, advancePayment, remaining };
     const paymentMethod = String(inv.payment_method ?? "cash");
     const entryDate = new Date().toISOString().slice(0, 10);
+    // Mirror the invoice's own type: a rental invoice was posted as
+    // `rental_invoice` (revenue 41001) and must be reversed as `rental_reversal`.
+    const isRental = String(inv.invoice_type ?? "sale") === "rental";
 
     const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "journal_entry", "JV");
     const result = await reverseSaleInvoice(supabaseAdmin as never, {
@@ -61,6 +64,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       description: `Reversal - ${invoiceNumber}`,
       customerId: String(inv.customer_id ?? ""),
       paymentMethod,
+      entryType: isRental ? "rental_reversal" : "sale_reversal",
+      revenueCode: isRental ? SALE_ACCOUNT_CODES.rentalRevenue : SALE_ACCOUNT_CODES.revenue,
     });
 
     const { error: updErr } = await supabaseAdmin

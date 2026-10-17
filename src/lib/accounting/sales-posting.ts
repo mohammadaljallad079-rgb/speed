@@ -28,8 +28,17 @@ export const SALE_ACCOUNT_CODES = {
   bank: "11002",
   ar: "12001",
   revenue: "41002",
+  rentalRevenue: "41001",
   vat: "24000",
 } as const;
+
+/**
+ * The journal `entry_type`s this service can post. A rental invoice is the same
+ * shape as a sale (revenue recognised at issue) but hits the rental-revenue
+ * account (41001) and carries its own entry type, so reports can tell the two
+ * apart. Keeping both in one service is what makes "one posting path" true.
+ */
+export type SaleEntryType = "sale_invoice" | "sale_reversal" | "rental_invoice" | "rental_reversal";
 
 export type SaleJournalLine = {
   account_id: string;
@@ -50,7 +59,7 @@ export type SaleJournal = {
     total_credit: number;
     is_balanced: true;
     status: "posted";
-    entry_type: "sale_invoice" | "sale_reversal";
+    entry_type: SaleEntryType;
   };
   lines: SaleJournalLine[];
 };
@@ -96,6 +105,8 @@ export function buildSaleJournal(
     customerId: string;
     paymentMethod: string;
     accounts: SaleAccountIds;
+    /** Defaults to a sale invoice; pass "rental_invoice" for a rental. */
+    entryType?: SaleEntryType;
   },
 ): SaleJournal | null {
   const amount = money(input.amount);
@@ -140,7 +151,7 @@ export function buildSaleJournal(
       total_credit: credit,
       is_balanced: true,
       status: "posted",
-      entry_type: "sale_invoice",
+      entry_type: input.entryType ?? "sale_invoice",
     },
     lines,
   };
@@ -162,6 +173,8 @@ export function buildSaleReversalJournal(
     /** The method the original sale was received with; selects cash vs bank. */
     paymentMethod: string;
     accounts: SaleAccountIds;
+    /** Defaults to a sale reversal; pass "rental_reversal" for a rental. */
+    entryType?: SaleEntryType;
   },
 ): SaleJournal | null {
   const forward = buildSaleJournal(input);
@@ -185,7 +198,7 @@ export function buildSaleReversalJournal(
       total_credit: credit,
       is_balanced: true,
       status: "posted",
-      entry_type: "sale_reversal",
+      entry_type: input.entryType ?? "sale_reversal",
     },
     lines,
   };
@@ -215,17 +228,18 @@ const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 export async function resolveSaleAccounts(
   client: PostingClient,
   paymentMethod: string,
+  revenueCode: string = SALE_ACCOUNT_CODES.revenue,
 ): Promise<SaleAccountIds> {
   const cashCode = cashBankCodeForMethod(paymentMethod);
   const { data, error } = await client
     .from("accounts")
     .select("id,code")
-    .in("code", [cashCode, SALE_ACCOUNT_CODES.ar, SALE_ACCOUNT_CODES.revenue, SALE_ACCOUNT_CODES.vat]);
+    .in("code", [cashCode, SALE_ACCOUNT_CODES.ar, revenueCode, SALE_ACCOUNT_CODES.vat]);
   if (error) throw new Error("Could not load sale accounts: " + msg(error));
   const rows = (data as Array<{ id: string; code: string }>) || [];
   const by = (code: string) => rows.find((a) => a.code === code)?.id;
   const ids: SaleAccountIds = {
-    revenueAccountId: by(SALE_ACCOUNT_CODES.revenue) as string,
+    revenueAccountId: by(revenueCode) as string,
     vatAccountId: by(SALE_ACCOUNT_CODES.vat) as string,
     arAccountId: by(SALE_ACCOUNT_CODES.ar) as string,
     cashAccountId: by(cashCode) as string,
@@ -239,7 +253,7 @@ export async function resolveSaleAccounts(
 /** The posted journal for a document reference, or null. */
 export async function findPostedJournal(
   client: PostingClient,
-  entryType: "sale_invoice" | "sale_reversal",
+  entryType: SaleEntryType,
   referenceNumber: string,
 ): Promise<{ id: string } | null> {
   if (!referenceNumber) return null;
@@ -291,13 +305,18 @@ export async function postSaleInvoice(
     description: string;
     customerId: string;
     paymentMethod: string;
+    /** Defaults to a sale; pass "rental_invoice" (with its revenue code) for a rental. */
+    entryType?: SaleEntryType;
+    /** Revenue account code; defaults to 41002 (sales). */
+    revenueCode?: string;
   },
 ): Promise<{ journalId: string; created: boolean }> {
-  const existing = await findPostedJournal(client, "sale_invoice", input.invoiceNumber);
+  const entryType = input.entryType ?? "sale_invoice";
+  const existing = await findPostedJournal(client, entryType, input.invoiceNumber);
   if (existing) return { journalId: existing.id, created: false };
 
-  const accounts = await resolveSaleAccounts(client, input.paymentMethod);
-  const journal = buildSaleJournal({ ...input, accounts });
+  const accounts = await resolveSaleAccounts(client, input.paymentMethod, input.revenueCode);
+  const journal = buildSaleJournal({ ...input, accounts, entryType });
   if (!journal) throw new Error("Cannot post a sale that does not balance (check amounts and accounts).");
   const journalId = await writeJournal(client, journal);
   return { journalId, created: true };
@@ -317,16 +336,22 @@ export async function reverseSaleInvoice(
     description: string;
     customerId: string;
     paymentMethod: string;
+    /** Defaults to a sale reversal; pass "rental_reversal" for a rental. */
+    entryType?: "sale_reversal" | "rental_reversal";
+    /** Revenue account code; defaults to 41002 (sales). */
+    revenueCode?: string;
   },
 ): Promise<{ journalId: string; created: boolean } | null> {
-  const already = await findPostedJournal(client, "sale_reversal", input.invoiceNumber);
+  const reversalType = input.entryType ?? "sale_reversal";
+  const originalType: SaleEntryType = reversalType === "rental_reversal" ? "rental_invoice" : "sale_invoice";
+  const already = await findPostedJournal(client, reversalType, input.invoiceNumber);
   if (already) return { journalId: already.id, created: false };
 
-  const posted = await findPostedJournal(client, "sale_invoice", input.invoiceNumber);
+  const posted = await findPostedJournal(client, originalType, input.invoiceNumber);
   if (!posted) return null;
 
-  const accounts = await resolveSaleAccounts(client, input.paymentMethod);
-  const journal = buildSaleReversalJournal({ ...input, accounts });
+  const accounts = await resolveSaleAccounts(client, input.paymentMethod, input.revenueCode);
+  const journal = buildSaleReversalJournal({ ...input, accounts, entryType: reversalType });
   if (!journal) throw new Error("Cannot reverse a sale that does not balance.");
   const journalId = await writeJournal(client, journal);
   return { journalId, created: true };

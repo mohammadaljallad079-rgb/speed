@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase, RentalContract } from '@/lib/supabase'
 import { formatCurrency, formatDate, getStatusColor } from '@/lib/utils'
+import { nextDocumentNumber } from '@/lib/numbering'
+import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
 import {
   FileText, Plus, Search, MoreVertical, Trash2, CreditCard, Printer, Eye, Pencil, Wallet,
   Save, Loader2, Receipt, X, User, Car, Calendar, DollarSign, CheckCircle
@@ -111,10 +113,9 @@ function RentalsPageContent() {
     setInvoice(invData)
     const { data: accData } = await supabase.from('accounts').select('id, code, name_ar, name_en').in('type', ['asset']).order('code')
     setAccounts(accData || [])
-    const { count } = await supabase.from('payments').select('*', { count: 'exact', head: true })
-    const num = ((count || 0) + 1).toString().padStart(4, '0')
+    const receiptNumber = await nextDocumentNumber(supabase, 'receipt', 'REC')
     setPaymentForm({
-      receipt_number: 'REC-' + num,
+      receipt_number: receiptNumber,
       amount: invData ? (invData.total_amount - (invData.paid_amount || 0)).toFixed(3) : (contract.total_amount || 0).toFixed(3),
       payment_date: new Date().toISOString().split('T')[0],
       payment_method: 'cash',
@@ -169,27 +170,25 @@ function RentalsPageContent() {
         await supabase.from('invoices').update({ paid_amount: newPaid, status: newStatus }).eq('id', invoice.id)
       }
 
-      const { data: revenueAccounts } = await supabase.from('accounts').select('id, code, name_ar, name_en').eq('type', 'revenue').order('code').limit(1)
-      const cashAccount = accounts.find((a: any) => a.code.startsWith('11') || a.name_en?.toLowerCase().includes('cash')) || accounts[0]
-      const revenueAccount = revenueAccounts?.[0]
-
-      if (cashAccount && revenueAccount) {
-        const entryNumber = 'JE-' + Date.now()
-        const { data: journalEntry } = await supabase.from('journal_entries').insert([{
-          entry_number: entryNumber,
-          date: paymentForm.payment_date,
-          description: isRTL ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + selectedContract.contract_number : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + selectedContract.contract_number,
-          status: 'posted',
-          total_debit: amount,
-          total_credit: amount,
-        }]).select().single()
-
-        if (journalEntry) {
-          await supabase.from('journal_lines').insert([
-            { journal_entry_id: journalEntry.id, account_id: cashAccount.id, debit: amount, credit: 0, description: isRTL ? 'نقدية' : 'Cash' },
-            { journal_entry_id: journalEntry.id, account_id: revenueAccount.id, debit: 0, credit: amount, description: isRTL ? 'إيرادات' : 'Revenue' },
-          ])
-        }
+      // Collecting a receipt settles the receivable (Dr Cash/Bank, Cr AR).
+      // It must never credit revenue again - revenue was recognised when the
+      // invoice was issued (Exec 31, Item 10). The previous code posted
+      // Dr Cash / Cr Revenue, which double-counted revenue.
+      try {
+        const journalNumber = await nextDocumentNumber(supabase, 'journal_entry', 'JV')
+        await postCustomerReceipt(supabase as never, {
+          journalNumber,
+          receiptNumber: paymentForm.receipt_number,
+          amount,
+          paymentDate: paymentForm.payment_date,
+          paymentMethod: paymentForm.payment_method,
+          description: isRTL
+            ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + selectedContract.contract_number
+            : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + selectedContract.contract_number,
+        })
+      } catch (postErr: any) {
+        console.error('Receipt GL posting failed:', postErr)
+        alert(isRTL ? 'فشل ترحيل سند القبض: ' + (postErr?.message || '') : 'Receipt GL posting failed: ' + (postErr?.message || ''))
       }
 
       if (invoice && (invoice.paid_amount || 0) + amount >= invoice.total_amount) {

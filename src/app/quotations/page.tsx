@@ -62,6 +62,17 @@ function QuotationsPageContent() {
   async function convertToContract(quotation: any) {
     setConvertLoading(true)
     try {
+      // Resolve the tenant from the authenticated session - never from the
+      // quotation row or any caller input (Exec 31, Item 3/12). Without this the
+      // contract and invoice were written tenant-less, a cross-tenant leak on a
+      // multi-tenant install.
+      const { data: { user } } = await supabase.auth.getUser()
+      let tenantId: string | null = null
+      if (user) {
+        const { data: profile } = await supabase.from('users').select('tenant_id').eq('id', user.id).maybeSingle()
+        tenantId = profile?.tenant_id || null
+      }
+
       // 1. Create rental contract
       let contractNumber = "RC-" + Date.now()
       try {
@@ -69,55 +80,62 @@ function QuotationsPageContent() {
         if (rpcNumber) contractNumber = rpcNumber
       } catch {}
 
+      const contractRow: Record<string, any> = {
+        contract_number: contractNumber,
+        customer_id: quotation.customer_id,
+        car_id: quotation.car_id,
+        start_date: quotation.quotation_date,
+        end_date: quotation.valid_until,
+        daily_rate: quotation.daily_rate,
+        total_days: quotation.total_days,
+        subtotal: quotation.subtotal,
+        vat_amount: quotation.vat_amount,
+        total_amount: quotation.total_amount,
+        status: "active",
+        notes: quotation.notes,
+      }
+      if (tenantId) contractRow.tenant_id = tenantId
+
       const { data: contract, error: contractError } = await supabase
         .from("rental_contracts")
-        .insert([{
-          contract_number: contractNumber,
-          customer_id: quotation.customer_id,
-          car_id: quotation.car_id,
-          start_date: quotation.quotation_date,
-          end_date: quotation.valid_until,
-          daily_rate: quotation.daily_rate,
-          total_days: quotation.total_days,
-          subtotal: quotation.subtotal,
-          vat_amount: quotation.vat_amount,
-          total_amount: quotation.total_amount,
-          status: "active",
-          notes: quotation.notes,
-        }])
+        .insert([contractRow])
         .select()
         .single()
 
       if (contractError) throw contractError
 
-      // 2. Create invoice
-      const { count: invCount } = await supabase.from("invoices").select("*", { count: "exact", head: true })
-      const invoiceNumber = "INV-" + ((invCount || 0) + 1).toString().padStart(4, "0")
-
-      await supabase.from("invoices").insert([{
-        invoice_number: invoiceNumber,
-        customer_id: quotation.customer_id,
-        rental_contract_id: contract.id,
-        invoice_date: new Date().toISOString().split("T")[0],
-        amount: quotation.subtotal,
-        vat_amount: quotation.vat_amount,
-        total_amount: quotation.total_amount,
-        paid_amount: 0,
-        status: "pending",
-        rental_days: quotation.total_days,
-        car_plate: quotation.cars?.plate_number,
-      }])
+      // 2. Create the rental invoice through the single server-side posting
+      //    service: it allocates the number, sets tenant_id/financial_year from
+      //    the session and posts the balanced journal (41001 rental revenue).
+      const subtotal = Number(quotation.subtotal) || 0
+      const vat = Number(quotation.vat_amount) || 0
+      const invRes = await fetch("/api/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_id: quotation.customer_id,
+          rental_contract_id: contract.id,
+          invoice_date: new Date().toISOString().slice(0, 10),
+          invoice_type: "rental",
+          amount: subtotal,
+          vat,
+          rental_days: quotation.total_days,
+          payment_method: "cash",
+        }),
+      })
+      const invPayload = await invRes.json().catch(() => ({}))
+      if (!invRes.ok) throw new Error(invPayload?.error || "Failed to create the rental invoice")
 
       // 3. Update quotation status
-      await supabase.from("quotations").update({ 
-        status: "converted", 
-        rental_contract_id: contract.id 
+      await supabase.from("quotations").update({
+        status: "converted",
+        rental_contract_id: contract.id
       }).eq("id", quotation.id)
 
       setDetailModalOpen(false)
       await fetchQuotations()
       alert(isRTL ? "تم التحويل لعقد بنجاح!" : "Converted to contract successfully!")
-      
+
       // Navigate to the new contract
       router.push("/rentals/" + contract.id)
     } catch (err: any) {

@@ -329,7 +329,6 @@ describe("Priority 4c - one canonical journal-line table", () => {
     "src/app/accounting/petty-cash/page.tsx",
     "src/app/hr/payroll/page.tsx",
     "src/app/rentals/[id]/refund-deposit/page.tsx",
-    "src/app/sales/new/page.tsx",
     "src/app/accounting/journal-entries/page.tsx",
     "src/lib/accounting/payment-posting.ts",
   ];
@@ -350,6 +349,12 @@ describe("Priority 4c - one canonical journal-line table", () => {
     for (const f of journalLineWriters) {
       assert.doesNotMatch(read(f), /journal_number:\s*'[A-Z-]*'\s*\+\s*Date\.now/, `${f} still builds a journal number from Date.now()`);
     }
+  });
+
+  test("sales/new no longer posts its own journal (Exec 31: single server path)", () => {
+    const src = read("src/app/sales/new/page.tsx");
+    assert.doesNotMatch(src, /from\(["']journal_lines["']\)\.insert/, "sales/new must not write journal lines directly");
+    assert.doesNotMatch(src, /from\(["']journal_entries["']\)\.insert/, "sales/new must not write journal headers directly");
   });
 });
 

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { nextDocumentNumber } from "@/lib/numbering";
 import {
   postSaleInvoice,
+  SALE_ACCOUNT_CODES,
   type SaleAmounts,
 } from "@/lib/accounting/sales-posting";
 import {
@@ -38,11 +39,16 @@ type Body = {
   due_date?: string | null;
   amount?: number | string;
   discount?: number | string;
+  discount_amount?: number | string;
   vat?: number | string;
+  vat_tax_id?: string | null;
   advance_payment?: number | string;
   payment_method?: string;
   payment_term?: string | null;
   notes?: string | null;
+  /** "sale" (default) or "rental". A rental posts to 41001 and is a rental_invoice. */
+  invoice_type?: string;
+  rental_days?: number | string;
 };
 
 const num = (v: unknown): number => {
@@ -66,7 +72,9 @@ export async function POST(request: Request) {
     if (amount <= 0) {
       return NextResponse.json({ error: "amount must be positive", code: "bad_request" }, { status: 400 });
     }
-    const discount = num(body.discount);
+    // `discount` and `discount_amount` are both accepted so a caller cannot
+    // silently drop the discount (the invoice row stores it as discount_amount).
+    const discount = body.discount_amount !== undefined ? num(body.discount_amount) : num(body.discount);
     const vat = num(body.vat);
     const revenue = round3(amount - discount);
     const total = round3(revenue + vat);
@@ -77,6 +85,10 @@ export async function POST(request: Request) {
     const remaining = round3(total - advancePayment);
     const paymentMethod = typeof body.payment_method === "string" && body.payment_method ? body.payment_method : "cash";
     const invoiceDate = body.invoice_date ?? new Date().toISOString().slice(0, 10);
+    // A rental invoice is the same posting shape but hits 41001 (rental revenue)
+    // and carries its own entry_type, so reports can separate the two.
+    const isRental = body.invoice_type === "rental";
+    const invoiceType = isRental ? "rental" : "sale";
 
     // Cross-tenant foreign keys are an application-layer responsibility: verify
     // the referenced customer/contract belong to the caller's tenant.
@@ -92,7 +104,11 @@ export async function POST(request: Request) {
 
     const invoiceNumber =
       (typeof body.invoice_number === "string" && body.invoice_number.trim()) ||
-      (await nextDocumentNumber(supabaseAdmin as never, "sale_invoice", "SI"));
+      (await nextDocumentNumber(
+        supabaseAdmin as never,
+        isRental ? "rental_invoice" : "sale_invoice",
+        isRental ? "RI" : "SI",
+      ));
 
     const status = advancePayment <= 0 ? "pending" : remaining <= 0 ? "paid" : "partial";
 
@@ -101,17 +117,19 @@ export async function POST(request: Request) {
       invoice_date: invoiceDate,
       due_date: body.due_date || null,
       status,
-      invoice_type: "sale",
+      invoice_type: invoiceType,
       customer_id: customerId,
       rental_contract_id: body.rental_contract_id || null,
       total_amount: total,
       discount_amount: discount,
       vat_amount: vat,
+      vat_tax_id: typeof body.vat_tax_id === "string" && body.vat_tax_id ? body.vat_tax_id : null,
       paid_amount: 0,
       payment_method: paymentMethod,
       payment_term: body.payment_term || null,
       notes: body.notes || null,
     };
+    if (isRental && body.rental_days !== undefined) invoiceRow.rental_days = num(body.rental_days);
     if (tenantId) invoiceRow.tenant_id = tenantId;
     if (context.financialYearId) invoiceRow.financial_year_id = context.financialYearId;
 
@@ -130,9 +148,11 @@ export async function POST(request: Request) {
       journalNumber,
       invoiceNumber,
       entryDate: invoiceDate,
-      description: `Sale invoice - ${invoiceNumber}`,
+      description: isRental ? `Rental invoice - ${invoiceNumber}` : `Sale invoice - ${invoiceNumber}`,
       customerId,
       paymentMethod,
+      entryType: isRental ? "rental_invoice" : "sale_invoice",
+      revenueCode: isRental ? SALE_ACCOUNT_CODES.rentalRevenue : SALE_ACCOUNT_CODES.revenue,
     });
 
     // Record the advance receipt as a payment row (settles AR; not revenue).

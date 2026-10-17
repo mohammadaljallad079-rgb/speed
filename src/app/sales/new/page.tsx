@@ -5,7 +5,6 @@ export const dynamic = "force-dynamic"
 import { useRouter } from "next/navigation"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering";
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Save, FileText, User, DollarSign, CreditCard, Percent, Hash } from "lucide-react"
 import Link from "next/link"
@@ -79,7 +78,6 @@ function NewSaleContent() {
   const total = Math.max(0, amount - discount + vat)
   const advancePayment = Math.min(parseFloat(form.advance_payment) || 0, total)
   const remaining = Math.max(0, total - advancePayment)
-  const computedStatus = advancePayment <= 0 ? "pending" : remaining <= 0 ? "paid" : "partial"
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -89,78 +87,33 @@ function NewSaleContent() {
     if (!form.payment_term) { alert(isRTL ? "اختر شروط الدفع" : "Select payment terms"); return }
     setLoading(true)
     try {
-      // The number is allocated here, at submit time, through the row-locked RPC
-      // (falling back to a collision-safe local value). Never insert an invoice
-      // with an empty number: the mount-time RPC may not have resolved, or may
-      // have failed.
-      const invoiceNumber = form.invoice_number || (await nextDocumentNumber(supabase, "sale_invoice", "SI"))
-      const { data: newInvoice, error } = await supabase.from("invoices").insert([{
-        invoice_number: invoiceNumber,
-        invoice_date: form.invoice_date,
-        due_date: form.due_date,
-        status: computedStatus,
-        invoice_type: "sale",
-        customer_id: form.customer_id,
-        total_amount: total,
-        paid_amount: 0,
-        discount_amount: discount,
-        vat_amount: vat,
-        vat_tax_id: form.vat_tax_id || null,
-        payment_method: form.payment_method,
-        payment_term: form.payment_term,
-        notes: form.notes || null,
-      }]).select().single()
-      if (error) throw error
-
-      if (advancePayment > 0 && newInvoice) {
-        const receiptNumber = await nextDocumentNumber(supabase, "receipt", "REC")
-        const { error: paymentError } = await supabase.from("payments").insert({
-          receipt_number: receiptNumber,
-          invoice_id: newInvoice.id,
+      // Issuing a sale goes through the single server-side posting service
+      // (Exec 31, Item 10/12). The page used to write the invoice AND its journal
+      // straight from the browser with no tenant_id, no idempotency guard and no
+      // financial-year check; that bypassed the tenant isolation every other
+      // module honours. The server now allocates the number, takes
+      // tenant/permissions from the session and creates the invoice and its
+      // balanced journal together (a retry cannot double revenue).
+      const res = await fetch("/api/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invoice_number: form.invoice_number || undefined,
           customer_id: form.customer_id,
-          payment_type: "receipt",
-          amount: advancePayment,
+          invoice_date: form.invoice_date,
+          due_date: form.due_date || null,
+          amount,
+          discount,
+          vat,
+          vat_tax_id: form.vat_tax_id || null,
+          advance_payment: advancePayment,
           payment_method: form.payment_method,
-          payment_date: form.invoice_date,
-          status: "completed",
-        })
-        if (paymentError) throw paymentError
-      }
-
-      if (newInvoice) {
-        const cashOrBankCode = form.payment_method === "cash" ? "11001" : "11002"
-        const { data: accountsData } = await supabase.from("accounts").select("id, code").in("code", [cashOrBankCode, "12001", "41002", "24000"])
-        const acc = (code: string) => accountsData?.find((a: any) => a.code === code)?.id
-
-        const { data: jvNumberData } = await supabase.rpc("generate_document_number", { p_doc_type: "journal_entry" })
-        const { data: newJournal } = await supabase.from("journal_entries").insert({
-          journal_number: jvNumberData,
-          entry_date: form.invoice_date,
-          reference_number: invoiceNumber,
-          description: isRTL ? `فاتورة مبيعات - ${invoiceNumber}` : `Sale invoice - ${invoiceNumber}`,
-          total_debit: total,
-          total_credit: total,
-          is_balanced: true,
-          status: "posted",
-          entry_type: "sale_invoice",
-        }).select().single()
-
-        if (newJournal) {
-          const lines: any[] = []
-          let lineOrder = 1
-          if (advancePayment > 0) {
-            lines.push({ journal_entry_id: newJournal.id, account_id: acc(cashOrBankCode), debit: advancePayment, credit: 0, description: isRTL ? "دفعة مقبوضة" : "Received payment", customer_id: form.customer_id, line_order: lineOrder++ })
-          }
-          if (remaining > 0) {
-            lines.push({ journal_entry_id: newJournal.id, account_id: acc("12001"), debit: remaining, credit: 0, description: isRTL ? "رصيد مستحق على العميل" : "Amount due from customer", customer_id: form.customer_id, line_order: lineOrder++ })
-          }
-          lines.push({ journal_entry_id: newJournal.id, account_id: acc("41002"), debit: 0, credit: amount - discount, description: isRTL ? "إيراد مبيعات" : "Sales revenue", customer_id: form.customer_id, line_order: lineOrder++ })
-          if (vat > 0) {
-            lines.push({ journal_entry_id: newJournal.id, account_id: acc("24000"), debit: 0, credit: vat, description: isRTL ? "ضريبة القيمة المضافة" : "VAT payable", customer_id: form.customer_id, line_order: lineOrder++ })
-          }
-          await supabase.from("journal_lines").insert(lines)
-        }
-      }
+          payment_term: form.payment_term,
+          notes: form.notes || null,
+        }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || "Failed to issue the sale invoice")
 
       notifyDataChanged()
       router.push("/sales")

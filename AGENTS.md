@@ -1116,3 +1116,34 @@ that applies the filters it is given and returns only affected rows.
   Like 001-006, it is NOT applied to the live database (DDL is an operator step).
 - Baseline after Exec 30: 651 tests / 645 pass / 6 skipped / 0 fail; typecheck 129
   (unchanged); lint clean; production build green.
+
+## Execution 31 invariants (single financial posting path + admin closure)
+
+- **`sales/new` is server-authoritative.** It POSTs to `/api/invoices`; it never
+  inserts `invoices`, `journal_entries` or `journal_lines` itself. The browser path
+  had no `tenant_id`, no idempotency guard and no financial-year check.
+  `tests/exec16` and `tests/exec18` assert this and would fail on a regression.
+- **`/api/invoices` is the one endpoint that issues a sale OR a rental.** Pass
+  `invoice_type: "rental"` to post to the rental revenue account (41001,
+  `entry_type='rental_invoice'`); the default is a sale (41002, `sale_invoice`).
+  It accepts both `discount` and `discount_amount`, and stores `vat_tax_id`.
+- **`sales-posting.ts` stays the single posting service.** Rental support is a
+  parameter (`entryType` + `revenueCode`), not a second module. `reverseSaleInvoice`
+  mirrors the invoice's own type (`rental_reversal` for a rental).
+- **A customer receipt is `Dr Cash/Bank, Cr AR (12001)`** - never `Cr Revenue`.
+  Revenue is recognised once, at invoice issue. Use
+  `postCustomerReceipt` (`src/lib/accounting/receipt-posting.ts`); the rental pages
+  used to credit revenue on collection (double-count) and write the orphan
+  `entry_number`/`date`/`reference_no` columns.
+- **Canonical `journal_entries` columns only:** `journal_number`, `entry_date`,
+  `reference_number`, `entry_type`. `entry_number`/`date`/`reference_no` are read by
+  no report; do not reintroduce them.
+- **Document numbers come from `nextDocumentNumber`** (`generate_document_number`
+  RPC). `Date.now()`/row-count numbering (`INV-<n>`) defeats the duplicate guard.
+- **Admin provisioning is one script:** `scripts/provision-admin-accounts.mjs`
+  (`npm run provision:admins`), verified by `scripts/verify-admin-accounts.mjs`.
+  It reuses the existing Auth API + `public.users`; company admin `admin` +
+  tenant-scoped, super admin `super_admin` + tenant-less. Re-running repairs the
+  mapping without rotating a password (use `--rotate-passwords` to rotate).
+- Baseline after Exec 31: 653 tests / 647 pass / 6 skipped / 0 fail; typecheck 129
+  (unchanged); lint clean; production build green.

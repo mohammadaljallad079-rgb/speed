@@ -118,11 +118,20 @@ describe("Exec 18 - Item 4: dashboard revenue reconciles with sales", () => {
 });
 
 describe("Exec 18 - Item 2: sales serial numbers are collision-safe", () => {
-  test("sales/new never inserts an empty invoice number", () => {
+  test("sales/new issues through the server, which allocates the number", () => {
     const src = read("src/app/sales/new/page.tsx");
-    assert.match(src, /const invoiceNumber = form\.invoice_number \|\| \(await nextDocumentNumber/, "must allocate at submit time");
+    // Exec 31: sales/new must not write the invoice or its journal directly
+    // (that path had no tenant_id, no idempotency guard and no financial-year
+    // check). It now posts to the single server-side service.
+    assert.match(src, /fetch\("\/api\/invoices"/, "must post through the server API");
+    assert.doesNotMatch(src, /from\(["']invoices["']\)\.insert/, "must not insert the invoice directly");
+    assert.doesNotMatch(src, /from\(["']journal_entries["']\)\.insert/, "must not post the journal directly");
+  });
+
+  test("the server allocates the sale number and never inserts an empty one", () => {
+    const src = read("src/app/api/invoices/route.ts");
+    assert.match(src, /nextDocumentNumber\([^)]*"sale_invoice"/, "server must allocate the sale number");
     assert.match(src, /invoice_number: invoiceNumber/, "must insert the allocated number");
-    assert.match(src, /reference_number: invoiceNumber/, "the journal must reference the allocated number");
   });
 
   test("nextDocumentNumber prefers the RPC result", async () => {

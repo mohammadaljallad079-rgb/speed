@@ -15,6 +15,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ArrowLeft, FileText, User, Car, Calendar, DollarSign, CheckCircle, XCircle, Clock, CreditCard, Save, Loader2, Receipt } from 'lucide-react'
 import Link from 'next/link'
+import { nextDocumentNumber } from '@/lib/numbering'
+import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -146,55 +148,24 @@ function PageContent() {
         }).eq('id', invoice.id)
       }
 
-      const { data: receivableAccounts } = await supabase
-        .from('accounts')
-        .select('id, code, name_ar, name_en')
-        .eq('type', 'asset')
-        .ilike('name_en', '%receivable%')
-        .order('code')
-        .limit(1)
-
-      const cashAccount = accounts.find((a: any) => a.code === '11001' || a.code === '11002') || accounts[0]
-      const receivableAccount = receivableAccounts?.[0] || accounts.find((a: any) => a.code === '12001')
-
-      if (cashAccount && receivableAccount) {
-        const { count: jeCount } = await supabase.from('journal_entries').select('*', { count: 'exact', head: true })
-        const entryNumber = 'JV-' + new Date().getFullYear() + '-' + ((jeCount || 0) + 1).toString().padStart(6, '0')
-        
-        const referenceNo = invoice ? invoice.invoice_number : contract?.contract_number
-        
-        const { data: journalEntry } = await supabase.from('journal_entries').insert([{
-          entry_number: entryNumber,
-          date: paymentForm.payment_date,
-          reference_no: referenceNo,
-          description: isRTL ? 
-            'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + contract?.contract_number + ' - عميل: ' + contract?.customer?.full_name + ' - سيارة: ' + (contract?.car?.make || '') + ' ' + (contract?.car?.model || '') + ' - لوحة: ' + (contract?.car?.plate_number || '') :
-            'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + contract?.contract_number + ' - Customer: ' + contract?.customer?.full_name + ' - Vehicle: ' + (contract?.car?.make || '') + ' ' + (contract?.car?.model || '') + ' - Plate: ' + (contract?.car?.plate_number || ''),
-          status: 'posted',
-          total_debit: amount,
-          total_credit: amount,
-        }]).select().single()
-
-        if (journalEntry) {
-          await supabase.from('journal_lines').insert([
-            { 
-              journal_entry_id: journalEntry.id, 
-              account_id: cashAccount.id, 
-              debit: amount, 
-              credit: 0, 
-              description: isRTL ? 'صندوق / بنك - ' + paymentForm.payment_method : 'Cash/Bank - ' + paymentForm.payment_method,
-              reference_no: paymentForm.receipt_number 
-            },
-            { 
-              journal_entry_id: journalEntry.id, 
-              account_id: receivableAccount.id, 
-              debit: 0, 
-              credit: amount, 
-              description: isRTL ? 'تخفيض ذمم العملاء - ' + contract?.customer?.full_name : 'Reduce AR - ' + contract?.customer?.full_name,
-              reference_no: referenceNo 
-            },
-          ])
-        }
+      // Collecting a receipt settles the receivable (Dr Cash/Bank, Cr AR). It
+      // must never credit revenue again - revenue was recognised when the
+      // invoice was issued (Exec 31, Item 10).
+      try {
+        const journalNumber = await nextDocumentNumber(supabase, 'journal_entry', 'JV')
+        await postCustomerReceipt(supabase as never, {
+          journalNumber,
+          receiptNumber: paymentForm.receipt_number,
+          amount,
+          paymentDate: paymentForm.payment_date,
+          paymentMethod: paymentForm.payment_method,
+          description: isRTL
+            ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + contract?.contract_number
+            : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + contract?.contract_number,
+        })
+      } catch (postErr: any) {
+        console.error('Receipt GL posting failed:', postErr)
+        alert(isRTL ? 'فشل ترحيل سند القبض: ' + (postErr?.message || '') : 'Receipt GL posting failed: ' + (postErr?.message || ''))
       }
 
       if (invoice && (invoice.paid_amount || 0) + amount >= invoice.total_amount) {

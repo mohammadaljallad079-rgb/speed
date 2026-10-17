@@ -9,6 +9,7 @@ import type { FormatTemplate } from "@/lib/reporting/plan";
 import { summarizeRevenue, type RevenueInvoice, type RevenueReturn } from "@/lib/reporting/revenue";
 import { validateReport, type ValidationColumn } from "@/lib/reporting/validation";
 import { classifyRepairRequest, type RepairClassification } from "./policy";
+import type { RepairStore } from "./repair-store";
 import {
   getRepairAction,
   planFingerprint,
@@ -53,6 +54,7 @@ export interface RepairDeps {
 export type RepairProposalStatus =
   | "ready"
   | "needs_approval"
+  | "requires_verification"
   | "forbidden"
   | "unknown_action"
   | "invalid_input";
@@ -96,6 +98,8 @@ export type RepairExecutionStatus =
   | "expired"
   | "forbidden"
   | "duplicate"
+  | "in_progress"
+  | "unresolved"
   | "failed";
 
 export interface RepairApproval {
@@ -437,6 +441,26 @@ export async function proposeRepair(
   }
   const plan = validated.plan;
 
+  // Evidence gate: when the request carries nothing deterministic to check, do
+  // not run a diagnostic that would guess — return a "requires verification"
+  // diagnosis with the sources a human should consult.
+  if (diagnosis.requiresVerification) {
+    return {
+      ...base,
+      kind: plan.kind ?? null,
+      params: plan.params,
+      status: "requires_verification",
+      preview: null,
+      fingerprint: "",
+      contentFingerprint: "",
+      error: {
+        code: "requires_verification",
+        ar: "الأدلة غير كافية لتحديد المصدر؛ حدّد الوحدة/التقرير أو الفترة قبل التشخيص.",
+        en: "Not enough evidence to pick a deterministic source; name the module/report or period first.",
+      },
+    };
+  }
+
   const preview = await buildPreviewFor(spec.id, plan, deps);
   const fingerprint = planFingerprint(plan);
   const contentFingerprint = stableFingerprint(preview.after);
@@ -454,6 +478,8 @@ export async function proposeRepair(
 
 export interface ExecuteOptions {
   idempotency?: IdempotencyPort;
+  /** Durable store; when present it is the source of truth for idempotency. */
+  store?: RepairStore;
   /** Override the idempotency key (otherwise the proposal id is used). */
   idempotencyKey?: string;
 }
@@ -517,26 +543,88 @@ export async function executeRepair(
     }
   }
 
-  // 5. Idempotency: never run the same action twice for the same key.
-  if (options.idempotency?.has(idempotencyKey)) {
+  // 5. Idempotency. With a durable store this is an atomic claim: the unique
+  //    constraint on (tenant_id, idempotency_key) makes concurrent requests,
+  //    restarts and a lost response all safe. Without one, fall back to the
+  //    best-effort in-memory port.
+  let claimed = false;
+  if (options.store) {
+    const claim = await options.store.claim({
+      tenantId: deps.tenantId,
+      userId: context.authUserId ?? null,
+      userEmail: context.email ?? null,
+      proposalId: proposal.proposalId,
+      action: proposal.action,
+      planFingerprint: proposal.fingerprint,
+      contentFingerprint: proposal.contentFingerprint,
+      idempotencyKey,
+    });
+    if (claim.outcome === "key_reused") {
+      return fail("conflict", "key_reused", "أُعيد استخدام مفتاح منع التكرار لخطة مختلفة.", "The idempotency key was reused for a different plan.");
+    }
+    if (claim.outcome === "duplicate") {
+      const rec = claim.record;
+      if (rec.status === "claimed") {
+        return fail("in_progress", "in_progress", "هذا الإجراء قيد التنفيذ بالفعل.", "This action is already in progress.");
+      }
+      if (rec.status === "unresolved") {
+        return fail("unresolved", "unresolved", "نتيجة التنفيذ السابق غير محسومة؛ يتطلب مراجعة بشرية.", "A previous execution is unresolved; human review is required.");
+      }
+      if (rec.status === "succeeded") {
+        return {
+          ok: true,
+          status: "verified",
+          proposalId: proposal.proposalId,
+          action: proposal.action,
+          changed: null,
+          verification: { ok: true, detailAr: "نُفّذ هذا الإجراء مسبقًا بنجاح.", detailEn: "This action was already executed successfully.", dataSource: rec.detail ?? undefined },
+          idempotencyKey,
+          reference: rec.reference ?? reference,
+        };
+      }
+      return fail("duplicate", "duplicate", "تم تنفيذ هذا الإجراء مسبقًا.", "This action was already executed.");
+    }
+    claimed = true;
+  } else if (options.idempotency?.has(idempotencyKey)) {
     return fail("duplicate", "duplicate", "تم تنفيذ هذا الإجراء مسبقًا.", "This action was already executed.");
   }
 
+  // After a durable claim, anything that leaves the key unresolved must be
+  // recorded as such — never silently dropped, never re-run blindly.
+  const finalizeClaim = async (status: "succeeded" | "failed" | "conflict" | "unresolved", verificationOk: boolean | null, changedKeys: string[], detail: string | null, ref: string | null) => {
+    if (claimed) {
+      try {
+        await options.store!.finalize(deps.tenantId, idempotencyKey, { status, verificationOk, reference: ref, detail, changedKeys });
+      } catch (error) {
+        // Recording failure must not surface as success; log and continue.
+        console.error("[repair] finalize failed:", (error as Error).message);
+      }
+    }
+  };
+
   // 6. Re-compute the preview and refuse if the content changed since preview.
-  const fresh = await buildPreviewFor(proposal.action, {
-    action: proposal.action,
-    kind: proposal.kind ?? undefined,
-    params: proposal.params,
-    effect: proposal.effect,
-    requiresApproval: proposal.requiresApproval,
-  }, deps);
+  let fresh: RepairPreview;
+  try {
+    fresh = await buildPreviewFor(proposal.action, {
+      action: proposal.action,
+      kind: proposal.kind ?? undefined,
+      params: proposal.params,
+      effect: proposal.effect,
+      requiresApproval: proposal.requiresApproval,
+    }, deps);
+  } catch (error) {
+    await finalizeClaim("failed", false, [], `preview failed: ${(error as Error).message}`, null);
+    return fail("failed", "preview_failed", "فشل التحقق من البيانات.", "Data verification failed.");
+  }
   if (stableFingerprint(fresh.after) !== proposal.contentFingerprint) {
+    await finalizeClaim("conflict", false, [], "data changed since preview", null);
     return fail("conflict", "data_changed", "تغيّرت البيانات بعد المعاينة؛ أعد المعاينة.", "Data changed since the preview; preview again.");
   }
 
   // 7. Execute. Reads have nothing to persist; the only write is a template.
   if (proposal.effect === "read") {
     options.idempotency?.mark(idempotencyKey, reference);
+    await finalizeClaim("succeeded", true, Object.keys(fresh.after).slice(0, 20), fresh.dataSource, reference);
     return {
       ok: true,
       status: "verified",
@@ -553,12 +641,14 @@ export async function executeRepair(
   const name = proposal.params.name ?? "";
   const kind = proposal.kind;
   if (!kind || !isReportKind(kind) || !name) {
+    await finalizeClaim("failed", false, [], "invalid template input", null);
     return fail("failed", "bad_request", "مدخلات القالب غير صالحة.", "Invalid template input.");
   }
   try {
     const template = planToTemplate(kind, name, proposal.params.prompt ?? "");
     await deps.saveTemplate(deps.tenantId, template);
   } catch (error) {
+    await finalizeClaim("failed", false, [], `save failed: ${(error as Error).message}`, null);
     return fail("failed", "save_failed", "فشل حفظ القالب.", "Failed to save the template.", {
       ok: false,
       detailAr: `فشل الحفظ: ${(error as Error).message}`,
@@ -566,16 +656,31 @@ export async function executeRepair(
     });
   }
 
-  const templates = await deps.loadTemplates(deps.tenantId);
-  const stored = templates.some((t) => t.name.toLowerCase() === name.toLowerCase());
+  // Post-execution verification against a trusted source (re-read the store).
+  let stored = false;
+  try {
+    const templates = await deps.loadTemplates(deps.tenantId);
+    stored = templates.some((t) => t.name.toLowerCase() === name.toLowerCase());
+  } catch (error) {
+    // The write happened but verification could not run: leave it unresolved so
+    // a retry does not re-apply it blindly.
+    await finalizeClaim("unresolved", null, Object.keys(fresh.after).slice(0, 20), `verify read failed: ${(error as Error).message}`, reference);
+    return fail("unresolved", "unresolved", "تم التنفيذ لكن تعذّر التحقق؛ يتطلب مراجعة.", "Executed but verification failed; review required.", {
+      ok: false,
+      detailAr: "تعذّر التحقق بعد التنفيذ.",
+      detailEn: "Post-execution verification could not run.",
+    });
+  }
   options.idempotency?.mark(idempotencyKey, reference);
   if (!stored) {
+    await finalizeClaim("failed", false, [], "template not found after save", reference);
     return fail("failed", "verification_failed", "لم يتم العثور على القالب بعد الحفظ.", "The template was not found after saving.", {
       ok: false,
       detailAr: "فشل التحقق بعد التنفيذ.",
       detailEn: "Post-execution verification failed.",
     });
   }
+  await finalizeClaim("succeeded", true, Object.keys(fresh.after).slice(0, 20), "settings:report_format_templates", reference);
   return {
     ok: true,
     status: "verified",

@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import type { ReportingDb } from "@/lib/reporting/data";
 import { loadTemplates, saveTemplate, type SettingsDb } from "@/lib/reporting/templates";
 import { allowedRepairActions, getRepairAction, selectRepairActions } from "@/lib/ai/repair-catalog";
+import { createResilientRepairStore, createSupabaseRepairStore, type SupabaseClientLike } from "@/lib/ai/repair-store";
 import {
   createMemoryIdempotency,
   executeRepair,
@@ -28,9 +29,14 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// Best-effort, per-process idempotency. A durable store would need a settings
-// row; the audit trail is the authoritative record of what ran.
+// Best-effort, per-process idempotency used only when no durable store is
+// available. The durable store (`ai_repair_executions`, migration 006) is the
+// source of truth for cross-request/restart safety; the audit trail remains the
+// authoritative record of what ran.
 const idempotency = createMemoryIdempotency();
+const repairStore = createResilientRepairStore(
+  createSupabaseRepairStore(supabaseAdmin as unknown as SupabaseClientLike),
+);
 
 function buildDeps(context: { tenantId: string | null }): RepairDeps {
   return {
@@ -116,7 +122,7 @@ export async function POST(request: Request) {
             }
           : null,
         buildDeps(context),
-        { idempotency },
+        { idempotency, store: repairStore },
       );
       await logAudit(context, {
         action: result.ok ? "update" : "export",
@@ -138,10 +144,27 @@ export async function POST(request: Request) {
           ? 403
           : result.error?.code === "unknown_action"
             ? 400
-            : result.status === "conflict" || result.status === "duplicate" || result.status === "expired"
+            : result.status === "conflict" || result.status === "duplicate" || result.status === "expired" || result.status === "in_progress" || result.status === "unresolved"
               ? 409
               : 200;
       return NextResponse.json({ success: result.ok, result }, { status });
+    }
+
+    if (op === "history") {
+      const records = await repairStore.history(context.tenantId, 50);
+      return NextResponse.json({
+        success: true,
+        records: records.map((r) => ({
+          proposalId: r.proposalId,
+          action: r.action,
+          status: r.status,
+          verificationOk: r.verificationOk,
+          reference: r.reference,
+          changedKeys: r.changedKeys,
+          createdAt: r.createdAt,
+          updatedAt: r.updatedAt,
+        })),
+      });
     }
 
     return NextResponse.json({ success: false, error: "Unknown operation", code: "bad_request" }, { status: 400 });

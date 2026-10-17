@@ -44,7 +44,7 @@ export interface RepairProposal {
   params: { prompt?: string; name?: string; from?: string | null; to?: string | null };
   effect: "read" | "settings";
   requiresApproval: boolean;
-  status: "ready" | "needs_approval" | "forbidden" | "unknown_action" | "invalid_input";
+  status: "ready" | "needs_approval" | "requires_verification" | "forbidden" | "unknown_action" | "invalid_input";
   titleAr: string;
   titleEn: string;
   preview: RepairPreview | null;
@@ -80,6 +80,17 @@ export interface RepairCandidate {
   reasonEn: string;
 }
 
+export interface RepairHistoryEntry {
+  proposalId: string;
+  action: string;
+  status: string;
+  verificationOk: boolean | null;
+  reference: string | null;
+  changedKeys: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type RepairPhase = "idle" | "loading" | "proposed" | "executing" | "done" | "error";
 
 export interface RepairState {
@@ -90,6 +101,7 @@ export interface RepairState {
   candidates: RepairCandidate[];
   result: RepairExecutionResult | null;
   error: RepairError | null;
+  history: RepairHistoryEntry[];
   /** True while a request is in flight; the UI disables its buttons on it. */
   busy: boolean;
   /** Whether the user pressed approve for this proposal. */
@@ -105,7 +117,7 @@ export interface RepairResponse {
 export type RepairFetch = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string }) => Promise<RepairResponse>;
 
 export function initialState(): RepairState {
-  return { phase: "idle", actions: [], prompt: "", proposal: null, candidates: [], result: null, error: null, busy: false, approved: false };
+  return { phase: "idle", actions: [], prompt: "", proposal: null, candidates: [], result: null, error: null, history: [], busy: false, approved: false };
 }
 
 /** Maps an HTTP status/body to a safe, bilingual error. Never leaks raw output. */
@@ -123,6 +135,10 @@ export function mapRepairError(status: number, body: unknown): RepairError {
     bad_request: { code: "bad_request", ar: "مدخلات غير صالحة.", en: "Invalid input." },
     no_action: { code: "no_action", ar: "لا يوجد إجراء مسموح لهذا الطلب.", en: "No permitted action applies to this request." },
     verification_failed: { code: "verification_failed", ar: "فشل التحقق بعد التنفيذ.", en: "Post-execution verification failed." },
+    in_progress: { code: "in_progress", ar: "هذا الإجراء قيد التنفيذ بالفعل.", en: "This action is already in progress." },
+    unresolved: { code: "unresolved", ar: "نتيجة التنفيذ السابق غير محسومة؛ يتطلب مراجعة بشرية.", en: "A previous execution is unresolved; human review is required." },
+    key_reused: { code: "key_reused", ar: "أُعيد استخدام مفتاح منع التكرار لخطة مختلفة.", en: "The idempotency key was reused for a different plan." },
+    requires_verification: { code: "requires_verification", ar: "الأدلة غير كافية لتحديد المصدر؛ حدّد الوحدة/التقرير أو الفترة.", en: "Not enough evidence to pick a source; name the module/report or period." },
   };
   if (known[code]) return known[code];
   if (status === 401) return { code: "unauthorized", ar: "يجب تسجيل الدخول.", en: "You must sign in." };
@@ -152,6 +168,7 @@ export interface RepairController {
   subscribe(listener: (s: RepairState) => void): () => void;
   setPrompt(prompt: string): void;
   loadActions(): Promise<void>;
+  loadHistory(): Promise<void>;
   propose(prompt: string, action?: string): Promise<void>;
   approve(): void;
   execute(): Promise<void>;
@@ -208,6 +225,15 @@ export function createRepairController(fetchImpl: RepairFetch): RepairController
         set({ busy: false, phase: "error", error: mapRepairError(0, null) });
       }
     },
+    async loadHistory() {
+      try {
+        const res = await post("history", {});
+        const json = (await res.json()) as { records?: RepairHistoryEntry[] };
+        if (res.ok) set({ history: json.records ?? [] });
+      } catch {
+        // A history read failure must never surface as an execution result.
+      }
+    },
     async propose(prompt, action) {
       if (state.busy) return;
       set({ busy: true, phase: "loading", error: null, proposal: null, result: null, approved: false, prompt });
@@ -220,7 +246,7 @@ export function createRepairController(fetchImpl: RepairFetch): RepairController
           return;
         }
         const proposal = json.proposal;
-        if (proposal.status === "forbidden" || proposal.status === "unknown_action" || proposal.status === "invalid_input") {
+        if (proposal.status === "forbidden" || proposal.status === "unknown_action" || proposal.status === "invalid_input" || proposal.status === "requires_verification") {
           set({ busy: false, phase: "error", proposal, candidates: json.candidates ?? [], error: proposal.error ?? mapRepairError(res.status, json) });
           return;
         }
@@ -253,6 +279,8 @@ export function createRepairController(fetchImpl: RepairFetch): RepairController
         }
         const result = json.result;
         set({ busy: false, phase: result.ok ? "done" : "error", result, error: result.ok ? null : result.error ?? mapRepairError(res.status, json) });
+        // Refresh the audit history after any resolved execution attempt.
+        await controller.loadHistory();
       } catch {
         set({ busy: false, phase: "error", error: mapRepairError(0, null) });
       }

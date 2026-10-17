@@ -84,7 +84,7 @@ function AiControlContent() {
   const [apiKey, setApiKey] = useState("");
   const [devPrompt, setDevPrompt] = useState("");
   const [artifact, setArtifact] = useState<string | null>(null);
-  const [repair, setRepair] = useState<RepairState>({
+  const [repair, setRepair] = useState<RepairState>(() => ({
     phase: "idle",
     actions: [],
     prompt: "",
@@ -92,9 +92,10 @@ function AiControlContent() {
     candidates: [],
     result: null,
     error: null,
+    history: [],
     busy: false,
     approved: false,
-  });
+  }));
   const controllerRef = useRef<RepairController | null>(null);
   const getController = (): RepairController => {
     if (!controllerRef.current) {
@@ -132,6 +133,7 @@ function AiControlContent() {
   useEffect(() => {
     load();
     getController().loadActions();
+    getController().loadHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -406,6 +408,24 @@ function AiControlContent() {
                       </p>
                       <p className="mt-1">{isRTL ? repair.result.verification.detailAr : repair.result.verification.detailEn}</p>
                       <p className="mt-1 font-mono text-[10px] text-slate-500">{isRTL ? "المرجع" : "Ref"}: {repair.result.reference}</p>
+                    </div>
+                  )}
+
+                  {repair.history.length > 0 && (
+                    <div className="mt-3 border-t border-slate-100 pt-3">
+                      <p className="mb-2 text-[11px] font-bold text-slate-500">{isRTL ? "سجل الإصلاحات" : "Repair history"}</p>
+                      <div className="space-y-1">
+                        {repair.history.slice(0, 8).map((h, i) => (
+                          <div key={i} className="flex flex-wrap items-center gap-2 text-[11px]">
+                            <Badge className={h.status === "succeeded" ? "bg-emerald-100 text-emerald-700" : h.status === "unresolved" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}>
+                              {h.status}
+                            </Badge>
+                            <span className="font-mono text-slate-500">{h.action}</span>
+                            {h.verificationOk === false && <span className="text-rose-600">{isRTL ? "فشل التحقق" : "verify failed"}</span>}
+                            <span className="text-slate-400">{h.reference ?? ""}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </section>

@@ -931,3 +931,40 @@ that applies the filters it is given and returns only affected rows.
   `profiles`/`tenants`/`users`; that is pre-existing and expected (Supabase always
   has them), not a live risk.
 
+
+## Execution 23 invariants (persistent AI repair, approvals & verified outcomes)
+
+- **Durable idempotency is the `ai_repair_executions` ledger** (migration 006).
+  `executeRepair` claims the key *before* any side effect with an atomic insert,
+  so concurrent requests, restarts and replayed approvals resolve to one row.
+  The claim is `UNIQUE (tenant_id, idempotency_key)`; because a NULL tenant makes
+  a plain unique index treat rows as distinct, a second **partial** unique index
+  covers `where tenant_id is null`. Both must exist or a single-tenant install
+  loses cross-request safety.
+- **Store abstraction:** `src/lib/ai/repair-store.ts` (`RepairStore`), with a
+  memory store, `createSupabaseRepairStore(client)` and
+  `createResilientRepairStore(primary, fallback)`. The route builds the resilient
+  store; before 006 is applied the durable store throws and the wrapper degrades
+  to memory - the same `hasColumn`-style pattern used elsewhere. A degraded store
+  is per-process and does not survive a restart; it is logged, never hidden.
+- **The claim is never released blindly.** If recording the outcome fails after
+  the side effect, the row stays `claimed` and a retry returns `in_progress`
+  instead of re-running. `unresolved` means "executed but not verified - review".
+- **Key reuse is a conflict, not a duplicate.** The same key with a different
+  plan fingerprint returns `conflict` / `key_reused`. A stored plan may only be
+  reported as an already-done `duplicate` when its fingerprint matches.
+- **Evidence sufficiency.** `classifyRepairRequest` sets `requiresVerification`
+  when there is no module hint, no symptom and no named report; `proposeRepair`
+  then returns status `requires_verification` with no preview rather than running
+  a diagnostic that would have to guess a source.
+- **Isolation of the ledger.** RLS read via `can_read_tenant`, insert/update via
+  `can_write_tenant`, a RESTRICTIVE `for delete using (false)`, and `revoke all
+  from anon`. Deleting audit history is never permitted.
+- **Proven by execution:** migration 006 applies twice cleanly and its unique
+  claim (tenant + NULL-tenant), RLS read isolation and anon denial were verified
+  on an isolated PostgreSQL 17 (`docker`). Tests:
+  `tests/exec23-persistent-ai-repair.test.ts`, `tests/exec23-migration.test.ts`.
+- **Local build needs env.** `npm run build` requires the Supabase env vars;
+  without `.env.local` it fails at page-data collection (`supabaseUrl is
+  required`). This is environmental, not a code regression.
+

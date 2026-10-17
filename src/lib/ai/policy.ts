@@ -261,6 +261,12 @@ export interface RepairClassification {
   deterministicSource: string;
   /** Whether a *real* fix would require a write (which always needs approval). */
   requiresWrite: boolean;
+  /**
+   * True when the request does not carry enough evidence to select a
+   * deterministic source — the workflow then returns a "requires verification"
+   * diagnosis instead of inventing one. Absent means sufficient evidence.
+   */
+  requiresVerification?: boolean;
   /** A short, human-readable next step. Bilingual. */
   suggestedAction: { ar: string; en: string };
   reasons: string[];
@@ -325,6 +331,12 @@ const MODULE_HINTS: Array<{ module: RepairClassification["module"]; re: RegExp; 
   },
 ];
 
+/**
+ * Report/area names that make a request specific enough to run a deterministic
+ * check even when no module or symptom keyword matches.
+ */
+const NAMED_REPORT_RE = /تقرير|report|مبيعات|sales|مشتريات|purchase|مصروف|expense|فاتورة|invoice|دفتر|ledger|قيد|journal|ميزان|trial|رصيد|receivable|payable|دائن|مدين|عميل|customer|مورد|supplier|كشف|statement|ملخص|summary|لوحة|dashboard/i;
+
 const SYMPTOM_HINTS: Array<{ symptom: RepairClassification["symptom"]; re: RegExp }> = [
   { symptom: "mismatch", re: /لا\s*يطابق|لا\s*يتطابق|مختلف|اختلاف|يتعارض|تعارض|فرق|difference|mismatch|does\s*not\s*match|disagree|not\s*equal/i },
   { symptom: "format", re: /تنسيق|عمود|ترتيب|format|column|layout|reorder|shape|display/i },
@@ -387,5 +399,12 @@ export function classifyRepairRequest(prompt: string): RepairClassification {
     reasons.push("may-require-write");
   }
 
-  return { module: area, symptom, errorType, deterministicSource, requiresWrite, suggestedAction, reasons };
+  // Evidence sufficiency: with no module hint, no symptom and no named report,
+  // there is nothing deterministic to check — return "requires verification"
+  // rather than run a diagnostic that would have to guess a source.
+  const namedReport = NAMED_REPORT_RE.test(prompt);
+  const requiresVerification = area === "general" && symptom === "unknown" && !namedReport;
+  if (requiresVerification) reasons.push("insufficient-evidence");
+
+  return { module: area, symptom, errorType, deterministicSource, requiresWrite, requiresVerification, suggestedAction, reasons };
 }

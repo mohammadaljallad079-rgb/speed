@@ -257,7 +257,16 @@ function JournalListView({ refData, onNew, onEdit, onView, refreshKey }: {
   const [search, setSearch] = useState("")
   const [dateFrom, setDateFrom] = useState("")
   const [dateTo, setDateTo] = useState("")
+  const [dateFromDraft, setDateFromDraft] = useState("")
+  const [dateToDraft, setDateToDraft] = useState("")
   const [statusFilter, setStatusFilter] = useState("")
+
+  // Apply the date range only on an explicit GO press, so editing a date does
+  // not re-filter the list before the user confirms it.
+  function applyDates() {
+    setDateFrom(dateFromDraft)
+    setDateTo(dateToDraft)
+  }
 
   useEffect(() => { fetchEntries() }, [refreshKey])
 
@@ -319,13 +328,16 @@ function JournalListView({ refData, onNew, onEdit, onView, refreshKey }: {
         </div>
 
         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-4">
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 mb-4">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search..." className="pl-10 h-10 rounded-xl" />
             </div>
-            <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-10 rounded-xl" />
-            <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-10 rounded-xl" />
+            <Input type="date" value={dateFromDraft} onChange={e => setDateFromDraft(e.target.value)} className="h-10 rounded-xl" />
+            <Input type="date" value={dateToDraft} onChange={e => setDateToDraft(e.target.value)} className="h-10 rounded-xl" />
+            <Button onClick={applyDates} className="h-10 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white">
+              GO
+            </Button>
             <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="h-10 rounded-xl border border-slate-200 dark:border-slate-600 dark:bg-slate-700 px-3 text-sm">
               <option value="">All Status</option>
               <option value="balanced">Balanced</option>

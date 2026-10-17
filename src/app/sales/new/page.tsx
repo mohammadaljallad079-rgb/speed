@@ -88,8 +88,13 @@ function NewSaleContent() {
     if (!form.payment_term) { alert(isRTL ? "اختر شروط الدفع" : "Select payment terms"); return }
     setLoading(true)
     try {
+      // The number is allocated here, at submit time, through the row-locked RPC
+      // (falling back to a collision-safe local value). Never insert an invoice
+      // with an empty number: the mount-time RPC may not have resolved, or may
+      // have failed.
+      const invoiceNumber = form.invoice_number || (await nextDocumentNumber(supabase, "sale_invoice", "SI"))
       const { data: newInvoice, error } = await supabase.from("invoices").insert([{
-        invoice_number: form.invoice_number,
+        invoice_number: invoiceNumber,
         invoice_date: form.invoice_date,
         due_date: form.due_date,
         status: computedStatus,
@@ -130,8 +135,8 @@ function NewSaleContent() {
         const { data: newJournal } = await supabase.from("journal_entries").insert({
           journal_number: jvNumberData,
           entry_date: form.invoice_date,
-          reference_number: form.invoice_number,
-          description: isRTL ? `فاتورة مبيعات - ${form.invoice_number}` : `Sale invoice - ${form.invoice_number}`,
+          reference_number: invoiceNumber,
+          description: isRTL ? `فاتورة مبيعات - ${invoiceNumber}` : `Sale invoice - ${invoiceNumber}`,
           total_debit: total,
           total_credit: total,
           is_balanced: true,

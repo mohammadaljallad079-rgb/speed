@@ -2,6 +2,8 @@
 import { Suspense, useState, useEffect } from 'react'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
+import { summarizeRevenue } from '@/lib/reporting/revenue'
+import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import {
@@ -14,6 +16,7 @@ import Link from 'next/link'
 function DashboardContent() {
   const { isRTL } = useLanguage()
   const [stats, setStats] = useState({ revenue: 0, bookings: 0, rented: 0, available: 0 })
+  const [revenueInfo, setRevenueInfo] = useState({ gross: 0, vat: 0, returns: 0, netAfterReturns: 0 })
   const [cars, setCars] = useState<any[]>([])
   const [earningsData, setEarningsData] = useState<{month:string,value:number}[]>([])
   const [rentStatus, setRentStatus] = useState([58, 24, 18])
@@ -27,24 +30,35 @@ function DashboardContent() {
 
   useEffect(() => {
     async function load() {
-      const [carsRes, invoicesRes, paymentsRes, contractsRes, allCarsRes, recentContracts] = await Promise.all([
+      const [carsRes, invoicesRes, paymentsRes, contractsRes, allCarsRes, recentContracts, returnsRes] = await Promise.all([
         supabase.from("cars").select("*").order("created_at", { ascending: false }).limit(5),
         supabase.from("invoices").select("amount,discount_amount,vat_amount,total_amount,status,invoice_date"),
         supabase.from("payments").select("amount,payment_date,status"),
         supabase.from("rental_contracts").select("status,end_date"),
         supabase.from("cars").select("status,category,plate_number,make,model"),
         supabase.from("rental_contracts").select("*,customers(full_name),cars(make,model,plate_number)").order("created_at",{ascending:false}).limit(5),
+        supabase.from("sales_returns").select("amount,status"),
       ])
       const all = allCarsRes.data || []
       // Revenue is recognised from issued sales/rental invoices (excluding VAT and
       // cancelled documents), never from customer receipts - a receipt only
-      // settles a receivable and must not be counted as new revenue.
-      const invoices = (invoicesRes.data || []).filter((i:any) => i.status !== "cancelled")
+      // settles a receivable and must not be counted as new revenue. Sales returns
+      // reduce revenue; they are surfaced separately so the figure reconciles with
+      // the sales documents the user sees.
+      const invoices = invoicesRes.data || []
       const payments = paymentsRes.data || []
-      const invoiceRevenue = (i:any) => Number(i.total_amount || 0) - Number(i.vat_amount || 0)
+      const returns = returnsRes.data || []
+      const revenueSummary = summarizeRevenue(invoices, returns)
+      const invoiceRevenue = (i:any) => Number(i.total_amount || i.amount || 0) - Number(i.vat_amount || 0)
       const contracts = contractsRes.data || []
+      setRevenueInfo({
+        gross: revenueSummary.gross,
+        vat: revenueSummary.vat,
+        returns: revenueSummary.returns,
+        netAfterReturns: revenueSummary.netAfterReturns,
+      })
       setStats({
-        revenue: invoices.reduce((s:number,i:any) => s + invoiceRevenue(i), 0),
+        revenue: revenueSummary.net,
         bookings: contracts.length,
         rented: all.filter((c:any) => c.status==="rented").length,
         available: all.filter((c:any) => c.status==="available").length,
@@ -53,7 +67,7 @@ function DashboardContent() {
       const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug"]
       setEarningsData(months.map((m,i) => ({
         month: m,
-        value: invoices.filter((i:any) => i.invoice_date && new Date(i.invoice_date).getMonth()===i)
+        value: invoices.filter((i:any) => i.status !== "cancelled" && i.invoice_date && new Date(i.invoice_date).getMonth()===i)
           .reduce((s:number,i:any) => s + invoiceRevenue(i), 0)
       })))
       const tot = contracts.length || 1
@@ -164,6 +178,17 @@ function DashboardContent() {
                 <p className="text-[11px] text-slate-400 mt-1">{isRTL?"من الاسبوع الماضي":"from last week"}</p>
               </Link>
             ))}
+          </div>
+
+          {/* Revenue reconciliation: recognised revenue reconciles with the sales
+              documents. Gross includes VAT; net excludes VAT; returns are contra. */}
+          <div className="bg-white rounded-2xl p-4 shadow-sm flex flex-wrap items-center gap-x-6 gap-y-2 text-xs">
+            <span className="font-bold text-slate-700">{isRTL?"مطابقة الإيرادات":"Revenue reconciliation"}</span>
+            <span className="text-slate-500">{isRTL?"إجمالي الفواتير (مع الضريبة)":"Invoices gross (incl. VAT)"}: <span className="font-mono font-semibold text-slate-700">{formatCurrency(revenueInfo.gross)}</span></span>
+            <span className="text-slate-500">{isRTL?"ضريبة القيمة المضافة":"VAT"}: <span className="font-mono font-semibold text-slate-700">{formatCurrency(revenueInfo.vat)}</span></span>
+            <span className="text-slate-500">{isRTL?"الإيراد الصافي":"Net revenue"}: <span className="font-mono font-semibold text-emerald-600">{formatCurrency(stats.revenue)}</span></span>
+            <span className="text-slate-500">{isRTL?"المرتجعات":"Returns"}: <span className="font-mono font-semibold text-red-500">{formatCurrency(revenueInfo.returns)}</span></span>
+            <span className="text-slate-500">{isRTL?"الصافي بعد المرتجعات":"Net after returns"}: <span className="font-mono font-semibold text-slate-800">{formatCurrency(revenueInfo.netAfterReturns)}</span></span>
           </div>
 
           {/* ═══════════════════════════════════════════════════════════════

@@ -43,7 +43,16 @@ function AttendanceContent() {
   const [selectedEmployee, setSelectedEmployee] = useState('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  const [dateFromDraft, setDateFromDraft] = useState('')
+  const [dateToDraft, setDateToDraft] = useState('')
   const [search, setSearch] = useState('')
+
+  // Apply the date range only on an explicit GO press, so editing a date does
+  // not re-filter the records before the user confirms it.
+  function applyDates() {
+    setDateFrom(dateFromDraft)
+    setDateTo(dateToDraft)
+  }
 
   // Check In/Out
   const [checkInEmp, setCheckInEmp] = useState('')
@@ -281,12 +290,15 @@ function AttendanceContent() {
               </Select>
               <div className="flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                <Input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="h-9 rounded-lg text-sm" placeholder={isRTL ? 'من' : 'From'} />
+                <Input type="date" value={dateFromDraft} onChange={e => setDateFromDraft(e.target.value)} className="h-9 rounded-lg text-sm" placeholder={isRTL ? 'من' : 'From'} />
               </div>
               <div className="flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                <Input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="h-9 rounded-lg text-sm" placeholder={isRTL ? 'إلى' : 'To'} />
+                <Input type="date" value={dateToDraft} onChange={e => setDateToDraft(e.target.value)} className="h-9 rounded-lg text-sm" placeholder={isRTL ? 'إلى' : 'To'} />
               </div>
+              <Button size="sm" onClick={applyDates} className="h-9 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white">
+                {isRTL ? 'عرض' : 'GO'}
+              </Button>
             </div>
           </CardContent>
         </Card>

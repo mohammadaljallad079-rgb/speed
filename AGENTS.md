@@ -536,6 +536,39 @@ that applies the filters it is given and returns only affected rows.
   `createBrowserClient` (cookie-backed, so middleware/route handlers see the
   session). `.bak`/`.save` files are legacy and not built.
 
+## Execution 18 invariants (VAT, sales numbering, date filters, dashboard revenue)
+
+- **VAT report format.** The screen (`src/app/reports/vat/page.tsx`) shows output
+  VAT, input VAT, net, a **monthly** breakdown, and a **source breakdown** that
+  separates the taxable base from the VAT for each source. The tax base is derived
+  from the real columns, which are NOT uniform: `invoices.total_amount` and
+  `purchase_invoices.total_amount` are VAT-inclusive (taxable = total - vat), while
+  `expenses.amount` is stored pre-VAT (taxable = amount). `summarizeVatSources`
+  (`src/lib/reporting/vat.ts`, pure) owns those rules; the page must not re-derive
+  them. Cancelled documents are excluded; no tax treatment is invented.
+- **Sales serial numbers.** `sales/new` allocates its number at submit time
+  (`form.invoice_number || nextDocumentNumber(...)`) and uses that same value for
+  the invoice row and the `sale_invoice` journal reference, so a failed mount RPC
+  can never insert an empty number or a mismatched reference. `nextDocumentNumber`
+  falls back to a **collision-safe** value (monotonic within the process) when the
+  `generate_document_number` RPC is unavailable.
+- **Numbering sequences live only in migration 003 / the activation package**, which
+  seed `receipt` and `sales_return`. `generate_document_number` is a live-only RPC
+  (not in the repo); the `sale_invoice` sequence row's existence could not be
+  inspected from this environment (no DB access). Any operation whose `doc_type` is
+  not seeded falls back to the local prefix - verify the sequence rows before
+  treating a document class as fixed.
+- **Date filters.** Every date filter applies on an explicit GO/Search press; a
+  `type="date"` input must bind to a `*Draft` state, never directly to the applied
+  filter. Pages fixed in Exec 18: `accounting/journal-entries`, `hr/attendance`,
+  `sales/returns`, `accounting/expenses`, `expenses`. Enforced by
+  `tests/exec18-vat-numbering-dates-revenue.test.ts`.
+- **Dashboard revenue.** `src/lib/reporting/revenue.ts` (`summarizeRevenue`,
+  `invoiceNetRevenue`) is the single revenue definition: recognised at issue, net
+  of VAT (`gross - vat`), never from receipts; sales returns are contra-revenue.
+  The dashboard shows gross / VAT / net / returns / net-after-returns so the figure
+  reconciles with the sales documents the user sees.
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

@@ -175,3 +175,124 @@ export function vatReportRows(result: VatResult): ReportRow[] {
     vat_amount: line.vatAmount,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Source-level aggregation for the VAT report screen.
+//
+// The screen reads three real tables and must show, per source, the taxable
+// base and the VAT separately (never conflate the invoice total with the VAT).
+// The stored amounts are NOT uniform, so the taxable base is derived from the
+// real columns rather than assumed:
+//
+//   invoices.total_amount / purchase_invoices.total_amount  -> VAT-inclusive
+//       taxable = total_amount - vat_amount
+//   expenses.amount                                         -> VAT-exclusive
+//       taxable = amount
+//
+// Cancelled documents are excluded. No tax treatment is invented: the recorded
+// `vat_amount` is reported as-is (the schema stores no recoverability flag).
+// ---------------------------------------------------------------------------
+
+export interface VatSourceRow {
+  vat_amount?: number | string | null;
+  total_amount?: number | string | null;
+  amount?: number | string | null;
+  status?: string | null;
+  invoice_date?: string | null;
+  bill_date?: string | null;
+  expense_date?: string | null;
+}
+
+export interface VatSourceBreakdown {
+  sales: { taxable: number; vat: number };
+  purchases: { taxable: number; vat: number };
+  expenses: { taxable: number; vat: number };
+}
+
+export interface VatMonthRow {
+  month: string;
+  outputVat: number;
+  inputVat: number;
+  net: number;
+}
+
+export interface VatSummary {
+  outputVat: number;
+  inputVat: number;
+  netVat: number;
+  totalTaxableSales: number;
+  totalTaxablePurchases: number;
+  breakdown: VatSourceBreakdown;
+  months: VatMonthRow[];
+}
+
+const n = (v: unknown): number => {
+  const x = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+  return Number.isFinite(x) ? x : 0;
+};
+const monthKey = (d?: string | null): string => (d && d.length >= 7 ? d.slice(0, 7) : "unknown");
+
+/** Aggregates the three VAT sources into totals, a source breakdown and months. */
+export function summarizeVatSources(input: {
+  invoices: VatSourceRow[];
+  purchases: VatSourceRow[];
+  expenses: VatSourceRow[];
+}): VatSummary {
+  const breakdown: VatSourceBreakdown = {
+    sales: { taxable: 0, vat: 0 },
+    purchases: { taxable: 0, vat: 0 },
+    expenses: { taxable: 0, vat: 0 },
+  };
+  const months = new Map<string, { output: number; input: number }>();
+  const bucket = (key: string) => {
+    if (!months.has(key)) months.set(key, { output: 0, input: 0 });
+    return months.get(key)!;
+  };
+
+  for (const r of input.invoices) {
+    if (r.status === "cancelled") continue;
+    const vat = n(r.vat_amount);
+    const taxable = round3(n(r.total_amount) - vat);
+    breakdown.sales.taxable = round3(breakdown.sales.taxable + taxable);
+    breakdown.sales.vat = round3(breakdown.sales.vat + vat);
+    bucket(monthKey(r.invoice_date)).output = round3(bucket(monthKey(r.invoice_date)).output + vat);
+  }
+  for (const r of input.purchases) {
+    if (r.status === "cancelled") continue;
+    const vat = n(r.vat_amount);
+    const taxable = round3(n(r.total_amount) - vat);
+    breakdown.purchases.taxable = round3(breakdown.purchases.taxable + taxable);
+    breakdown.purchases.vat = round3(breakdown.purchases.vat + vat);
+    bucket(monthKey(r.bill_date)).input = round3(bucket(monthKey(r.bill_date)).input + vat);
+  }
+  for (const r of input.expenses) {
+    const vat = n(r.vat_amount);
+    const taxable = round3(n(r.amount)); // expenses.amount is stored pre-VAT
+    breakdown.expenses.taxable = round3(breakdown.expenses.taxable + taxable);
+    breakdown.expenses.vat = round3(breakdown.expenses.vat + vat);
+    bucket(monthKey(r.expense_date)).input = round3(bucket(monthKey(r.expense_date)).input + vat);
+  }
+
+  const outputVat = breakdown.sales.vat;
+  const inputVat = round3(breakdown.purchases.vat + breakdown.expenses.vat);
+  const totalTaxableSales = breakdown.sales.taxable;
+  const totalTaxablePurchases = round3(breakdown.purchases.taxable + breakdown.expenses.taxable);
+
+  const monthRows: VatMonthRow[] = Array.from(months.keys())
+    .filter((k) => k !== "unknown")
+    .sort()
+    .map((k) => {
+      const m = months.get(k)!;
+      return { month: k, outputVat: m.output, inputVat: m.input, net: round3(m.output - m.input) };
+    });
+
+  return {
+    outputVat,
+    inputVat,
+    netVat: round3(outputVat - inputVat),
+    totalTaxableSales,
+    totalTaxablePurchases,
+    breakdown,
+    months: monthRows,
+  };
+}

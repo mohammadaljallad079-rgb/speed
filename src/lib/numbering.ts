@@ -19,6 +19,20 @@ type RpcClient = {
   ) => PromiseLike<{ data: unknown; error: unknown }>;
 };
 
+/**
+ * Monotonic guard for the fallback path. Two calls inside the same millisecond
+ * would otherwise produce the identical `Date.now()` suffix and collide; the
+ * counter forces the second value strictly greater than the last one issued.
+ */
+let lastFallback = 0;
+
+function fallbackNumber(prefix: string): string {
+  let n = Date.now() % 100_000_000;
+  if (n <= lastFallback) n = lastFallback + 1;
+  lastFallback = n;
+  return `${prefix}-${String(n).padStart(8, "0")}`;
+}
+
 export async function nextDocumentNumber(
   client: RpcClient,
   docType: string,
@@ -28,5 +42,5 @@ export async function nextDocumentNumber(
     p_doc_type: docType,
   });
   if (!error && typeof data === "string" && data.length > 0) return data;
-  return `${fallbackPrefix}-${Date.now().toString().slice(-8)}`;
+  return fallbackNumber(fallbackPrefix);
 }

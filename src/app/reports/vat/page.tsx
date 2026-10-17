@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { summarizeVatSources, type VatSourceBreakdown } from '@/lib/reporting/vat'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -30,6 +31,11 @@ function VatReportContent() {
   const [totalOutput, setTotalOutput] = useState(0)
   const [totalInput, setTotalInput] = useState(0)
   const [monthRows, setMonthRows] = useState<MonthRow[]>([])
+  const [breakdown, setBreakdown] = useState<VatSourceBreakdown>({
+    sales: { taxable: 0, vat: 0 },
+    purchases: { taxable: 0, vat: 0 },
+    expenses: { taxable: 0, vat: 0 },
+  })
 
   useEffect(() => {
     fetchData()
@@ -41,30 +47,25 @@ function VatReportContent() {
     setDateTo(dateToDraft)
   }
 
-  function monthKey(dateStr: string) {
-    if (!dateStr) return 'unknown'
-    return dateStr.slice(0, 7) // YYYY-MM
-  }
-
   async function fetchData() {
     setLoading(true)
     try {
       // Output VAT: sales invoices (rental/sale/service), excluding cancelled
-      let invQuery = supabase.from('invoices').select('vat_amount, invoice_date, status')
+      let invQuery = supabase.from('invoices').select('total_amount, vat_amount, invoice_date, status')
       if (dateFrom) invQuery = invQuery.gte('invoice_date', dateFrom)
       if (dateTo) invQuery = invQuery.lte('invoice_date', dateTo)
       const { data: invoices, error: invError } = await invQuery
       if (invError) throw invError
 
-      // Input VAT: expenses
-      let expQuery = supabase.from('expenses').select('vat_amount, expense_date')
+      // Input VAT: expenses (amount is stored pre-VAT)
+      let expQuery = supabase.from('expenses').select('amount, vat_amount, expense_date')
       if (dateFrom) expQuery = expQuery.gte('expense_date', dateFrom)
       if (dateTo) expQuery = expQuery.lte('expense_date', dateTo)
       const { data: expenses, error: expError } = await expQuery
       if (expError) throw expError
 
       // Input VAT: purchase invoices (bills), excluding cancelled if present
-      let purQuery = supabase.from('purchase_invoices').select('vat_amount, bill_date, status')
+      let purQuery = supabase.from('purchase_invoices').select('total_amount, vat_amount, bill_date, status')
       if (dateFrom) purQuery = purQuery.gte('bill_date', dateFrom)
       if (dateTo) purQuery = purQuery.lte('bill_date', dateTo)
       const { data: purchases, error: purError } = await purQuery
@@ -73,42 +74,23 @@ function VatReportContent() {
       const validInvoices = (invoices || []).filter((i: any) => i.status !== 'cancelled')
       const validPurchases = (purchases || []).filter((p: any) => p.status !== 'cancelled')
 
-      const outputTotal = validInvoices.reduce((s: number, i: any) => s + (parseFloat(i.vat_amount) || 0), 0)
-      const inputFromExpenses = (expenses || []).reduce((s: number, e: any) => s + (parseFloat(e.vat_amount) || 0), 0)
-      const inputFromPurchases = validPurchases.reduce((s: number, p: any) => s + (parseFloat(p.vat_amount) || 0), 0)
-      const inputTotal = inputFromExpenses + inputFromPurchases
-
-      setTotalOutput(outputTotal)
-      setTotalInput(inputTotal)
-
-      // Monthly breakdown
-      const monthMap: Record<string, { output: number; input: number }> = {}
-      validInvoices.forEach((i: any) => {
-        const k = monthKey(i.invoice_date)
-        if (!monthMap[k]) monthMap[k] = { output: 0, input: 0 }
-        monthMap[k].output += parseFloat(i.vat_amount) || 0
-      })
-      ;(expenses || []).forEach((e: any) => {
-        const k = monthKey(e.expense_date)
-        if (!monthMap[k]) monthMap[k] = { output: 0, input: 0 }
-        monthMap[k].input += parseFloat(e.vat_amount) || 0
-      })
-      validPurchases.forEach((p: any) => {
-        const k = monthKey(p.bill_date)
-        if (!monthMap[k]) monthMap[k] = { output: 0, input: 0 }
-        monthMap[k].input += parseFloat(p.vat_amount) || 0
+      // One pure aggregator owns the tax base rules (invoice/purchase totals are
+      // VAT-inclusive; expense amounts are pre-VAT). Cancelled docs are excluded.
+      const summary = summarizeVatSources({
+        invoices: validInvoices,
+        purchases: validPurchases,
+        expenses: expenses || [],
       })
 
-      const rows: MonthRow[] = Object.keys(monthMap)
-        .filter(k => k !== 'unknown')
-        .sort()
-        .map(k => ({
-          month: k,
-          outputVat: monthMap[k].output,
-          inputVat: monthMap[k].input,
-          net: monthMap[k].output - monthMap[k].input
-        }))
-      setMonthRows(rows)
+      setTotalOutput(summary.outputVat)
+      setTotalInput(summary.inputVat)
+      setBreakdown(summary.breakdown)
+      setMonthRows(summary.months.map(m => ({
+        month: m.month,
+        outputVat: m.outputVat,
+        inputVat: m.inputVat,
+        net: m.net,
+      })))
     } catch (error) {
       console.error('VAT Report Error:', error)
     }
@@ -319,6 +301,44 @@ function VatReportContent() {
               </CardContent>
             </Card>
           </div>
+
+          <Card className="rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
+            <CardHeader className="bg-slate-800 py-3">
+              <CardTitle className="text-sm font-bold text-white uppercase tracking-wider">
+                {isRTL ? 'تفصيل المصادر (الوعاء الضريبي والضريبة)' : 'Source Breakdown (Taxable Base & VAT)'}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 dark:bg-slate-800 text-slate-500 text-xs uppercase">
+                      <th className={`py-2 px-4 ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'المصدر' : 'Source'}</th>
+                      <th className="py-2 px-4 text-right">{isRTL ? 'الوعاء الضريبي' : 'Taxable Base'}</th>
+                      <th className="py-2 px-4 text-right">{isRTL ? 'الضريبة' : 'VAT'}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                    <tr>
+                      <td className={`py-2 px-4 font-medium ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'فواتير المبيعات (Output)' : 'Sales invoices (output)'}</td>
+                      <td className="py-2 px-4 text-right font-mono">{formatCurrency(breakdown.sales.taxable)}</td>
+                      <td className="py-2 px-4 text-right font-mono text-red-600">{formatCurrency(breakdown.sales.vat)}</td>
+                    </tr>
+                    <tr>
+                      <td className={`py-2 px-4 font-medium ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'فواتير المشتريات (Input)' : 'Purchase invoices (input)'}</td>
+                      <td className="py-2 px-4 text-right font-mono">{formatCurrency(breakdown.purchases.taxable)}</td>
+                      <td className="py-2 px-4 text-right font-mono text-emerald-600">{formatCurrency(breakdown.purchases.vat)}</td>
+                    </tr>
+                    <tr>
+                      <td className={`py-2 px-4 font-medium ${isRTL ? 'text-right' : 'text-left'}`}>{isRTL ? 'المصاريف (Input)' : 'Expenses (input)'}</td>
+                      <td className="py-2 px-4 text-right font-mono">{formatCurrency(breakdown.expenses.taxable)}</td>
+                      <td className="py-2 px-4 text-right font-mono text-emerald-600">{formatCurrency(breakdown.expenses.vat)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
 
           <Card className="rounded-xl border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden">
             <CardHeader className="bg-slate-900 py-3">

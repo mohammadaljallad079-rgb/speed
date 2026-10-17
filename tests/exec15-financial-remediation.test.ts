@@ -69,7 +69,11 @@ describe("Item 8 - dashboard revenue comes from invoices, not receipts", () => {
   test("revenue is derived from invoices net of VAT", () => {
     assert.match(src, /invoiceRevenue/, "expected an invoice-based revenue helper");
     assert.match(src, /total_amount[^)]*vat_amount|vat_amount[^)]*total_amount/, "revenue must exclude VAT");
-    assert.match(src, /revenue:\s*invoices\.reduce/, "revenue must reduce over invoices");
+    assert.match(
+      src,
+      /revenue:\s*(invoices\.reduce|revenueSummary\.net)/,
+      "revenue must come from invoices (inline reduce or the shared reconciler)",
+    );
   });
 
   test("receipts are not summed into revenue", () => {

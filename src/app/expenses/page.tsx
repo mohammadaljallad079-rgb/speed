@@ -68,7 +68,16 @@ function ExpensesPageContent() {
   const [search, setSearch] = useState("")
   const [filterDateFrom, setFilterDateFrom] = useState("")
   const [filterDateTo, setFilterDateTo] = useState("")
+  const [filterDateFromDraft, setFilterDateFromDraft] = useState("")
+  const [filterDateToDraft, setFilterDateToDraft] = useState("")
   const [filterSupplier, setFilterSupplier] = useState("all")
+
+  // Apply the date range only on an explicit GO press, so editing a date does
+  // not re-filter the list before the user confirms it.
+  function applyDates() {
+    setFilterDateFrom(filterDateFromDraft)
+    setFilterDateTo(filterDateToDraft)
+  }
 
   const [lines, setLines] = useState<ExpenseLine[]>([
     {
@@ -347,14 +356,19 @@ function ExpensesPageContent() {
 
         {showFilters && (
           <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-200 dark:border-slate-700">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
               <div>
                 <label className="text-xs text-slate-500 mb-1 block">From Date</label>
-                <Input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} className="h-9 rounded-lg" />
+                <Input type="date" value={filterDateFromDraft} onChange={(e) => setFilterDateFromDraft(e.target.value)} className="h-9 rounded-lg" />
               </div>
               <div>
                 <label className="text-xs text-slate-500 mb-1 block">To Date</label>
-                <Input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} className="h-9 rounded-lg" />
+                <Input type="date" value={filterDateToDraft} onChange={(e) => setFilterDateToDraft(e.target.value)} className="h-9 rounded-lg" />
+              </div>
+              <div className="flex items-end">
+                <Button onClick={applyDates} className="h-9 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white w-full">
+                  GO
+                </Button>
               </div>
               <div>
                 <label className="text-xs text-slate-500 mb-1 block">Supplier</label>

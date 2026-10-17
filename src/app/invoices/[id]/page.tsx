@@ -46,6 +46,7 @@ function PageContent() {
   const [rentals, setRentals] = useState<RentalContract[]>([])
   const [filteredRentals, setFilteredRentals] = useState<RentalContract[]>([])
   const [isPosted, setIsPosted] = useState(false)
+  const [hasDependents, setHasDependents] = useState(false)
   const [form, setForm] = useState({
     invoice_number: '',
     customer_id: '',
@@ -87,6 +88,7 @@ function PageContent() {
     const { data } = await supabase.from('invoices').select('*, rental_contracts(car:cars(make,model,plate_number,license_plate))').eq('id', id).single()
     if (data) {
       setIsPosted(await isSaleInvoicePosted(supabase as any, data.invoice_number || ''))
+      setHasDependents(await hasInvoiceDependents(supabase as any, data.id))
       setForm(prev => ({
         ...prev,
         invoice_number: data.invoice_number || '',
@@ -133,6 +135,13 @@ function PageContent() {
   async function handleSubmit() {
     if (isPosted) {
       alert(isRTL ? 'لا يمكن تعديل فاتورة مرحّلة محاسبيًا. استخدم إشعار دائن/مرتجع لعكسها ثم أنشئ فاتورة جديدة.' : 'This invoice is posted to the ledger and cannot be edited. Reverse it with a credit note/return, then create a new invoice.')
+      return
+    }
+    // An invoice that already has receipts or returns must not be edited: the
+    // recorded amounts would stop matching the payments/returns that reference
+    // it. Reverse/cancel it instead (Exec 33, Item 4/11).
+    if (hasDependents) {
+      alert(isRTL ? 'لا يمكن تعديل فاتورة لها دفعات أو مرتجعات مرتبطة. استخدم العكس/الإلغاء.' : 'This invoice has payments or returns attached and cannot be edited. Reverse/cancel it instead.')
       return
     }
     if (!form.customer_id) { alert(isRTL ? 'يرجى اختيار العميل' : 'Please select a customer'); return }

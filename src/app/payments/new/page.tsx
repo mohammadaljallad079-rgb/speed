@@ -5,6 +5,8 @@ export const dynamic = "force-dynamic"
 import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { nextDocumentNumber } from '@/lib/numbering'
+import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
@@ -67,9 +69,10 @@ function NewPaymentPageContent() {
   }
 
   async function generateReceiptNumber() {
-    const { count } = await supabase.from('payments').select('*', { count: 'exact', head: true })
-    const num = ((count || 0) + 1).toString().padStart(4, '0')
-    setForm(prev => ({ ...prev, receipt_number: `REC-${num}` }))
+    // Row-locked numbering RPC. The old row-count number (`REC-<count+1>`)
+    // collides whenever two receipts are created before the list refreshes.
+    const number = await nextDocumentNumber(supabase as never, 'receipt', 'REC')
+    setForm(prev => ({ ...prev, receipt_number: number }))
   }
 
   async function fetchCustomers() {
@@ -140,6 +143,31 @@ function NewPaymentPageContent() {
           const newPaid = (invoice.paid_amount || 0) + parseFloat(form.amount)
           const newStatus = newPaid >= invoice.total_amount ? 'paid' : 'pending'
           await supabase.from('invoices').update({ paid_amount: newPaid, status: newStatus }).eq('id', form.invoice_id)
+        }
+      }
+
+      // Post the GL entry. Recording a receipt without a journal would leave the
+      // ledger and the cash/AR balances disagreeing with the payments list
+      // (Exec 33, Item 5/10). A receipt settles the receivable: Dr Cash/Bank,
+      // Cr AR (12001). It must never credit revenue - revenue was recognised
+      // when the invoice was issued.
+      if (form.payment_type === 'receipt') {
+        try {
+          const journalNumber = await nextDocumentNumber(supabase as never, 'journal_entry', 'JV')
+          await postCustomerReceipt(supabase as never, {
+            journalNumber,
+            receiptNumber: form.receipt_number,
+            amount: parseFloat(form.amount),
+            paymentDate: form.payment_date,
+            paymentMethod: form.payment_method,
+            description: isRTL
+              ? 'قبض دفعة - ' + form.receipt_number
+              : 'Payment received - ' + form.receipt_number,
+          })
+        } catch (postErr: any) {
+          // The receipt row is already saved; surface the failure instead of
+          // pretending the ledger is consistent.
+          alert(isRTL ? 'تم حفظ الإيصال لكن فشل الترحيل المحاسبي: ' + (postErr?.message || '') : 'Receipt saved but the GL posting failed: ' + (postErr?.message || ''))
         }
       }
 

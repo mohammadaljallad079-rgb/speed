@@ -120,6 +120,10 @@ export async function POST(request: Request) {
       invoice_type: invoiceType,
       customer_id: customerId,
       rental_contract_id: body.rental_contract_id || null,
+      // `amount` is the pre-VAT subtotal every invoice reader uses (the print
+      // page, the invoice detail form, the Excel export). Without it a
+      // server-issued invoice prints a 0.000 line item.
+      amount,
       total_amount: total,
       discount_amount: discount,
       vat_amount: vat,

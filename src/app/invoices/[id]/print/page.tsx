@@ -78,6 +78,10 @@ export default function InvoicePrintPage() {
   const discountType = invoice.discount_type || 'fixed'
   const vatAmount = invoice.vat_amount || 0
   const total = invoice.total_amount || 0
+  // `amount` is the pre-VAT subtotal. A legacy row may omit it, so fall back to
+  // total - VAT (then + discount, since total is net of the discount) rather
+  // than printing a 0.000 line item.
+  const subtotal = amount > 0 ? amount : Math.max(0, total - vatAmount + discountAmount)
   const taxRate = invoice.tax?.rate || 0
   const taxName = invoice.tax ? (invoice.tax.name_en || invoice.tax.name_ar || 'VAT') : 'VAT'
 
@@ -86,27 +90,27 @@ export default function InvoicePrintPage() {
   if (invoice.rental) {
     const rental = invoice.rental
     const days = invoice.rental_days || 1
-    const dailyRate = days > 0 ? (amount + discountAmount) / days : amount
+    const dailyRate = days > 0 ? (subtotal + discountAmount) / days : subtotal
     
     items.push({
       description: `Car Rental - ${rental.car?.make || ''} ${rental.car?.model || ''} (${rental.car?.plate_number || ''})`,
       quantity: days,
       unit_price: dailyRate,
-      amount: amount + discountAmount
+      amount: subtotal + discountAmount
     })
   } else if (invoice.car_plate) {
     items.push({
       description: `Service - ${invoice.car_info || invoice.car_plate}`,
       quantity: 1,
-      unit_price: amount + discountAmount,
-      amount: amount + discountAmount
+      unit_price: subtotal + discountAmount,
+      amount: subtotal + discountAmount
     })
   } else {
     items.push({
       description: invoice.notes || 'Invoice Amount',
       quantity: 1,
-      unit_price: amount + discountAmount,
-      amount: amount + discountAmount
+      unit_price: subtotal + discountAmount,
+      amount: subtotal + discountAmount
     })
   }
 
@@ -203,13 +207,13 @@ export default function InvoicePrintPage() {
         <div className="bg-slate-50 border border-slate-200 p-4 w-80 rounded-lg">
           <div className="flex justify-between mb-2 text-sm text-slate-700">
             <span className="font-medium">Subtotal</span>
-            <span className="font-bold tabular-nums">{amount.toFixed(3)} BHD</span>
+            <span className="font-bold tabular-nums">{subtotal.toFixed(3)} BHD</span>
           </div>
           
           {discountAmount > 0 && (
             <div className="flex justify-between mb-2 text-sm text-red-600">
               <span className="font-medium">
-                Discount {discountType === 'percent' ? `(${((discountAmount / (amount + discountAmount)) * 100).toFixed(1)}%)` : ''}
+                Discount {discountType === 'percent' ? `(${((discountAmount / (subtotal + discountAmount)) * 100).toFixed(1)}%)` : ''}
               </span>
               <span className="font-bold tabular-nums">− {discountAmount.toFixed(3)} BHD</span>
             </div>

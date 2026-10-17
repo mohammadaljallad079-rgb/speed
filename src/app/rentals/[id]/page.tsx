@@ -63,22 +63,27 @@ function PageContent() {
     if (status === 'active') {
       const { data: existingInvoice } = await supabase.from('invoices').select('id').eq('rental_contract_id', id).maybeSingle()
       if (!existingInvoice) {
-        const { count } = await supabase.from('invoices').select('*', { count: 'exact', head: true })
-        const invoiceNumber = 'INV-' + ((count || 0) + 1).toString().padStart(4, '0')
-        await supabase.from('invoices').insert([{
-          invoice_number: invoiceNumber,
-          customer_id: contract?.customer_id,
-          rental_contract_id: id,
-          invoice_date: new Date().toISOString().split('T')[0],
-          due_date: null,
-          amount: contract?.subtotal ?? contract?.total_amount ?? 0,
-          vat_amount: contract?.vat_amount ?? 0,
-          total_amount: contract?.total_amount ?? 0,
-          paid_amount: 0,
-          status: 'pending',
-          rental_days: contract?.total_days ?? null,
-          car_plate: contract?.car?.plate_number || contract?.car?.license_plate || null,
-        }])
+        // Issue through the single server-side posting path: a row-locked number
+        // from the numbering RPC (not a row count that collides) plus its
+        // balanced journal and tenant from the session (Exec 33, Item 2/10).
+        const res = await fetch('/api/invoices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: contract?.customer_id,
+            rental_contract_id: id,
+            invoice_date: new Date().toISOString().split('T')[0],
+            due_date: contract?.end_date || null,
+            amount: contract?.subtotal ?? contract?.total_amount ?? 0,
+            discount: contract?.discount_amount ?? 0,
+            vat: contract?.vat_amount ?? 0,
+            invoice_type: 'rental',
+            rental_days: contract?.total_days ?? undefined,
+            payment_method: contract?.payment_type || 'cash',
+          }),
+        })
+        const payload = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(payload?.error || 'Failed to create the rental invoice')
       }
     }
     await fetchContract()
@@ -101,10 +106,9 @@ function PageContent() {
       .order('code')
     setAccounts(accData || [])
 
-    const { count } = await supabase.from('payments').select('*', { count: 'exact', head: true })
-    const num = ((count || 0) + 1).toString().padStart(4, '0')
+    const receiptNumber = await nextDocumentNumber(supabase, 'receipt', 'REC')
     setPaymentForm({
-      receipt_number: 'REC-' + num,
+      receipt_number: receiptNumber,
       amount: invData ? (invData.total_amount - (invData.paid_amount || 0)).toFixed(3) : (contract?.total_amount || 0).toFixed(3),
       payment_date: new Date().toISOString().split('T')[0],
       payment_method: 'cash',

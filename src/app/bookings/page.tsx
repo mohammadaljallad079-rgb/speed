@@ -2,8 +2,9 @@
 import { Suspense } from 'react'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 import { formatCurrency } from '@/lib/utils'
-import { Car, CheckCircle, Loader2, Search, Eye, Calendar, X, FileText } from 'lucide-react'
+import { Car, CheckCircle, Loader2, Search, Eye, Calendar, X, FileText, DollarSign } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -67,35 +68,31 @@ function BookingsPageContent() {
       if (invoiceCheckError) throw invoiceCheckError
 
       if (!existingInvoice) {
-        const { count, error: countError } = await supabase
-          .from('invoices')
-          .select('*', { count: 'exact', head: true })
-
-        if (countError) throw countError
-
-        const invoiceNumber = 'INV-' + ((count || 0) + 1).toString().padStart(4, '0')
-
-        const { error: invoiceError } = await supabase
-          .from('invoices')
-          .insert([{
-            invoice_number: invoiceNumber,
+        // Issue through the single server-side posting path so the invoice takes
+        // a row-locked number from the numbering RPC (never a row-count that
+        // collides under concurrency) and gets its balanced journal + tenant
+        // from the session (Exec 33, Item 2/10).
+        const res = await fetch('/api/invoices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
             customer_id: contract.customer_id,
             rental_contract_id: id,
             invoice_date: new Date().toISOString().split('T')[0],
-            due_date: null,
             amount: contract.subtotal ?? contract.total_amount ?? 0,
-            vat_amount: contract.vat_amount ?? 0,
-            total_amount: contract.total_amount ?? 0,
-            paid_amount: 0,
-            status: 'pending',
-            rental_days: contract.total_days ?? null,
-            car_plate: contract.cars?.plate_number || contract.cars?.license_plate || null,
-          }])
-
-        if (invoiceError) throw invoiceError
+            discount: contract.discount_amount ?? 0,
+            vat: contract.vat_amount ?? 0,
+            invoice_type: 'rental',
+            rental_days: contract.total_days ?? undefined,
+            payment_method: contract.payment_type || 'cash',
+          }),
+        })
+        const payload = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(payload?.error || 'Failed to create the rental invoice')
       }
 
       await fetchBookings()
+      notifyDataChanged()
       alert(isRTL ? 'تمت الموافقة وإنشاء الفاتورة بنجاح' : 'Booking approved and invoice created successfully')
     } catch (err: any) {
       alert(err.message || (isRTL ? 'خطأ' : 'Error'))

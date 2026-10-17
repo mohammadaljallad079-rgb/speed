@@ -569,6 +569,29 @@ that applies the filters it is given and returns only affected rows.
   The dashboard shows gross / VAT / net / returns / net-after-returns so the figure
   reconciles with the sales documents the user sees.
 
+## Execution 19 invariants (read-only reconciliation pack)
+
+- `supabase/EXEC19_READONLY_RECONCILIATION.sql` is the operator pack for verifying
+  the live `sale_invoice` sequence, last sales invoices, empty/duplicate numbers,
+  VAT base by source, revenue vs returns, `update_account_balance` + account drift,
+  and tenant distribution. It is **strictly read-only**: only `select` /
+  `with … select`, no writes, no DDL, no `set role`, no temp table, and it never
+  *calls* `update_account_balance`/`generate_document_number` (it only reads the
+  former's definition from `pg_proc`). `tests/exec19-readonly-reconciliation.test.ts`
+  strips comments/string literals and enforces this, plus a no-PII column rule.
+- **`ANON_VERIFICATION.sql` is NOT read-only** despite its header: it creates a
+  temp table, `set role anon`, and issues guarded `insert`/`update`/`delete`
+  probes (neutered with `where false`). It must not be run under a "no writes"
+  constraint. For a pure read-only anon posture check use the catalogue form
+  (`has_table_privilege('anon', 'public.<table>', '<priv>')`).
+- Column provenance for the pack: proven from the app writers and migrations 001/003
+  (`invoices`, `sales_returns`, `document_sequences`, `journal_lines`/`journal_entries`,
+  `accounts`). `journal_lines` has no live `tenant_id`, so account drift is scoped
+  through the parent `journal_entries`. The pack reports the ledger sum **both
+  signed and as magnitudes** and never assumes a debit/credit sign convention.
+- The pack is preparation only; running it against production requires separate,
+  explicit authorization. No migration is applied and no row is written by Exec 19.
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

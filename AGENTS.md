@@ -996,3 +996,33 @@ that applies the filters it is given and returns only affected rows.
   the VAT page export, the assistant UI and tests. `tests/exec24-vat-template-closure.test.ts`
   (14 tests) is part of `test:core`. Baseline after Exec 24: 549 tests / 543 pass / 6 skipped.
 
+
+## Execution 25 invariants (universal Excel data import)
+
+- **One import engine, one action surface.** `src/lib/import/` is the only
+  Excel→ERP path. It reuses the existing stack (ExcelJS for templates/reports,
+  `xlsx` for parsing, `requireContext`/`logAudit`/`supabaseAdmin`) — do not add a
+  second spreadsheet library or a per-page importer. Adding a module = one entry
+  in `registry.ts`; nothing else hardcodes module knowledge.
+- **`/api/import` (GET template + module list, POST preview/commit) is the only
+  import route.** It requires `<module>.create`; reference reads additionally
+  require the referenced module's `view`. `tenant_id` comes from the session,
+  never the file. Commit **re-parses and re-validates the uploaded file
+  server-side** — a client-supplied preview is never trusted.
+- **Import is fail-closed and all-or-nothing.** `importSafety()` refuses any
+  module without a `tenantColumn` (a tenant-less module would scope by `id` and
+  let one tenant overwrite another). `commitImport` refuses the whole batch when
+  any row is invalid or a duplicate (mode `all`), unless `valid` is explicit.
+- **Shared charts are a deliberate exception.** `accounts.tenant_id` is nullable
+  (shared chart), so its reference is declared `shared: true`: a NULL-tenant
+  account resolves for any caller, a per-tenant account only for its tenant.
+  Never widen this to other reference tables.
+- **Two duplicate levels.** LEVEL 1 = same key earlier in the file; LEVEL 2 =
+  existing DB row, tenant-scoped. Both block commit. A tenant must not see
+  another tenant's key as a duplicate (regression-guarded).
+- **The reference template file named in the task was absent again**
+  (`System_Action_Items_Professional (2)(1).xlsx`); the 13 items are treated as
+  prior work and were not re-opened without a failing test.
+- Baseline after Exec 25: 568 tests / 562 pass / 6 skipped / 0 fail; typecheck
+  129 (unchanged); lint clean; build OK (with placeholder env only).
+

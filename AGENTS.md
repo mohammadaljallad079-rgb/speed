@@ -1085,3 +1085,34 @@ that applies the filters it is given and returns only affected rows.
 - Baseline after Exec 27: 575 tests / 569 pass / 6 skipped / 0 fail; typecheck
   129 (unchanged).
 
+
+## Execution 30 invariants (purchase ↔ credit-sale analytical linking — Item 6)
+
+- **Reporting/analysis only.** `src/lib/accounting/purchase-sale-links.ts` records
+  that a supplier bill relates to a sale. It NEVER creates inventory, a stock
+  movement, a cost allocation or a journal entry, and never changes a document's
+  amounts. `tests/exec30-purchase-sale-links.test.ts` asserts the service writes
+  no `journal_entries`/`journal_lines`/`payments` and references no posting path.
+- **No inventory/warehouse.** SPEED ERP has no stock subsystem; this feature does
+  not add one. The negative test asserts no inventory/stock/warehouse table or
+  query appears in the new files.
+- **Many-to-many by design.** One purchase may back several sales and one sale may
+  be backed by several purchases, so no one-to-one constraint is imposed. The
+  report summary (`summarizeLinks`) de-duplicates by id before summing, so a
+  many-to-many relationship cannot inflate a total, and purchase value is never
+  folded into revenue.
+- **Tenant isolation is the same model as everything else.** Migration
+  `007_purchase_sale_links.sql` uses `can_read_tenant` (SELECT/DELETE) and
+  `can_write_tenant` (INSERT/UPDATE), enables RLS, and revokes `anon`. Two partial
+  unique indexes prevent duplicate pairs for a real tenant and for the NULL tenant
+  (a plain UNIQUE treats NULLs as distinct). The API scopes every query on the
+  server (`.eq("tenant_id", ...)` / `.is("tenant_id", null)`).
+- **The link is not a financial event.** Deleting a link removes only the link
+  row; the purchase and the sale are never touched.
+- **Migration 007 verified by execution:** `supabase/tests/007_harness/run.sh`
+  applies it to a throwaway PostgreSQL 17 with two tenants and asserts 15/15
+  (clean apply, idempotent re-apply, cross-tenant read/insert/update/delete
+  denied, NULL-tenant not a cross-tenant path, duplicate blocked, anon denied).
+  Like 001-006, it is NOT applied to the live database (DDL is an operator step).
+- Baseline after Exec 30: 651 tests / 645 pass / 6 skipped / 0 fail; typecheck 129
+  (unchanged); lint clean; production build green.

@@ -69,6 +69,13 @@ function ReportsHubContent() {
       color: 'bg-amber-500'
     },
     {
+      title: isRTL ? 'ربط المشتريات بالمبيعات الآجلة' : 'Purchase ↔ Credit-Sale Links',
+      description: isRTL ? 'علاقات تحليلية بين المشتريات والمبيعات الآجلة (بدون مخزون)' : 'Analytical purchase/sale relationships (no inventory)',
+      icon: <ClipboardList className="w-8 h-8 text-teal-500" />,
+      link: '/reports/purchase-sale-links',
+      color: 'bg-teal-500'
+    },
+    {
       title: isRTL ? 'تحليل الأداء العام' : 'Performance Analytics',
       description: isRTL ? 'نظرة عامة على إشغال الأسطول والنمو' : 'Overview of fleet occupancy and growth',
       icon: <PieChart className="w-8 h-8 text-blue-500" />,

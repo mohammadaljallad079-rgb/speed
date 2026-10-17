@@ -18,6 +18,16 @@ import { Loader2, Sparkles, Download, Save, FileSpreadsheet, Eye } from "lucide-
  * verification; a formatting request never modifies accounting data.
  */
 
+type PreviewIssue = {
+  id: string;
+  severity: "error" | "warning" | "info";
+  titleAr: string;
+  titleEn: string;
+  current?: string | number | null;
+  expected?: string | number | null;
+  evidence: string;
+};
+
 type Preview = {
   kind: string;
   notes: string[];
@@ -28,6 +38,8 @@ type Preview = {
   diff: { changes: string[]; reordered: string[]; hidden: string[]; widthChanged: string[]; structural: boolean };
   columns: { key: string; labelEn: string; labelAr: string; type: string }[];
   previewRows: Record<string, string | number | null>[];
+  issues?: PreviewIssue[];
+  summary?: { error: number; warning: number; info: number };
 };
 
 const REPORT_TYPES = [
@@ -261,6 +273,33 @@ export default function ReportFormatAssistant() {
                 <p className="font-semibold">{isRTL ? "تنبيهات:" : "Warnings:"}</p>
                 <ul className="list-disc ps-5">
                   {preview.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            )}
+
+            {preview.issues && preview.issues.length > 0 && (
+              <div className="text-sm space-y-2">
+                <p className="font-semibold">
+                  {isRTL
+                    ? `نتائج الفحص: ${preview.summary?.error ?? 0} خطأ، ${preview.summary?.warning ?? 0} تحذير، ${preview.summary?.info ?? 0} ملاحظة`
+                    : `Validation: ${preview.summary?.error ?? 0} error(s), ${preview.summary?.warning ?? 0} warning(s), ${preview.summary?.info ?? 0} info`}
+                </p>
+                <ul className="space-y-1">
+                  {preview.issues.map((iss) => (
+                    <li
+                      key={iss.id}
+                      className={`rounded-lg border p-2 ${
+                        iss.severity === "error"
+                          ? "border-red-200 bg-red-50 text-red-800"
+                          : iss.severity === "warning"
+                            ? "border-amber-200 bg-amber-50 text-amber-800"
+                            : "border-slate-200 bg-slate-50 text-slate-700"
+                      }`}
+                    >
+                      <span className="font-semibold">{isRTL ? iss.titleAr : iss.titleEn}</span>
+                      <span className="block text-xs opacity-80">{iss.evidence}</span>
+                    </li>
+                  ))}
                 </ul>
               </div>
             )}

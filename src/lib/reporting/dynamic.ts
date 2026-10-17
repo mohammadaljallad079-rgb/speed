@@ -198,6 +198,7 @@ export async function buildDynamicPreview(ctx: DynamicContext, input: DynamicInp
     sourceCount: definition.groupBy ? undefined : sourceCount,
     period: { from: input.from ?? null, to: input.to ?? null },
     direction: "rtl",
+    groupColumn: definition.groupBy?.key ?? undefined,
     required: definition.fields.some((f) => f.key === "invoice_number") ? ["invoice_number"] : [],
   });
 

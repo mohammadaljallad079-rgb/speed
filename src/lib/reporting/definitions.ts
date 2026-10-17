@@ -14,6 +14,7 @@ export const REPORT_DEFINITIONS: Record<ReportKind, ReportDefinition> = {
     kind: "vat_report",
     titleEn: "VAT Report (Bahrain)",
     titleAr: "تقرير ضريبة القيمة المضافة (البحرين)",
+    groupColumn: "section",
     columns: [
       { key: "section", labelEn: "Section", labelAr: "القسم", type: "text" },
       { key: "treatment", labelEn: "Tax Treatment", labelAr: "المعاملة الضريبية", type: "text" },

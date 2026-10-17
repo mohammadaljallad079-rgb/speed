@@ -170,14 +170,50 @@ function VatReportContent() {
       const sheet = workbook.addWorksheet(isRTL ? 'ضريبة القيمة المضافة' : 'VAT Report', {
         views: [{ rightToLeft: isRTL, showGridLines: false }]
       })
-      sheet.columns = [{ key: 'month', width: 20 }, { key: 'output', width: 20 }, { key: 'input', width: 20 }, { key: 'net', width: 20 }]
+      sheet.columns = [{ key: 'month', width: 24 }, { key: 'output', width: 18 }, { key: 'input', width: 18 }, { key: 'net', width: 18 }]
       const navy = 'FF0F172A'
       const white = 'FFFFFFFF'
+      const numFmt = '#,##0.000'
       sheet.mergeCells('A1:D1')
       sheet.getCell('A1').value = isRTL ? 'تقرير ضريبة القيمة المضافة' : 'VAT Report'
       sheet.getCell('A1').font = { bold: true, size: 14, color: { argb: navy } }
       sheet.getCell('A1').alignment = { horizontal: 'center' }
       sheet.addRow([])
+
+      // Source breakdown: taxable base and VAT per source, matching the screen.
+      // The taxable base is never omitted — it is the column the VAT return needs.
+      const breakdownHeader = sheet.addRow([
+        isRTL ? 'المصدر' : 'Source',
+        isRTL ? 'الوعاء الضريبي' : 'Taxable Base',
+        isRTL ? 'الضريبة' : 'VAT',
+        ''
+      ])
+      breakdownHeader.eachCell(cell => {
+        cell.font = { bold: true, color: { argb: white } }
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
+        cell.alignment = { horizontal: 'center' }
+      })
+      const breakdownRows: [string, number, number][] = [
+        [isRTL ? 'فواتير المبيعات (Output)' : 'Sales invoices (output)', breakdown.sales.taxable, breakdown.sales.vat],
+        [isRTL ? 'فواتير المشتريات (Input)' : 'Purchase invoices (input)', breakdown.purchases.taxable, breakdown.purchases.vat],
+        [isRTL ? 'المصاريف (Input)' : 'Expenses (input)', breakdown.expenses.taxable, breakdown.expenses.vat],
+      ]
+      breakdownRows.forEach(([label, base, vat]) => {
+        const row = sheet.addRow([label, base, vat, ''])
+        row.getCell(2).numFmt = numFmt
+        row.getCell(3).numFmt = numFmt
+      })
+      const breakdownTotal = sheet.addRow([
+        isRTL ? 'إجمالي المصادر' : 'Total (sources)',
+        breakdown.sales.taxable + breakdown.purchases.taxable + breakdown.expenses.taxable,
+        totalOutput + totalInput,
+        ''
+      ])
+      breakdownTotal.eachCell(cell => { cell.font = { bold: true } })
+      breakdownTotal.getCell(2).numFmt = numFmt
+      breakdownTotal.getCell(3).numFmt = numFmt
+      sheet.addRow([])
+
       const headerRow = sheet.addRow([
         isRTL ? 'الشهر' : 'Month',
         isRTL ? 'ضريبة المبيعات' : 'Output VAT',
@@ -191,16 +227,16 @@ function VatReportContent() {
       })
       monthRows.forEach(r => {
         const row = sheet.addRow([formatMonthLabel(r.month), r.outputVat, r.inputVat, r.net])
-        row.getCell(2).numFmt = '#,##0.000'
-        row.getCell(3).numFmt = '#,##0.000'
-        row.getCell(4).numFmt = '#,##0.000'
+        row.getCell(2).numFmt = numFmt
+        row.getCell(3).numFmt = numFmt
+        row.getCell(4).numFmt = numFmt
       })
       sheet.addRow([])
       const totalRow = sheet.addRow([isRTL ? 'الإجمالي' : 'Total', totalOutput, totalInput, netVat])
       totalRow.eachCell(cell => { cell.font = { bold: true } })
-      totalRow.getCell(2).numFmt = '#,##0.000'
-      totalRow.getCell(3).numFmt = '#,##0.000'
-      totalRow.getCell(4).numFmt = '#,##0.000'
+      totalRow.getCell(2).numFmt = numFmt
+      totalRow.getCell(3).numFmt = numFmt
+      totalRow.getCell(4).numFmt = numFmt
       const buffer = await workbook.xlsx.writeBuffer()
       const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
       const url = URL.createObjectURL(blob)

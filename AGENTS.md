@@ -968,3 +968,31 @@ that applies the filters it is given and returns only affected rows.
   without `.env.local` it fails at page-data collection (`supabaseUrl is
   required`). This is environmental, not a code regression.
 
+
+## Execution 24 invariants (Excel/VAT closure — reference files absent)
+
+- **The reference files named in the task were not present** (`speed_erp_progress(1).xlsx`,
+  `VAT Report format-template for Bahrain.xlsx`); they were never tracked in Git. Do not
+  claim to reproduce them. The updated inventory is an independent, code-grounded audit
+  (`speed_erp_progress_execution24_review.xlsx`), and the Bahrain VAT comparison is derived
+  from the implemented return structure + public Bahrain VAT rules, not from the template.
+- **There is no Excel data-import (Excel -> ERP) path in this snapshot.** The only Excel
+  capability is the reporting engine (`src/lib/reporting/`) plus format-template import.
+  Building a data importer is a new engine and needs its own execution.
+- **VAT section subtotals are driven by `ReportDefinition.groupColumn`.** The VAT
+  definition declares `groupColumn: "section"`; the workbook engine emits a real `SUM`
+  subtotal row per contiguous group before the grand total, and `validateReport` flags
+  (error, class 2, `calc-subtotal-sum-*`) subtotals that do not add up to the total.
+  Adding a subtotal group means setting `groupColumn` — never hardcoding rows.
+- **The taxable base is a first-class VAT column.** `taxable_amount` and `vat_amount` are
+  separate columns on both the screen and the export; never collapse them into one number.
+- **The fixed-report preview runs the deterministic validator.** `buildPreview` returns
+  `issues` + `summary`; `ReportFormatAssistant` renders them. The preview numbers are
+  computed by `validateReport`, never by the model.
+- **ExcelJS writes a text cell beginning with `=`/`+`/`-`/`@` as text, not a formula**
+  (verified empirically). Keep it that way — do not "fix" this by interpolating user text
+  into a formula string.
+- **No second engine, no inventory.** Exec 24 changed only `src/lib/reporting/*`,
+  the VAT page export, the assistant UI and tests. `tests/exec24-vat-template-closure.test.ts`
+  (14 tests) is part of `test:core`. Baseline after Exec 24: 549 tests / 543 pass / 6 skipped.
+

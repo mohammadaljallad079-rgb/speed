@@ -32,6 +32,12 @@ export interface ReportDefinition {
   titleEn: string;
   titleAr: string;
   columns: ReportColumn[];
+  /**
+   * Column key whose value groups the rows (e.g. `section` for the VAT return).
+   * When set, the workbook engine emits a subtotal row per group, so the report
+   * carries real section subtotals in addition to the grand total.
+   */
+  groupColumn?: string;
 }
 
 /** A single report data row, keyed by column key. Values are never mutated. */

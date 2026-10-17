@@ -53,6 +53,11 @@ export interface ReportValidationInput {
   direction?: "rtl" | "ltr";
   /** Fields required to be present on every row. */
   required?: string[];
+  /**
+   * Column key whose value groups the rows. When present, the validator checks
+   * that per-group subtotals add up to the declared grand total.
+   */
+  groupColumn?: string;
 }
 
 const TOL = 0.01;
@@ -326,6 +331,46 @@ export function validateReport(input: ReportValidationInput): ReportIssue[] {
       fixEn: "Set the sheet direction to RTL.",
       fixClass: 1,
     });
+  }
+
+  // --- Calculation: group subtotals sum to the grand total. ------------------
+  // A report that carries per-group subtotal rows must have subtotals that add
+  // up to the declared grand total; otherwise a section total is wrong even
+  // though the grand total (which is the row sum) looks right.
+  const groupKey = input.groupColumn;
+  if (groupKey && colByKey.has(groupKey)) {
+    const sumsByGroup = new Map<string, Map<string, number>>();
+    for (const r of rows) {
+      const g = str(r[groupKey]).trim() || "—";
+      if (!sumsByGroup.has(g)) sumsByGroup.set(g, new Map());
+      const gsums = sumsByGroup.get(g)!;
+      for (const col of columns) {
+        if (!col.total) continue;
+        gsums.set(col.key, (gsums.get(col.key) ?? 0) + (num(r[col.key]) ?? 0));
+      }
+    }
+    for (const col of columns) {
+      if (!col.total) continue;
+      const claimed = input.totals?.[col.key];
+      if (typeof claimed !== "number") continue;
+      const subtotalSum = [...sumsByGroup.values()].reduce((s, m) => s + (m.get(col.key) ?? 0), 0);
+      if (Math.abs(subtotalSum - claimed) > TOL) {
+        issues.push({
+          id: `calc-subtotal-sum-${col.key}`,
+          severity: "error",
+          category: "calculation",
+          titleAr: `مجموع المجاميع الفرعية للعمود «${col.labelAr}» لا يساوي الإجمالي`,
+          titleEn: `Group subtotals for "${col.labelEn}" do not add up to the grand total`,
+          current: round(subtotalSum),
+          expected: round(claimed),
+          evidence: `Σ subtotals = ${round(subtotalSum)} but the report states ${round(claimed)}.`,
+          fixAr: "أعد احتساب المجاميع الفرعية على مجموعاتها الفعلية.",
+          fixEn: "Recompute each subtotal over its own group.",
+          fixClass: 2,
+          field: col.key,
+        });
+      }
+    }
   }
 
   return issues;

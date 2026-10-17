@@ -3,6 +3,7 @@ import { parseReportIntent } from "./intent";
 import { buildFormatPlan, describePlanDiff, type FormatTemplate } from "./plan";
 import { loadReportData, type ReportingDb } from "./data";
 import { renderReportWorkbook, verifyWorkbookBuffer, type VerifyResult } from "./workbook";
+import { validateReport, summarizeIssues, type IssueSeverity, type ReportIssue } from "./validation";
 import type { FormatPlan, PlanDiff, ReportColumn, ReportKind, ReportRow } from "./types";
 
 /**
@@ -37,6 +38,9 @@ export interface PreviewResult {
   columns: ReportColumn[];
   previewRows: ReportRow[];
   dataChangeRequested: boolean;
+  /** Deterministic validation findings for this report (never AI-guessed). */
+  issues: ReportIssue[];
+  summary: Record<IssueSeverity, number>;
 }
 
 export interface AssistantInput {
@@ -93,6 +97,18 @@ export async function buildPreview(
     Object.fromEntries(columns.map((c) => [c.key, row[c.key] ?? null])),
   );
 
+  const totals = Object.fromEntries(
+    columns.filter((c) => c.total).map((c) => [c.key, Math.round(rows.reduce((s, r) => s + (Number(r[c.key]) || 0), 0) * 1000) / 1000]),
+  );
+  const issues = validateReport({
+    columns: columns.map((c) => ({ key: c.key, labelAr: c.labelAr, labelEn: c.labelEn, type: c.type, total: c.total })),
+    rows,
+    totals,
+    period: { from: input.from ?? null, to: input.to ?? null },
+    direction: plan.direction,
+    groupColumn: definition.groupColumn,
+  });
+
   return {
     kind,
     plan,
@@ -104,6 +120,8 @@ export async function buildPreview(
     columns,
     previewRows,
     dataChangeRequested: plan.dataChangeRequested,
+    issues,
+    summary: summarizeIssues(issues),
   };
 }
 

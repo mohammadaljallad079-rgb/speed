@@ -33,6 +33,15 @@ function visibleColumns(plan: FormatPlan): ReportColumn[] {
   return plan.columns.filter((c) => !hidden.has(c.key));
 }
 
+/** The grouping column for a plan's report kind, if the definition declares one. */
+function groupColumnOf(plan: FormatPlan): string | null {
+  const def = getReportDefinition(plan.kind);
+  if (!def?.groupColumn) return null;
+  return plan.columns.some((c) => c.key === def.groupColumn) && !plan.hiddenColumns.includes(def.groupColumn)
+    ? def.groupColumn
+    : null;
+}
+
 function labelFor(col: ReportColumn, direction: "rtl" | "ltr"): string {
   return direction === "rtl" ? col.labelAr : col.labelEn;
 }
@@ -88,10 +97,45 @@ export function renderSheet(
 
   const lastDataRow = firstDataRow + data.rows.length - 1;
   const formulaCells: { ref: string; expected: number }[] = [];
+  let cursor = firstDataRow + data.rows.length;
+
+  // Group subtotals: when the definition names a grouping column, emit a SUM
+  // row per contiguous group before the grand total. The rows are grouped (the
+  // VAT model already orders sales before purchases), so a subtotal is a real
+  // section total and the grand total stays the sum of the details.
+  const groupKey = groupColumnOf(plan);
+  if (plan.addTotals && groupKey && data.rows.length > 0) {
+    let start = firstDataRow;
+    for (let r = 1; r <= data.rows.length; r++) {
+      const atEnd = r === data.rows.length;
+      const changed = !atEnd && String(data.rows[r][groupKey] ?? "") !== String(data.rows[start - firstDataRow][groupKey] ?? "");
+      if (!atEnd && !changed) continue;
+      const end = firstDataRow + r - 1;
+      const subtotalRow = sheet.getRow(cursor);
+      const label = String(data.rows[start - firstDataRow][groupKey] ?? "");
+      cols.forEach((c, i) => {
+        const cell = subtotalRow.getCell(i + 1);
+        if (i === 0) {
+          cell.value = `${plan.direction === "rtl" ? "مجموع" : "Subtotal"} ${label}`;
+          cell.font = { bold: true };
+          return;
+        }
+        if (c.total && (c.type === "currency" || c.type === "number")) {
+          const colLetter = sheet.getColumn(i + 1).letter;
+          cell.value = { formula: `SUM(${colLetter}${start}:${colLetter}${end})` } as ExcelJS.CellFormulaValue;
+          cell.numFmt = NUMBER_FORMATS[c.type];
+          cell.font = { bold: true };
+          const expected = data.rows.slice(start - firstDataRow, end - firstDataRow + 1).reduce((s, row) => s + (Number(row[c.key]) || 0), 0);
+          formulaCells.push({ ref: cell.address, expected: Math.round(expected * 1000) / 1000 });
+        }
+      });
+      cursor += 1;
+      start = firstDataRow + r;
+    }
+  }
 
   if (plan.addTotals && data.rows.length > 0) {
-    const totalRowIndex = firstDataRow + data.rows.length;
-    const totalRow = sheet.getRow(totalRowIndex);
+    const totalRow = sheet.getRow(cursor);
     cols.forEach((c, i) => {
       const cell = totalRow.getCell(i + 1);
       if (i === 0) {

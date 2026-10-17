@@ -647,6 +647,26 @@ that applies the filters it is given and returns only affected rows.
   store would need a `settings` row and is a documented follow-up. The audit
   trail is the authoritative record of what ran.
 
+## Execution 22 invariants (AI Control UI integration + repair expansion)
+
+- **The UI never decides success.** `src/lib/ai/repair-client.ts` is a pure
+  controller (no React import) that drives `/api/ai/repairs`; the AI Control page
+  renders it. `isVerifiedSuccess(result)` is the only source of a success state,
+  and it requires `result.ok && status === "verified" && verification.ok`. Pressing
+  "approve" is never success.
+- **Double-submit is blocked** in the controller (`busy` guard), not only in the
+  DOM. A repeated propose/execute while busy is ignored.
+- **Read-first diagnostics** added to the catalogue: `dashboard_revenue_reconciliation`
+  (reuses `revenue.ts:summarizeRevenue`) and `date_filter_diagnostic` (replays the
+  period window over the unwindowed source). Both are `effect: "read"`, permission
+  `reports.view`, no approval, and write nothing. `selectRepairActions` routes
+  revenue/dashboard and date/period complaints to them first.
+- **`loadReportData` shapes rows**: the sales report returns `{subtotal, vat_amount,
+  total}` (not `total_amount`). Revenue reconciliation must map shaped rows onto
+  the revenue model — reading `total_amount` off a shaped row yields 0.
+- The AI Control page calls only the controller; it sends no `tenant_id`/`role`
+  from the browser. No new engine, no accounting writes, no inventory.
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

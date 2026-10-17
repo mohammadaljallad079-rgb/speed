@@ -1,11 +1,17 @@
 "use client";
 export const dynamic = "force-dynamic";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import DashboardLayout from "@/components/DashboardLayout";
 import { useLanguage } from "@/lib/LanguageContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  createRepairController,
+  isVerifiedSuccess,
+  type RepairController,
+  type RepairState,
+} from "@/lib/ai/repair-client";
 import {
   Bot,
   Brain,
@@ -15,6 +21,7 @@ import {
   Loader2,
   ShieldAlert,
   ShieldCheck,
+  Wrench,
   XCircle,
 } from "lucide-react";
 
@@ -77,6 +84,28 @@ function AiControlContent() {
   const [apiKey, setApiKey] = useState("");
   const [devPrompt, setDevPrompt] = useState("");
   const [artifact, setArtifact] = useState<string | null>(null);
+  const [repair, setRepair] = useState<RepairState>({
+    phase: "idle",
+    actions: [],
+    prompt: "",
+    proposal: null,
+    candidates: [],
+    result: null,
+    error: null,
+    busy: false,
+    approved: false,
+  });
+  const controllerRef = useRef<RepairController | null>(null);
+  const getController = (): RepairController => {
+    if (!controllerRef.current) {
+      controllerRef.current = createRepairController(async (input, init) => {
+        const res = await fetch(input, init);
+        return res;
+      });
+      controllerRef.current.subscribe(setRepair);
+    }
+    return controllerRef.current;
+  };
 
   const load = async () => {
     setLoading(true);
@@ -102,6 +131,7 @@ function AiControlContent() {
 
   useEffect(() => {
     load();
+    getController().loadActions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -274,6 +304,110 @@ function AiControlContent() {
                       </div>
                     ))}
                   </div>
+                </section>
+
+                <section className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+                  <h2 className="mb-4 flex items-center gap-2 text-sm font-black text-slate-800">
+                    <Wrench className="h-4 w-4 text-cyan-600" />
+                    {isRTL ? "إصلاح آمن (كتالوج)" : "Safe repair (catalogue)"}
+                  </h2>
+                  <p className="mb-3 text-[11px] text-slate-500">
+                    {isRTL
+                      ? "يصف المشكلة، يشخّص، يعرض معاينة قبل/بعد، ثم يتطلب موافقة صريحة. لا يظهر النجاح إلا بعد تنفيذ مُوثّق والتحقق من النتيجة."
+                      : "Describe the issue, get a diagnosis and a before/after preview, then approve. Success shows only after a verified execution."}
+                  </p>
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    {repair.actions.map((a) => (
+                      <Badge key={a.id} className={a.effect === "settings" ? "bg-amber-100 text-amber-700" : "bg-cyan-100 text-cyan-700"}>
+                        {isRTL ? a.titleAr : a.titleEn}
+                      </Badge>
+                    ))}
+                    {repair.actions.length === 0 && (
+                      <span className="text-xs text-slate-400">{isRTL ? "لا إجراءات متاحة لصلاحياتك" : "No actions available for your permissions"}</span>
+                    )}
+                  </div>
+                  <div className="mb-3 flex gap-2">
+                    <input
+                      value={repair.prompt}
+                      onChange={(e) => getController().setPrompt(e.target.value)}
+                      placeholder={isRTL ? "صف المشكلة... مثال: تقرير VAT لا يطابق الفواتير" : "Describe the issue... e.g. VAT report does not match invoices"}
+                      className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                    />
+                    <Button
+                      onClick={() => getController().propose(repair.prompt)}
+                      disabled={repair.busy || !repair.prompt.trim()}
+                      className="bg-cyan-600 text-white"
+                    >
+                      {isRTL ? "تشخيص ومعاينة" : "Diagnose & preview"}
+                    </Button>
+                  </div>
+
+                  {repair.proposal && repair.proposal.preview && (
+                    <div className="rounded-xl border border-slate-100 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge className="bg-slate-100 text-slate-600">{repair.proposal.action}</Badge>
+                        {repair.proposal.kind && <Badge className="bg-slate-100 text-slate-600">{repair.proposal.kind}</Badge>}
+                        <Badge className={repair.proposal.effect === "settings" ? "bg-amber-100 text-amber-700" : "bg-cyan-100 text-cyan-700"}>
+                          {repair.proposal.effect === "settings" ? (isRTL ? "يغيّر إعدادات" : "changes settings") : (isRTL ? "قراءة فقط" : "read only")}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-500">{isRTL ? "مصدر البيانات" : "Data source"}: {repair.proposal.preview.dataSource}</p>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div className="rounded-lg bg-slate-50 p-2">
+                          <p className="text-[10px] font-bold text-slate-500">{isRTL ? "قبل" : "Before"}</p>
+                          <pre className="mt-1 max-h-40 overflow-auto text-[10px] text-slate-700">{JSON.stringify(repair.proposal.preview.before, null, 2)}</pre>
+                        </div>
+                        <div className="rounded-lg bg-cyan-50 p-2">
+                          <p className="text-[10px] font-bold text-cyan-700">{isRTL ? "بعد" : "After"}</p>
+                          <pre className="mt-1 max-h-40 overflow-auto text-[10px] text-cyan-900">{JSON.stringify(repair.proposal.preview.after, null, 2)}</pre>
+                        </div>
+                      </div>
+                      {repair.proposal.preview.diff.length > 0 && (
+                        <ul className="mt-2 list-inside list-disc text-[11px] text-slate-600">
+                          {repair.proposal.preview.diff.slice(0, 10).map((d, i) => (
+                            <li key={i}>{d}</li>
+                          ))}
+                        </ul>
+                      )}
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {repair.proposal.requiresApproval && !repair.approved && (
+                          <Button onClick={() => getController().approve()} variant="outline">
+                            {isRTL ? "موافقة" : "Approve"}
+                          </Button>
+                        )}
+                        {repair.proposal.requiresApproval && repair.approved && (
+                          <Badge className="bg-emerald-100 text-emerald-700">{isRTL ? "تمت الموافقة" : "Approved"}</Badge>
+                        )}
+                        <Button
+                          onClick={() => getController().execute()}
+                          disabled={repair.busy || (repair.proposal.requiresApproval && !repair.approved)}
+                          className="bg-emerald-600 text-white"
+                        >
+                          {repair.busy ? <Loader2 className="h-4 w-4 animate-spin" /> : (isRTL ? "تنفيذ" : "Execute")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {repair.error && (
+                    <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+                      {isRTL ? repair.error.ar : repair.error.en}
+                      <span className="ml-2 font-mono text-[10px] text-rose-500">({repair.error.code})</span>
+                    </p>
+                  )}
+
+                  {repair.result && (
+                    <div className={`mt-3 rounded-xl px-3 py-2 text-xs ${isVerifiedSuccess(repair.result) ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                      <p className="font-bold">
+                        {isVerifiedSuccess(repair.result)
+                          ? (isRTL ? "تم التنفيذ والتحقق" : "Executed and verified")
+                          : (isRTL ? "لم يكتمل التنفيذ" : "Execution did not complete")}
+                        <span className="ml-2 font-mono text-[10px]">({repair.result.status})</span>
+                      </p>
+                      <p className="mt-1">{isRTL ? repair.result.verification.detailAr : repair.result.verification.detailEn}</p>
+                      <p className="mt-1 font-mono text-[10px] text-slate-500">{isRTL ? "المرجع" : "Ref"}: {repair.result.reference}</p>
+                    </div>
+                  )}
                 </section>
 
                 <section className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">

@@ -6,6 +6,7 @@ import { getReportDefinition, isReportKind } from "@/lib/reporting/definitions";
 import type { ReportKind } from "@/lib/reporting/types";
 import { buildPreview, resolvePlan, type AssistantContext } from "@/lib/reporting/assistant";
 import type { FormatTemplate } from "@/lib/reporting/plan";
+import { summarizeRevenue, type RevenueInvoice, type RevenueReturn } from "@/lib/reporting/revenue";
 import { validateReport, type ValidationColumn } from "@/lib/reporting/validation";
 import { classifyRepairRequest, type RepairClassification } from "./policy";
 import {
@@ -159,6 +160,101 @@ const DATA_SOURCE: Record<ReportKind, string> = {
   trial_balance: "journal_entries + journal_lines",
 };
 
+/** The date column used to window each report's source (mirrors data.ts). */
+const DATE_COLUMN: Record<ReportKind, string | null> = {
+  sales_report: "invoice_date",
+  purchases_report: "bill_date",
+  expenses_report: "expense_date",
+  vat_report: "invoice_date",
+  trial_balance: null,
+};
+
+function withinWindow(value: unknown, from: string | null, to: string | null): boolean {
+  const d = value === null || value === undefined ? "" : String(value);
+  if (from && d < from) return false;
+  if (to && d > to) return false;
+  return true;
+}
+
+/**
+ * Dashboard revenue reconciliation (read-only). Reuses `summarizeRevenue` so the
+ * dashboard's revenue reconciles with the actual sales documents; never invents a
+ * figure and never writes.
+ */
+async function revenueReconciliation(plan: RepairPlan, deps: RepairDeps): Promise<RepairPreview> {
+  const from = plan.params.from ?? null;
+  const to = plan.params.to ?? null;
+  const invoices = await loadReportData(deps.db, "sales_report", { tenantId: deps.tenantId, from, to });
+  // `loadReportData` shapes rows to {invoice_date, invoice_number, customer_name,
+  // subtotal, vat_amount, total}; map them onto the revenue model (total_amount).
+  const rows = (invoices.rows as unknown as Record<string, unknown>[]).map((r) => ({
+    total_amount: (r.total as number) ?? null,
+    amount: (r.subtotal as number) ?? null,
+    vat_amount: (r.vat_amount as number) ?? null,
+    status: null,
+    invoice_date: (r.invoice_date as string) ?? null,
+  })) as (RevenueInvoice & { invoice_date?: string | null })[];
+  const summary = summarizeRevenue(rows, [] as RevenueReturn[]);
+  const dated = rows.filter((r) => r.invoice_date);
+  return {
+    action: "dashboard_revenue_reconciliation",
+    kind: "sales_report",
+    before: { revenueSource: "invoices (issued, VAT-inclusive)" },
+    after: {
+      gross: summary.gross,
+      vat: summary.vat,
+      net: summary.net,
+      returns: summary.returns,
+      netAfterReturns: summary.netAfterReturns,
+      documentCount: rows.length,
+    },
+    diff: [
+      `gross ${summary.gross} = net ${summary.net} + vat ${summary.vat}`,
+      `netAfterReturns ${summary.netAfterReturns} = net ${summary.net} - returns ${summary.returns}`,
+    ],
+    dataSource: "revenue.ts:summarizeRevenue(invoices)",
+    rowCount: rows.length,
+    issues: [{ noteAr: `عدد المستندات المؤرخة: ${dated.length}/${rows.length}`, noteEn: `Dated documents: ${dated.length}/${rows.length}` }],
+  };
+}
+
+/**
+ * Date/period diagnostic (read-only). Replays the period window over the source
+ * and reports how many rows fall inside/outside it and how many have no date —
+ * proving whether a filter is the cause of a discrepancy.
+ */
+async function dateFilterDiagnostic(plan: RepairPlan, deps: RepairDeps): Promise<RepairPreview> {
+  const kind = plan.kind ?? "sales_report";
+  const from = plan.params.from ?? null;
+  const to = plan.params.to ?? null;
+  // Load the full source (no window) so the diagnostic can show what the filter
+  // includes and excludes; loadReportData would otherwise pre-apply the window.
+  const data = await loadReportData(deps.db, kind, { tenantId: deps.tenantId, from: null, to: null });
+  const rows = data.rows as unknown as Record<string, unknown>[];
+  const col = DATE_COLUMN[kind];
+  let inside = 0;
+  let undated = 0;
+  for (const r of rows) {
+    const d = col ? r[col] : undefined;
+    if (!d) undated++;
+    else if (withinWindow(d, from, to)) inside++;
+  }
+  const outside = rows.length - inside - undated;
+  return {
+    action: "date_filter_diagnostic",
+    kind,
+    before: { period: { from, to }, dateColumn: col },
+    after: { rowCount: rows.length, inside, outside, undated },
+    diff: [`inside ${inside}, outside ${outside}, undated ${undated}`],
+    dataSource: `data.ts:loadReportData(${kind}) windowed by ${col ?? "n/a"}`,
+    rowCount: rows.length,
+    issues:
+      undated > 0
+        ? [{ noteAr: `يوجد ${undated} صف بلا تاريخ ولن يظهر في أي فترة.`, noteEn: `${undated} row(s) have no date and appear in no period.` }]
+        : [],
+  };
+}
+
 function toValidationColumns(kind: ReportKind): ValidationColumn[] {
   const def = getReportDefinition(kind);
   if (!def) return [];
@@ -205,6 +301,14 @@ async function buildPreviewFor(
 ): Promise<RepairPreview> {
   const kind = plan.kind ?? "sales_report";
   const ctx: AssistantContext = { db: deps.db, tenantId: deps.tenantId, companyName: deps.companyName ?? null };
+
+  if (action === "dashboard_revenue_reconciliation") {
+    return revenueReconciliation(plan, deps);
+  }
+
+  if (action === "date_filter_diagnostic") {
+    return dateFilterDiagnostic(plan, deps);
+  }
 
   if (action === "report_validation") {
     const data = await loadReportData(deps.db, kind, {

@@ -28,6 +28,8 @@ export type RepairEffect = "read" | "settings";
 export type RepairActionId =
   | "report_format_preview"
   | "report_validation"
+  | "dashboard_revenue_reconciliation"
+  | "date_filter_diagnostic"
   | "save_report_format_template";
 
 export interface RepairActionSpec {
@@ -74,6 +76,32 @@ export const REPAIR_ACTIONS: RepairActionSpec[] = [
     inputSchema: { ar: "نوع التقرير، الطلب النصي، فترة اختيارية", en: "report kind, text request, optional period" },
     descriptionAr: "يبني خطة تنسيق/ترتيب/إخفاء الأعمدة من الطلب ويعرض القبل/بعد دون حفظ.",
     descriptionEn: "Builds a format/order/hide-columns plan from the request and shows before/after without saving.",
+  },
+  {
+    id: "dashboard_revenue_reconciliation",
+    titleAr: "مطابقة إيراد Dashboard مع الفواتير",
+    titleEn: "Dashboard revenue reconciliation",
+    modules: ["dashboard", "reports", "reports/sales"],
+    effect: "read",
+    permission: { module: "reports", action: "view" },
+    risk: "low",
+    requiresApproval: false,
+    inputSchema: { ar: "فترة اختيارية", en: "optional period" },
+    descriptionAr: "يوازن إيراد لوحة المعلومات مع مستندات المبيعات (إجمالي/ضريبة/صافي) عبر revenue.ts. لا يغيّر شيئًا.",
+    descriptionEn: "Reconciles dashboard revenue against the sales documents (gross/VAT/net) via revenue.ts. Changes nothing.",
+  },
+  {
+    id: "date_filter_diagnostic",
+    titleAr: "تشخيص فلتر التاريخ/الفترة",
+    titleEn: "Date filter diagnostic",
+    modules: ["reports", "reports/vat", "reports/sales", "reports/purchases", "reports/expenses"],
+    effect: "read",
+    permission: { module: "reports", action: "view" },
+    risk: "low",
+    requiresApproval: false,
+    inputSchema: { ar: "نوع التقرير، من/إلى (YYYY-MM-DD)", en: "report kind, from/to (YYYY-MM-DD)" },
+    descriptionAr: "يعيد تشغيل نافذة الفترة على بيانات المصدر ويظهر الصفوف داخل/خارج النافذة وأي صفوف بلا تاريخ. لا يغيّر شيئًا.",
+    descriptionEn: "Replays the period window over source data and shows rows inside/outside the window and any undated rows. Changes nothing.",
   },
   {
     id: "save_report_format_template",
@@ -150,6 +178,28 @@ export function selectRepairActions(context: AuthContext, prompt: string): Repai
   const diagnosis = classifyRepairRequest(prompt);
   const kind = inferReportKind(prompt) ?? defaultKindFor(diagnosis.module);
   const candidates: RepairCandidate[] = [];
+
+  // A revenue/dashboard complaint routes first to the revenue reconciliation.
+  const revenueish = diagnosis.module === "revenue" || diagnosis.module === "dashboard" || /dashboard|لوحة|إيراد|ايراد|revenue/i.test(prompt);
+  if (revenueish && canRunRepairAction(context, "dashboard_revenue_reconciliation")) {
+    candidates.push({
+      action: "dashboard_revenue_reconciliation",
+      kind,
+      reasonAr: "مطابقة الإيراد تثبت الفرق مقابل مستندات المبيعات.",
+      reasonEn: "Revenue reconciliation proves the gap against the sales documents.",
+    });
+  }
+
+  // A date/period complaint routes first to the date filter diagnostic.
+  const dateish = diagnosis.errorType === "query" || /فلتر|filter|فترة|period|تاريخ|date|لا\s*يطابق/i.test(prompt);
+  if (dateish && canRunRepairAction(context, "date_filter_diagnostic")) {
+    candidates.push({
+      action: "date_filter_diagnostic",
+      kind,
+      reasonAr: "تشخيص الفترة يعيد تشغيل النافذة على المصدر.",
+      reasonEn: "The period diagnostic replays the window over the source.",
+    });
+  }
 
   if (canRunRepairAction(context, "report_validation")) {
     candidates.push({

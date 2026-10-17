@@ -1026,3 +1026,29 @@ that applies the filters it is given and returns only affected rows.
 - Baseline after Exec 25: 568 tests / 562 pass / 6 skipped / 0 fail; typecheck
   129 (unchanged); lint clean; build OK (with placeholder env only).
 
+## Execution 27 invariants (duplicate preflight + frozen 005/006 bundle)
+
+- **R1 (005 can abort):** `005_accounting_integrity.sql` creates a PARTIAL UNIQUE
+  index `journal_entries_one_posted_per_doc_uidx` on
+  `(entry_type, reference_number) where status='posted' and reference_number is
+  not null and reference_number <> '' and entry_type in ('sale_invoice',
+  'supplier_payment')`. 005 runs in ONE transaction, so a pre-existing duplicate
+  aborts the whole migration. ALWAYS run
+  `supabase/EXEC27_DUPLICATE_JOURNAL_PREFLIGHT.sql` (read-only, same predicate)
+  first; it must return ZERO rows. Never widen the predicate to "fix" it.
+- **R2 (no frozen artifact):** `supabase/PRODUCTION_ACTIVATION_005_006.sql` is the
+  reviewed bundle for 005→006. It is GENERATED, never hand-edited:
+  `node scripts/generate-activation-bundle.mjs`, then `npm test`
+  (`tests/activation-package-integrity.test.ts` recomputes every SHA-256 banner
+  from the actual bytes). Bodies must stay byte-identical to
+  `supabase/migrations/005…`/`006…`.
+- **Order is fixed:** 001 → 002 → 003 → 004 → 005 → 006. 005 needs 003's journal
+  columns; 006 needs 002's `can_read_tenant`/`can_write_tenant`.
+- **Local execution harness:** `supabase/tests/activation_005_006_harness/run.sh`
+  runs the bundle on a throwaway PostgreSQL 17 in three scenarios — clean apply,
+  idempotent re-apply, and pre-existing-duplicate abort (proving the transaction
+  leaves NO partial index/view). 24/24 assertions pass locally. Migrations remain
+  NOT applied to production.
+- Baseline after Exec 27: 575 tests / 569 pass / 6 skipped / 0 fail; typecheck
+  129 (unchanged).
+

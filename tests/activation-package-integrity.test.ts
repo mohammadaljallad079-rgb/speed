@@ -16,6 +16,7 @@ const ROOT = process.cwd();
 const MIG = path.join(ROOT, "supabase", "migrations");
 const PKG_001_003 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_001_002_003.sql");
 const PKG_004 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_004.sql");
+const PKG_005_006 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_005_006.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -96,5 +97,57 @@ describe("activation package 004", () => {
     const { hash, body } = embedded(text, "-- MIGRATION 004 BODY", "-- POST-FLIGHT");
     assert.ok(hash, "no sha256 recorded in the banner");
     assert.equal(hash, sha(body));
+  });
+});
+
+describe("activation package 005-006", () => {
+  const text = fs.readFileSync(PKG_005_006, "utf8");
+  const steps = [
+    ["005_accounting_integrity.sql", "-- BEGIN 006_ai_repair.sql"],
+    ["006_ai_repair.sql", "-- POST-FLIGHT"],
+  ] as const;
+
+  for (const [name, nextMarker] of steps) {
+    test(`${name}: embedded body is byte-identical to the migration`, () => {
+      const { body } = embedded(text, `-- BEGIN ${name}`, nextMarker);
+      assert.equal(body, fs.readFileSync(path.join(MIG, name), "utf8"));
+    });
+
+    test(`${name}: recorded SHA-256 matches the embedded body`, () => {
+      const { hash, body } = embedded(text, `-- BEGIN ${name}`, nextMarker);
+      assert.ok(hash, "no SHA-256 recorded in the banner");
+      assert.equal(hash, sha(body));
+    });
+  }
+
+  test("each migration is embedded exactly once", () => {
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    assert.equal(count(/-- BEGIN 005_accounting_integrity\.sql/g), 1);
+    assert.equal(count(/-- BEGIN 006_ai_repair\.sql/g), 1);
+  });
+
+  test("the pre-flight carries the 005 duplicate pre-check and is read-only", () => {
+    assert.match(text, /-- PRE-FLIGHT/);
+    assert.match(text, /-- POST-FLIGHT/);
+    assert.match(text, /END OF PACKAGE/);
+    // The exact predicate of the 005 unique index must appear before the body.
+    assert.match(text, /having count\(\*\) > 1/);
+  });
+
+  test("the package contains no destructive or privilege-widening statements", () => {
+    const nonComment = text
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("--"))
+      .join("\n");
+    for (const re of [
+      /\bdrop\s+table\b/i,
+      /\bdrop\s+column\b/i,
+      /\btruncate\b/i,
+      /\bdelete\s+from\b/i,
+      /\bdrop\s+schema\b/i,
+      /\bgrant\s+all\b/i,
+    ]) {
+      assert.doesNotMatch(nonComment, re, `destructive statement: ${re}`);
+    }
   });
 });

@@ -1,5 +1,6 @@
 "use client"
 import { Suspense } from 'react'
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
@@ -142,6 +143,7 @@ function NewPaymentPageContent() {
         }
       }
 
+      notifyDataChanged()
       router.push('/payments')
     } catch (err: any) {
       alert(err.message || 'Error saving receipt')

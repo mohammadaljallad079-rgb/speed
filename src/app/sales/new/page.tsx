@@ -1,4 +1,5 @@
 "use client"
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 import { Suspense, useState, useEffect } from "react"
 export const dynamic = "force-dynamic"
 import { useRouter } from "next/navigation"
@@ -161,6 +162,7 @@ function NewSaleContent() {
         }
       }
 
+      notifyDataChanged()
       router.push("/sales")
     } catch (err: any) {
       alert(err.message)

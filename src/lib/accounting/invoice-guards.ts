@@ -56,3 +56,49 @@ export async function isSaleInvoicePosted(
 ): Promise<boolean> {
   return (await findPostedSaleJournal(client, invoiceNumber)) !== null;
 }
+
+// ---------------------------------------------------------------------------
+// Dependent-record guard (Exec 29, Item 11)
+// ---------------------------------------------------------------------------
+
+type CountBuilder = {
+  select: (cols?: string, opts?: { count?: "exact"; head?: boolean }) => CountBuilder;
+  eq: (col: string, val: unknown) => CountBuilder;
+  then: PromiseLike<{ count: number | null; error: unknown }>["then"];
+};
+type CountClient = { from: (table: string) => CountBuilder };
+
+export type InvoiceDependents = { payments: number; returns: number; total: number };
+
+async function countRows(client: CountClient, table: string, column: string, id: string): Promise<number> {
+  const { count, error } = await client
+    .from(table)
+    .select("*", { count: "exact", head: true })
+    .eq(column, id);
+  if (error) return 0;
+  return count ?? 0;
+}
+
+/**
+ * Count the records that reference an invoice. Deleting an invoice that still
+ * has receipts or returns would orphan those rows (a payment pointing at a
+ * missing invoice), so a caller must refuse the delete and reverse/cancel the
+ * document instead. Best-effort: an unreadable table counts as zero so the guard
+ * never blocks a legitimate delete on a schema that lacks the table.
+ */
+export async function countInvoiceDependents(
+  client: CountClient,
+  invoiceId: string,
+): Promise<InvoiceDependents> {
+  if (!invoiceId) return { payments: 0, returns: 0, total: 0 };
+  const [payments, returns] = await Promise.all([
+    countRows(client, "payments", "invoice_id", invoiceId),
+    countRows(client, "sales_returns", "invoice_id", invoiceId),
+  ]);
+  return { payments, returns, total: payments + returns };
+}
+
+/** True when an invoice may not be deleted because dependent rows would orphan. */
+export async function hasInvoiceDependents(client: CountClient, invoiceId: string): Promise<boolean> {
+  return (await countInvoiceDependents(client, invoiceId)).total > 0;
+}

@@ -1,5 +1,6 @@
 "use client"
 import { Suspense, useState, useEffect } from 'react'
+import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
@@ -74,7 +75,9 @@ function TrialBalanceContent() {
       ? effectiveReportScope(scopeState.scope, scopeState.hasTenantColumn)
       : ({ kind: 'denied', reason: 'unauthenticated' } as const)
 
-  useEffect(() => {
+    useReportRefresh(loadData)
+
+useEffect(() => {
     if (scopeState.status !== 'ready') return
     loadData()
     // eslint-disable-next-line react-hooks/exhaustive-deps

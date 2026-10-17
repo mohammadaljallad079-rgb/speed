@@ -667,6 +667,39 @@ that applies the filters it is given and returns only affected rows.
 - The AI Control page calls only the controller; it sends no `tenant_id`/`role`
   from the browser. No new engine, no accounting writes, no inventory.
 
+## Execution 29 invariants (remaining items closure)
+
+- **One sales posting service.** `src/lib/accounting/sales-posting.ts` owns the
+  sale journal: `buildSaleJournal` / `buildSaleReversalJournal` (pure, balanced-or-null)
+  and `postSaleInvoice` / `reverseSaleInvoice` (injectable client). `POST /api/invoices`
+  is the single server-side issue path; `invoices/new` calls it instead of inserting
+  in the browser. Never re-add a browser journal insert for a sale.
+- **Issue is idempotent by `(entry_type='sale_invoice', reference_number)`.** A retry
+  returns the existing journal (`created:false`) — it must never post a second one.
+  Reversal is idempotent the same way under `sale_reversal`. Migration 005's partial
+  unique index is the DB-level backstop.
+- **`invoices/new` previously posted no journal at all.** The invoice row and its
+  balanced journal are now created together by the server; if posting fails the
+  invoice is deleted (compensation), so a document can never be left unposted.
+- **Posted invoices are reversed, never edited/deleted.** `POST /api/invoices/[id]/reverse`
+  mirrors the original journal and sets `status='cancelled'`; the edit page shows
+  Reverse for posted invoices. `DELETE /api/invoices/[id]` is server-authoritative and
+  refuses a posted invoice or one with dependents.
+- **Orphan prevention (Item 11).** `hasInvoiceDependents` (`invoice-guards.ts`) counts
+  `payments`/`sales_returns` by `invoice_id`; a delete is refused when any exist.
+  An unreadable table counts as zero so the guard never blocks a legitimate delete.
+- **Report freshness (Item 9).** `src/lib/hooks/use-report-refresh.ts` — mutating pages
+  call `notifyDataChanged()`; report pages call `useReportRefresh(<their own loader>)`.
+  The hook only re-runs the existing loader (event + focus/visibility, coalesced) and
+  never writes to the ledger, so it cannot duplicate entries. It is a same-session
+  signal, not a cross-tab/server-push mechanism.
+- **Item 6 (purchases ↔ credit sales) is a business decision, not a code gap.** No
+  link column exists anywhere; do not add `sale_id`/link fields until the owner
+  chooses a model. SPEED ERP has no inventory.
+- `npm run lint` **works** now ("No ESLint warnings or errors"); the old AGENTS.md note
+  that it crashes is stale. `npm run build` needs `NEXT_PUBLIC_SUPABASE_URL` +
+  `SUPABASE_SERVICE_ROLE_KEY` to collect page data (pre-existing; `/api/financial/calculate`).
+
 ## Deployment (production)
 
 - Target: `/var/www/speed.harbourconsultancies.com`, PM2 app `speed`, port 3090,

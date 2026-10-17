@@ -1,10 +1,10 @@
 "use client"
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 import { Suspense, useState, useEffect } from "react"
 export const dynamic = "force-dynamic"
 import { useRouter } from "next/navigation"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering";
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Save, FileText, User, DollarSign, CreditCard, Percent, Hash } from "lucide-react"
 import Link from "next/link"
@@ -121,42 +121,32 @@ function NewInvoiceContent() {
     if (!form.payment_term) { alert(isRTL ? "اختر شروط الدفع" : "Select payment terms"); return }
     setLoading(true)
     try {
-      const invoiceNumber = form.invoice_number || (await nextDocumentNumber(supabase, "sale_invoice", "INV"))
-      const { data: newInvoice, error } = await supabase.from("invoices").insert([{
-        invoice_number: invoiceNumber,
-        invoice_date: form.invoice_date,
-        due_date: form.due_date,
-        status: form.status,
-        invoice_type: form.invoice_type,
-        customer_id: form.customer_id,
-        rental_contract_id: form.rental_contract_id && form.rental_contract_id !== "none" ? form.rental_contract_id : null,
-        total_amount: total,
-        paid_amount: 0,
-        discount_amount: discount,
-        vat_amount: vat,
-        vat_tax_id: form.vat_tax_id || null,
-        payment_method: form.payment_method,
-        payment_term: form.payment_term,
-        notes: form.notes || null,
-      }]).select().single()
-      if (error) throw error
-
-      if (advancePayment > 0 && newInvoice) {
-        const receiptNumber = await nextDocumentNumber(supabase, "receipt", "REC")
-        const { error: paymentError } = await supabase.from("payments").insert({
-          receipt_number: receiptNumber,
-          invoice_id: newInvoice.id,
+      // Issuing a sale goes through the single server-side posting service so the
+      // invoice and its balanced journal are created together and a retry cannot
+      // double revenue (Exec 29, Item 10). The server allocates the number and
+      // takes tenant/permissions from the session.
+      const res = await fetch("/api/invoices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invoice_number: form.invoice_number || undefined,
           customer_id: form.customer_id,
           rental_contract_id: form.rental_contract_id && form.rental_contract_id !== "none" ? form.rental_contract_id : null,
-          payment_type: "receipt",
-          amount: advancePayment,
+          invoice_date: form.invoice_date,
+          due_date: form.due_date || null,
+          amount,
+          discount,
+          vat,
+          advance_payment: advancePayment,
           payment_method: form.payment_method,
-          payment_date: form.invoice_date,
-          status: "completed",
-        })
-        if (paymentError) throw paymentError
-      }
+          payment_term: form.payment_term,
+          notes: form.notes || null,
+        }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || "Failed to issue the invoice")
 
+      notifyDataChanged()
       router.push("/invoices")
     } catch (err: any) {
       alert(err.message)

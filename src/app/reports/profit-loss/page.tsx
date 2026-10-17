@@ -1,6 +1,7 @@
 "use client"
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect, useRef } from 'react'
+import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
@@ -48,7 +49,9 @@ function ProfitLossContent() {
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['revenue', 'cogs', 'opex']))
   const scopeState = useReportScope()
 
-  useEffect(() => {
+    useReportRefresh(fetchData)
+
+useEffect(() => {
     if (scopeState.status !== 'ready') return
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,4 +1,5 @@
 "use client"
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
@@ -188,6 +189,7 @@ function NewBillPageContent() {
         await supabase.from('journal_lines').insert(lines)
       }
 
+      notifyDataChanged()
       router.push('/purchases')
     } catch (error: any) {
       alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)

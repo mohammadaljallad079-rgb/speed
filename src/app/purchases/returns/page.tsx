@@ -1,6 +1,7 @@
 "use client"
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, DebitNote, Supplier, PurchaseInvoice } from "@/lib/supabase"
@@ -92,6 +93,7 @@ function DebitNotesPageContent() {
         note_date: new Date().toISOString().split('T')[0],
         reason: '',
       })
+      notifyDataChanged()
       setShowForm(false)
       fetchNotes()
     } catch (error: any) {

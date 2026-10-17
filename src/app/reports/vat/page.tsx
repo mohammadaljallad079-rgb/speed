@@ -1,6 +1,7 @@
 "use client"
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect, useRef } from 'react'
+import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { supabase } from '@/lib/supabase'
 import { summarizeVatSources, type VatSourceBreakdown } from '@/lib/reporting/vat'
 import { formatCurrency } from '@/lib/utils'
@@ -37,7 +38,9 @@ function VatReportContent() {
     expenses: { taxable: 0, vat: 0 },
   })
 
-  useEffect(() => {
+    useReportRefresh(fetchData)
+
+useEffect(() => {
     fetchData()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo])

@@ -1,5 +1,6 @@
 "use client"
 import { Suspense } from 'react'
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from 'react'
 import { useRouter, useParams } from 'next/navigation'
@@ -12,10 +13,10 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { ArrowLeft, Save, FileText, User, DollarSign, Trash2, CreditCard } from 'lucide-react'
+import { ArrowLeft, Save, FileText, User, DollarSign, Trash2, CreditCard, RotateCcw } from 'lucide-react'
 import Link from 'next/link'
 import { Customer, RentalContract } from '@/lib/supabase'
-import { isSaleInvoicePosted } from '@/lib/accounting/invoice-guards'
+import { isSaleInvoicePosted, hasInvoiceDependents } from '@/lib/accounting/invoice-guards'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -157,6 +158,7 @@ function PageContent() {
         car_plate: (form as any).car_plate || null,
       }).eq('id', id)
       if (error) throw error
+      notifyDataChanged()
       router.push('/invoices')
     } catch (err: any) {
       alert(err.message || 'Error saving invoice')
@@ -173,11 +175,34 @@ function PageContent() {
     if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذه الفاتورة؟' : 'Are you sure you want to delete this invoice?')) return
     setDeleting(true)
     try {
+      // An invoice with receipts or returns must not be deleted: those rows would
+      // be orphaned. Reverse/cancel the document instead (Exec 29, Item 11).
+      if (await hasInvoiceDependents(supabase as any, id)) {
+        alert(isRTL ? 'لا يمكن حذف فاتورة لها دفعات أو مرتجعات مرتبطة. استخدم الإلغاء/العكس.' : 'This invoice has payments or returns attached and cannot be deleted. Cancel/reverse it instead.')
+        setDeleting(false)
+        return
+      }
       const { error } = await supabase.from('invoices').delete().eq('id', id)
       if (error) throw error
+      notifyDataChanged()
       router.push('/invoices')
     } catch (err: any) {
       alert(err.message || 'Error deleting invoice')
+      setDeleting(false)
+    }
+  }
+
+  async function handleReverse() {
+    if (!confirm(isRTL ? 'سيتم عكس القيد المحاسبي وإلغاء الفاتورة. هل أنت متأكد؟' : 'This will post a reversing journal and cancel the invoice. Continue?')) return
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/invoices/${id}/reverse`, { method: "POST" })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Error reversing invoice')
+      notifyDataChanged()
+      router.push('/invoices')
+    } catch (err: any) {
+      alert(err.message || 'Error reversing invoice')
       setDeleting(false)
     }
   }
@@ -212,10 +237,17 @@ function PageContent() {
               <p className="text-slate-500 text-sm">{form.invoice_number}</p>
             </div>
           </div>
-          <Button onClick={handleDelete} disabled={deleting || isPosted} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50">
-            <Trash2 className="w-4 h-4 mr-2 ml-2" />
-            {deleting ? (isRTL ? "جاري الحذف..." : "Deleting...") : (isRTL ? "حذف" : "Delete")}
-          </Button>
+          {isPosted ? (
+            <Button onClick={handleReverse} disabled={deleting} variant="outline" className="border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-50">
+              <RotateCcw className="w-4 h-4 mr-2 ml-2" />
+              {deleting ? (isRTL ? "جاري العكس..." : "Reversing...") : (isRTL ? "عكس القيد" : "Reverse")}
+            </Button>
+          ) : (
+            <Button onClick={handleDelete} disabled={deleting} variant="outline" className="border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-50">
+              <Trash2 className="w-4 h-4 mr-2 ml-2" />
+              {deleting ? (isRTL ? "جاري الحذف..." : "Deleting...") : (isRTL ? "حذف" : "Delete")}
+            </Button>
+          )}
         </div>
         {isPosted && (
           <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">

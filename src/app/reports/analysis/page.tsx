@@ -1,5 +1,6 @@
 "use client"
 import { Suspense } from 'react'
+import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { } from 'react'
 export const dynamic = "force-dynamic"
 
@@ -46,7 +47,9 @@ function SalesPurchaseAnalysisPageContent() {
     if (data) setCars(data)
   }
 
-  useEffect(() => {
+    useReportRefresh(fetchSales)
+
+useEffect(() => {
     fetchSales()
   }, [selectedCarId, statusFilter, startDate, endDate])
 

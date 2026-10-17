@@ -2,6 +2,7 @@
 export const dynamic = "force-dynamic"
 
 import { Suspense, useState, useEffect } from 'react'
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -165,6 +166,7 @@ function SalesReturnsContent() {
 
       if (invError) throw invError
 
+      notifyDataChanged()
       alert(isRTL ? 'تم إنشاء المرتجع بنجاح' : 'Return created successfully')
       setReturnModalOpen(false)
       setSelectedInvoice(null)

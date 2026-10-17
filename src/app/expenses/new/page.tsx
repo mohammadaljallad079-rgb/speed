@@ -1,4 +1,5 @@
 "use client"
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
@@ -218,6 +219,7 @@ function NewExpensePageContent() {
       }
 
       alert("Expense saved successfully!")
+      notifyDataChanged()
       router.push("/expenses")
     } catch (e: any) {
       alert("Error saving: " + (e.message || "Unknown error"))

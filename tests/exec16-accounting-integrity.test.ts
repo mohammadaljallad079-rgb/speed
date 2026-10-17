@@ -133,8 +133,10 @@ describe("Priority 2 - posted invoice guard", () => {
     const src = read("src/app/invoices/[id]/page.tsx");
     assert.match(src, /isSaleInvoicePosted/);
     assert.match(src, /if \(isPosted\) \{[\s\S]*?return/);
-    assert.match(src, /disabled=\{deleting \|\| isPosted\}/);
+    // A posted invoice can neither be saved nor deleted in place; it is reversed.
     assert.match(src, /disabled=\{loading \|\| isPosted\}/);
+    assert.match(src, /handleReverse/);
+    assert.match(src, /isPosted \? \(/);
   });
 });
 

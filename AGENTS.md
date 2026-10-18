@@ -1243,4 +1243,10 @@ that applies the filters it is given and returns only affected rows.
 - The push requires explicit owner authorization (Phase 3); report
   `SPEED_EXECUTION_39_GITHUB_RELEASE_REPORT.md`. This execution is GitHub-only — no
   deploy, no SQL, no production contact.
+- **Promotion executed (owner-authorized, 2026-10):** `refs/heads/main` and
+  `refs/heads/feat/final-hardening-round5` were both fast-forwarded from `29a005c`
+  to the release tip. `dd28b5e` (frozen operational release) is an ancestor of
+  `main`. The final tip is stated in the Exec 39 delivery summary; everything after
+  `dd28b5e` is docs-only. Deployment to the server is still a separate step.
+
 

@@ -190,13 +190,59 @@ approve:
 
 ---
 
-## 7. Push result and GitHub verification
+## 7. Push result and GitHub verification (EXECUTED — authorized)
 
-**Not executed.** No `git push` was run and `main` was not changed, because
-explicit owner authorization has not been given. This report will be updated with
-the resulting `main` SHA and the `git ls-remote` verification once the promotion is
-authorized and performed.
+The owner authorized the promotion explicitly. Both pushes were **fast-forward**
+(no `--force`, no merge commit, no rewrite).
+
+```
+# Step 1 — publish the release branch
+$ git push origin feat/final-hardening-round5
+   29a005c..c1f4d1d  feat/final-hardening-round5 -> feat/final-hardening-round5
+
+# Step 2 — promote main (fast-forward only)
+$ git push origin feat/final-hardening-round5:main
+   29a005c..c1f4d1d  feat/final-hardening-round5 -> main
+```
+
+Pre-push re-verification (immediately before the push):
+
+```
+$ git ls-remote origin refs/heads/main
+29a005c4a9ddc964f6d92662c25ca991ca7fb477        refs/heads/main          # unchanged
+$ git merge-base --is-ancestor 29a005c4a9ddc964f6d92662c25ca991ca7fb477 HEAD
+(exit 0)  -> fast-forward confirmed
+```
+
+Post-push verification on GitHub:
+
+```
+$ git ls-remote origin refs/heads/main
+c1f4d1dc7b70fe3f392083ae3f76bf34ed2bf025        refs/heads/main
+$ git ls-remote origin refs/heads/feat/final-hardening-round5
+c1f4d1dc7b70fe3f392083ae3f76bf34ed2bf025        refs/heads/feat/final-hardening-round5
+$ curl .../git/refs/heads/main   ->  sha c1f4d1dc7b70fe3f392083ae3f76bf34ed2bf025
+```
+
+| Ref | Before | After |
+| --- | --- | --- |
+| `refs/heads/main` | `29a005c` | **`c1f4d1d`** |
+| `refs/heads/feat/final-hardening-round5` | `29a005c` | **`c1f4d1d`** |
+| Local HEAD | `c1f4d1d` | `c1f4d1d` (unchanged) |
+
+`origin/main` is now equal to the local HEAD, and the frozen operational release
+`dd28b5e` is contained in the published history (verified as an ancestor of
+`c1f4d1d`). No force push, `reset --hard`, `clean`, branch deletion, or history
+rewrite was used.
+
+> **Note on the tip SHA.** `c1f4d1d` is the commit promoted to `main`. This very
+> report is then committed on top as a **docs-only** follow-up (it changes no
+> runtime file), so the branch tip / `main` may be one docs commit ahead of
+> `c1f4d1d`. The **operational release content remains frozen at `dd28b5e`**
+> regardless of how many docs-only commits follow it. The final tip SHA is stated
+> in the delivery summary.
 
 **Scope note:** this task is GitHub-only. Nothing was deployed to
 `speed.harbourconsultancies.com`, no migration was applied, and the production
-database was not contacted.
+database was not contacted. The server still runs whatever commit it ran before —
+deployment is a separate, owner-authorized step.

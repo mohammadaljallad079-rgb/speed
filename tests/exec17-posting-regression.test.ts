@@ -170,18 +170,45 @@ describe("deposit refund journal", () => {
   });
 });
 
-describe("posting screens are wired to the builders and the canonical table", () => {
+const ROUTES = {
+  bank: "src/app/api/accounting/bank-transfer/route.ts",
+  petty: "src/app/api/accounting/petty-cash/route.ts",
+  payroll: "src/app/api/payroll/route.ts",
+  deposit: "src/app/api/rentals/deposit-refund/route.ts",
+};
+
+describe("posting screens delegate to the server and never write the ledger", () => {
   for (const [name, p] of Object.entries(PAGES)) {
-    test(`${name} builds its journal via the shared builder`, () => {
+    test(`${name} page posts to its API route`, () => {
       const src = read(p);
-      assert.match(src, /from '@\/lib\/accounting\/manual-postings'/, "must import a builder");
-      assert.match(src, /\.insert\(journal\.header\)/, "must insert the built header");
-      assert.match(src, /journal\.lines\.map/, "must map the built lines");
-      assert.match(src, /from\('journal_lines'\)/, "must write lines to the canonical table");
+      assert.match(src, /fetch\('\/api\//, "must call the server API");
+    });
+
+    test(`${name} page does not write journals, lines or balances itself`, () => {
+      const src = read(p);
+      assert.doesNotMatch(src, /from\(['"]journal_entries['"]\)/, "no browser journal_entries writes");
+      assert.doesNotMatch(src, /from\(['"]journal_lines['"]\)/, "no browser journal_lines writes");
+      assert.doesNotMatch(src, /applyAccountBalanceDelta/, "no browser balance writes");
+      assert.doesNotMatch(src, /nextDocumentNumber/, "numbers are allocated server-side");
       assert.doesNotMatch(src, /journal_entry_lines/, "must not touch the orphaned table");
-      assert.doesNotMatch(src, /Date\.now\(\)/, "numbers must come from nextDocumentNumber");
     });
   }
+
+  for (const [name, p] of Object.entries(ROUTES)) {
+    test(`${name} route posts through the shared service`, () => {
+      const src = read(p);
+      assert.match(src, /from "@\/lib\/accounting\/manual-posting"/, "must import the posting service");
+      assert.doesNotMatch(src, /journal_entry_lines/, "must not touch the orphaned table");
+      // The route itself never writes the ledger; the service owns the write.
+      assert.doesNotMatch(src, /from\(['"]journal_lines['"]\)/, "lines are written by the service, not the route");
+    });
+  }
+
+  test("the manual posting service writes to the canonical journal_lines table", () => {
+    const src = read("src/lib/accounting/manual-posting.ts");
+    assert.match(src, /from\("journal_lines"\)/, "the service writes the canonical table");
+    assert.doesNotMatch(src, /journal_entry_lines/, "must not touch the orphaned table");
+  });
 
   test("every built journal is balanced for a representative amount", () => {
     const journals: ManualJournal[] = [
@@ -205,13 +232,13 @@ describe("balance side effect is single, non-fatal and tenant-neutral", () => {
     // The function resolves (does not throw), so the caller's posting stands.
   });
 
-  test("posting pages do not write tenant_id themselves (session-authoritative)", () => {
-    for (const p of Object.values(PAGES)) {
+  test("the server routes do not set tenant_id from the request body", () => {
+    for (const p of Object.values(ROUTES)) {
       const src = read(p);
       assert.doesNotMatch(
         src,
         /journal_entries'\s*\)[\s\S]{0,400}tenant_id/,
-        "the posting screens must not set tenant_id from client state",
+        "the posting routes must not set tenant_id from client state",
       );
     }
   });

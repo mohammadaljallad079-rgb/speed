@@ -302,8 +302,9 @@ describe("Priority 4 - ledger integrity detection", () => {
 });
 
 describe("Priority 4b - document numbering has one mechanism", () => {
+  // Exec 35: purchases/new now posts through /api/purchases, which allocates the
+  // journal number from the RPC; the remaining pages still number locally.
   const files = [
-    "src/app/purchases/new/page.tsx",
     "src/app/purchases/returns/page.tsx",
     "src/app/purchase-orders/page.tsx",
     "src/app/purchase-orders/requisitions/page.tsx",
@@ -321,16 +322,26 @@ describe("Priority 4b - document numbering has one mechanism", () => {
       assert.match(read(f), /nextDocumentNumber\(supabase as any, '(receipt|debit_note|purchase_invoice|purchase_order)'/, `${f} must use nextDocumentNumber`);
     }
   });
+
+  test("purchases/new delegates numbering to the server route", () => {
+    const page = read("src/app/purchases/new/page.tsx");
+    assert.match(page, /fetch\('\/api\/purchases'/);
+    assert.doesNotMatch(page, /nextDocumentNumber/, "the browser must not allocate numbers");
+    assert.match(read("src/app/api/purchases/route.ts"), /nextDocumentNumber\([^)]*"journal_entry"/, "the route allocates the journal number");
+  });
 });
 
 describe("Priority 4c - one canonical journal-line table", () => {
   const journalLineWriters = [
-    "src/app/accounting/bank-transfer/page.tsx",
-    "src/app/accounting/petty-cash/page.tsx",
-    "src/app/hr/payroll/page.tsx",
-    "src/app/rentals/[id]/refund-deposit/page.tsx",
+    "src/app/api/accounting/bank-transfer/route.ts",
+    "src/app/api/accounting/petty-cash/route.ts",
+    "src/app/api/payroll/route.ts",
+    "src/app/api/rentals/deposit-refund/route.ts",
+    "src/app/api/purchases/route.ts",
+    "src/app/api/cars/route.ts",
     "src/app/accounting/journal-entries/page.tsx",
     "src/lib/accounting/payment-posting.ts",
+    "src/lib/accounting/manual-posting.ts",
   ];
 
   test("no module writes journal lines to the orphaned journal_entry_lines table", () => {
@@ -339,10 +350,8 @@ describe("Priority 4c - one canonical journal-line table", () => {
     }
   });
 
-  test("every module that posts a journal writes its lines to journal_lines", () => {
-    for (const f of journalLineWriters) {
-      assert.match(read(f), /from\(["']journal_lines["']\)/, `${f} must write lines to journal_lines`);
-    }
+  test("the manual-posting service writes lines to the canonical journal_lines table", () => {
+    assert.match(read("src/lib/accounting/manual-posting.ts"), /from\(["']journal_lines["']\)/, "the service must write lines to journal_lines");
   });
 
   test("no Date.now()-based journal numbers remain in the posting modules", () => {

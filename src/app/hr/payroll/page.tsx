@@ -4,9 +4,6 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { nextDocumentNumber } from '@/lib/numbering'
-import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
-import { buildPayrollJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -158,54 +155,22 @@ function PayrollContent() {
 
     setSaving(true)
     try {
-      const { data: salaryAccount } = await supabase.from('accounts').select('id').eq('code', '51003').single()
-      const { data: cashAccount } = await supabase.from('accounts').select('id').eq('code', '11001').single()
-
-      if (!salaryAccount || !cashAccount) {
-        alert(isRTL ? 'حسابات الرواتب أو الصندوق غير موجودة' : 'Salary or cash account not found')
-        setSaving(false)
-        return
-      }
-
-      // Create journal entry
-      const payrollJournalNumber = await nextDocumentNumber(supabase as any, 'payroll', 'PAY')
-      const journal = buildPayrollJournal({
-        journalNumber: payrollJournalNumber,
-        date: payrollDate,
-        description: isRTL ? 'دفع رواتب شهرية' : 'Monthly salary payment',
-        amount: totalPayroll,
-        salaryAccountId: salaryAccount.id,
-        cashAccountId: cashAccount.id,
-      })
-      if (!journal) throw new Error('Invalid payroll journal')
-
-      const { data: jeData, error: jeError } = await supabase
-        .from('journal_entries')
-        .insert(journal.header)
-        .select()
-        .single()
-
-      if (jeError) throw jeError
-
-      // Create journal lines: Dr Salaries / Cr Cash
-      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
-
-      const { error: linesError } = await supabase.from('journal_lines').insert(lines)
-      if (linesError) throw linesError
-
-      // Update balances
-      await applyAccountBalanceDelta(supabase, salaryAccount.id, totalPayroll)
-      await applyAccountBalanceDelta(supabase, cashAccount.id, -totalPayroll)
-
-      // Record payroll
-      const payrollRecords = Array.from(selectedEmployees).map(empId => ({
+      const entries = Array.from(selectedEmployees).map(empId => ({
         employee_id: empId,
-        payroll_date: payrollDate,
         amount: calculations[empId]?.net_salary || 0,
-        status: 'paid',
       }))
 
-      await supabase.from('payroll_records').insert(payrollRecords)
+      const res = await fetch('/api/payroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          payroll_date: payrollDate,
+          reference: `PAYROLL-${payrollDate}`,
+          entries,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Payroll failed')
 
       alert(isRTL ? 'تم دفع الرواتب بنجاح' : 'Salaries paid successfully')
       setSelectedEmployees(new Set())

@@ -4,9 +4,6 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { nextDocumentNumber } from '@/lib/numbering'
-import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
-import { buildBankTransferJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -78,36 +75,20 @@ function BankTransferContent() {
 
     setSaving(true)
     try {
-      // 1. Build the balanced journal (Dr destination / Cr source)
-      const journalNumber = await nextDocumentNumber(supabase as any, 'bank_transfer', 'BT')
-      const journal = buildBankTransferJournal({
-        journalNumber,
-        date: transferDate,
-        description: notes || (isRTL ? 'تحويل بنكي' : 'Bank Transfer'),
-        amount: transferAmount,
-        fromAccountId: fromAccount,
-        toAccountId: toAccount,
-        reference: reference || null,
+      const res = await fetch('/api/accounting/bank-transfer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          from_account_id: fromAccount,
+          to_account_id: toAccount,
+          amount: transferAmount,
+          transfer_date: transferDate,
+          reference: reference || null,
+          notes: notes || null,
+        }),
       })
-      if (!journal) throw new Error('Invalid bank transfer journal')
-
-      const { data: jeData, error: jeError } = await supabase
-        .from('journal_entries')
-        .insert(journal.header)
-        .select()
-        .single()
-
-      if (jeError) throw jeError
-
-      // 2. Create journal lines
-      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
-
-      const { error: linesError } = await supabase.from('journal_lines').insert(lines)
-      if (linesError) throw linesError
-
-      // 3. Update account balances
-      await applyAccountBalanceDelta(supabase, fromAccount, -transferAmount)
-      await applyAccountBalanceDelta(supabase, toAccount, transferAmount)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Transfer failed')
 
       alert(isRTL ? 'تم التحويل بنجاح' : 'Transfer completed successfully')
       router.push('/accounting/journal-entries')

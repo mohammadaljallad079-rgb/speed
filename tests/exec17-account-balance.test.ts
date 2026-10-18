@@ -22,11 +22,13 @@ import {
 const ROOT = process.cwd();
 const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
+// Exec 35: the balance-cache nudge moved from the browser pages to the server
+// routes; the pages no longer touch the ledger or the balance cache at all.
 const MODULES = [
-  "src/app/accounting/bank-transfer/page.tsx",
-  "src/app/hr/payroll/page.tsx",
-  "src/app/accounting/petty-cash/page.tsx",
-  "src/app/rentals/[id]/refund-deposit/page.tsx",
+  "src/app/api/accounting/bank-transfer/route.ts",
+  "src/app/api/payroll/route.ts",
+  "src/app/api/accounting/petty-cash/route.ts",
+  "src/app/api/rentals/deposit-refund/route.ts",
 ];
 
 describe("applyAccountBalanceDelta - behaviour-preserving call path", () => {
@@ -75,7 +77,7 @@ describe("applyAccountBalanceDelta - behaviour-preserving call path", () => {
 
 describe("the balance update path is single and auditable", () => {
   for (const p of MODULES) {
-    test(`${p} no longer calls the RPC directly`, () => {
+    test(`${p} uses the shared balance helper, not the RPC`, () => {
       const src = read(p);
       assert.doesNotMatch(
         src,
@@ -111,7 +113,7 @@ describe("the balance update path is single and auditable", () => {
   test("the sign convention and known deviation are documented", () => {
     assert.match(ACCOUNT_BALANCE_SIGN_CONVENTION, /debit/i);
     assert.equal(ACCOUNT_BALANCE_KNOWN_DEVIATIONS.length >= 1, true);
-    assert.match(ACCOUNT_BALANCE_KNOWN_DEVIATIONS[0].file, /refund-deposit/);
+    assert.match(ACCOUNT_BALANCE_KNOWN_DEVIATIONS[0].file, /refund|deposit/);
   });
 
   test("the read-only verification query ships for the operator", () => {

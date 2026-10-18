@@ -271,90 +271,27 @@ function NewCarForm() {
         })
       }
 
-      if (tenantId) payload.tenant_id = tenantId
-
-      const { data: newCar, error } = await supabase.from('cars').insert([payload]).select().single()
-      if (error) throw error
-
-      if (isAdmin && newCar && form.down_payment && form.monthly_installment && form.total_installments) {
-        try {
-          const purchasePriceNum = form.purchase_price ? parseFloat(form.purchase_price) : 0
-          const downPaymentAmt = parseFloat(form.down_payment) || 0
-          const monthlyInstallmentAmt = parseFloat(form.monthly_installment) || 0
-          const totalInstallmentsNum = parseInt(form.total_installments) || 0
-          const annualRate = form.interest_rate ? parseFloat(form.interest_rate) : 0
-          const monthlyRate = annualRate / 100 / 12
-          const loanAmount = Math.max(0, purchasePriceNum - downPaymentAmt)
-          const purchaseDateVal = form.purchase_date || new Date().toISOString().slice(0, 10)
-
-          const { data: newLoan } = await supabase.from('car_loans').insert({
-            car_id: newCar.id,
-            loan_amount: loanAmount,
-            down_payment: downPaymentAmt,
-            monthly_installment: monthlyInstallmentAmt,
-            total_installments: totalInstallmentsNum,
-            paid_installments: 0,
-            start_date: purchaseDateVal,
-            status: 'active',
-          }).select().single()
-
-          if (newLoan && totalInstallmentsNum > 0) {
-            let balance = loanAmount
-            const installments: any[] = []
-            const startDate = new Date(purchaseDateVal)
-            for (let i = 1; i <= totalInstallmentsNum; i++) {
-              const interestPortion = balance * monthlyRate
-              let principalPortion = monthlyInstallmentAmt - interestPortion
-              if (i === totalInstallmentsNum || principalPortion > balance) {
-                principalPortion = balance
-              }
-              balance = Math.max(0, balance - principalPortion)
-              const dueDate = new Date(startDate)
-              dueDate.setMonth(dueDate.getMonth() + i)
-              installments.push({
-                loan_id: newLoan.id,
-                installment_number: i,
-                due_date: dueDate.toISOString().slice(0, 10),
-                amount: principalPortion + interestPortion,
-                paid_amount: 0,
-                status: 'pending',
-              })
-            }
-            await supabase.from('car_loan_installments').insert(installments)
+      // The server derives the tenant and (for an admin) posts the loan and the
+      // capitalisation journal. The browser sends only car attributes and, when
+      // financed, the loan terms.
+      const loan = (isAdmin && form.down_payment && form.monthly_installment && form.total_installments)
+        ? {
+            loan_amount: Math.max(0, (parseFloat(form.purchase_price || '0') || 0) - (parseFloat(form.down_payment) || 0)),
+            down_payment: parseFloat(form.down_payment) || 0,
+            monthly_installment: parseFloat(form.monthly_installment) || 0,
+            total_installments: parseInt(form.total_installments) || 0,
+            interest_rate: form.interest_rate ? parseFloat(form.interest_rate) : 0,
+            start_date: form.purchase_date || new Date().toISOString().slice(0, 10),
           }
+        : undefined
 
-          const { data: jvNumberData } = await supabase.rpc('generate_document_number', { p_doc_type: 'journal_entry' })
-          const { data: accountsData } = await supabase.from('accounts').select('id, code').in('code', ['13001', '11002', '22001'])
-          const acc = (code: string) => accountsData?.find((a: any) => a.code === code)?.id
-
-          const { data: newJournal } = await supabase.from('journal_entries').insert({
-            journal_number: jvNumberData,
-            entry_date: purchaseDateVal,
-            reference_number: newCar.plate_number || newCar.id,
-            description: isRTL ? `شراء سيارة ${newCar.make} ${newCar.model}` : `Vehicle purchase ${newCar.make} ${newCar.model}`,
-            total_debit: purchasePriceNum,
-            total_credit: purchasePriceNum,
-            is_balanced: true,
-            status: 'posted',
-            entry_type: 'vehicle_purchase',
-          }).select().single()
-
-          if (newJournal) {
-            const lines: any[] = []
-            let lineOrder = 1
-            lines.push({ journal_entry_id: newJournal.id, account_id: acc('13001'), debit: purchasePriceNum, credit: 0, description: isRTL ? 'أسطول المركبات' : 'Vehicle Fleet', line_order: lineOrder++ })
-            if (downPaymentAmt > 0) {
-              lines.push({ journal_entry_id: newJournal.id, account_id: acc('11002'), debit: 0, credit: downPaymentAmt, description: isRTL ? 'دفعة أولى' : 'Down payment', line_order: lineOrder++ })
-            }
-            if (loanAmount > 0) {
-              lines.push({ journal_entry_id: newJournal.id, account_id: acc('22001'), debit: 0, credit: loanAmount, description: isRTL ? 'قرض بنكي' : 'Bank loan', line_order: lineOrder++ })
-            }
-            await supabase.from('journal_lines').insert(lines)
-          }
-        } catch (loanErr: any) {
-          console.error('Loan/journal creation failed:', loanErr)
-        }
-      }
+      const res = await fetch('/api/cars', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, loan }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Failed to add car')
 
       router.push('/cars')
     } catch (error: any) {

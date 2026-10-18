@@ -287,9 +287,9 @@ function JournalListView({ refData, onNew, onEdit, onView, refreshKey }: {
   async function handleDelete(entry: JournalEntry) {
     if (!confirm(`Delete journal ${entry.journal_number}? This cannot be undone.`)) return
     try {
-      await supabase.from("journal_lines").delete().eq("journal_entry_id", entry.id)
-      const { error } = await supabase.from("journal_entries").delete().eq("id", entry.id)
-      if (error) throw error
+      const res = await fetch(`/api/journal-entries?id=${encodeURIComponent(entry.id)}`, { method: "DELETE" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || "Delete failed")
       setEntries(prev => prev.filter(e => e.id !== entry.id))
     } catch (e: any) {
       alert("Error deleting: " + e.message)
@@ -433,10 +433,9 @@ function JournalViewModal({ entry, refData, onClose, onApproved }: { entry: Jour
   async function handleApprove() {
     setApproving(true)
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const approver = user?.email || user?.user_metadata?.full_name || "Unknown"
-      const { error } = await supabase.from("journal_entries").update({ approved_by: approver, approved_at: new Date().toISOString() }).eq("id", entry.id)
-      if (error) throw error
+      const res = await fetch("/api/journal-entries", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: entry.id }) })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || "Approve failed")
       onApproved()
     } catch (e: any) {
       alert("Error approving: " + e.message)
@@ -646,31 +645,24 @@ function JournalFormView({ entry, refData, onBack, onSaved }: { entry?: JournalE
       debit: parseFloat(l.debit) || 0, credit: parseFloat(l.credit) || 0,
       line_order: idx + 1,
     }))
-    const headerPayload: any = {
-      journal_number: journalNumber, entry_date: date, reference_number: reference || null, description: description || null,
-      total_debit: getTotalDebit(), total_credit: getTotalCredit(),
+    const payload: any = {
+      journal_number: journalNumber, entry_date: date, reference_number: reference || null,
+      description: description || null, entry_type: entryType, lines: linesPayload,
     }
-    // نجيب المستخدم الحالي مباشرة وقت الحفظ
-    const { data: { user: currentUser } } = await supabase.auth.getUser()
-    const userLabel = currentUser?.email || (currentUser?.user_metadata as any)?.full_name || currentUserLabel || null
-    if (!entry?.id) headerPayload.entered_by = userLabel
-    headerPayload.is_balanced = Math.abs(getTotalDebit() - getTotalCredit()) < 0.001
 
-    let savedEntry: any
-    if (entry?.id) {
-      const { data, error: updateError } = await supabase.from("journal_entries").update(headerPayload).eq("id", entry.id).select().single()
-      if (updateError) { alert("Error: " + updateError.message); return null }
-      savedEntry = data
-      const { error: deleteError } = await supabase.from("journal_lines").delete().eq("journal_entry_id", entry.id)
-      if (deleteError) { alert("Error: " + deleteError.message); return null }
-    } else {
-      const { data, error: insertError } = await supabase.from("journal_entries").insert(headerPayload).select().single()
-      if (insertError) { alert("Error: " + insertError.message); return null }
-      savedEntry = data
+    try {
+      // The server stamps tenant_id, the financial year and entered_by from the
+      // session, enforces the balanced rule and writes header + lines together.
+      const res = entry?.id
+        ? await fetch("/api/journal-entries", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, id: entry.id }) })
+        : await fetch("/api/journal-entries", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { alert("Error: " + (data?.error || "Save failed")); return null }
+      return { ...(entry || {}), id: data.id, journal_number: journalNumber, entry_date: date, reference_number: reference, description, total_debit: data.total_debit, total_credit: data.total_credit, created_at: entry?.created_at || new Date().toISOString() } as JournalEntry
+    } catch (e: any) {
+      alert("Error: " + e.message)
+      return null
     }
-    const { error: linesError } = await supabase.from("journal_lines").insert(linesPayload.map(l => ({ ...l, journal_entry_id: savedEntry.id })))
-    if (linesError) { alert("Error saving lines: " + linesError.message); return null }
-    return savedEntry
   }
 
   async function handleSave(mode: "save" | "saveNew" | "savePrint") {

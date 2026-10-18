@@ -4,9 +4,6 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { nextDocumentNumber } from '@/lib/numbering'
-import { applyAccountBalanceDelta } from '@/lib/accounting/account-balance'
-import { buildPettyCashJournal } from '@/lib/accounting/manual-postings'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -74,57 +71,18 @@ function PettyCashContent() {
 
     setSaving(true)
     try {
-      const { data: pettyAccount } = await supabase.from('accounts').select('id').eq('code', '11003').single()
-      const { data: cashAccount } = await supabase.from('accounts').select('id').eq('code', '11001').single()
-
-      if (!pettyAccount || !cashAccount) {
-        alert(isRTL ? 'الحسابات غير موجودة' : 'Accounts not found')
-        setSaving(false)
-        return
-      }
-
-      // Create journal entry
-      const pettyJournalNumber = await nextDocumentNumber(supabase as any, 'petty_cash', 'PC')
-      const journal = buildPettyCashJournal({
-        journalNumber: pettyJournalNumber,
-        date: new Date().toISOString().split('T')[0],
-        description: description || (modalType === 'fund' ? (isRTL ? 'تمويل الصندوق الصغير' : 'Petty cash funding') : (isRTL ? 'مصروف صندوق صغير' : 'Petty cash expense')),
-        amount: numAmount,
-        kind: modalType,
-        pettyAccountId: pettyAccount.id,
-        expenseAccountId: cashAccount.id,
-        fundDescription: isRTL ? 'تمويل الصندوق' : 'Fund petty cash',
-        expenseDescription: description || (isRTL ? 'مصروف' : 'Expense'),
+      const res = await fetch('/api/accounting/petty-cash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transaction_type: modalType,
+          amount: numAmount,
+          description: description || null,
+          transaction_date: new Date().toISOString().split('T')[0],
+        }),
       })
-      if (!journal) throw new Error('Invalid petty cash journal')
-
-      const { data: jeData, error: jeError } = await supabase
-        .from('journal_entries')
-        .insert(journal.header)
-        .select()
-        .single()
-
-      if (jeError) throw jeError
-
-      const lines = journal.lines.map((l) => ({ ...l, journal_entry_id: jeData.id }))
-      await supabase.from('journal_lines').insert(lines)
-      if (modalType === 'fund') {
-        // Dr Petty Cash / Cr Cash
-        await applyAccountBalanceDelta(supabase, pettyAccount.id, numAmount)
-        await applyAccountBalanceDelta(supabase, cashAccount.id, -numAmount)
-      } else {
-        // Dr Expense / Cr Petty Cash
-        await applyAccountBalanceDelta(supabase, cashAccount.id, numAmount)
-        await applyAccountBalanceDelta(supabase, pettyAccount.id, -numAmount)
-      }
-
-      // Record transaction
-      await supabase.from('petty_cash_transactions').insert({
-        transaction_type: modalType,
-        amount: numAmount,
-        description: description || (modalType === 'fund' ? (isRTL ? 'تمويل' : 'Funding') : (isRTL ? 'مصروف' : 'Expense')),
-        transaction_date: new Date().toISOString().split('T')[0],
-      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Save failed')
 
       alert(isRTL ? 'تم الحفظ بنجاح' : 'Saved successfully')
       setModalOpen(false)

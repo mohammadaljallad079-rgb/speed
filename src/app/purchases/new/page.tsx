@@ -5,7 +5,6 @@ import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, Supplier, Car, generateSupplierBillNumber } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency } from "@/lib/utils"
 import {
   ShoppingBag, Save, ArrowLeft, Plus, Trash2, Car as CarIcon, User, FileText
@@ -108,86 +107,30 @@ function NewBillPageContent() {
 
     setSaving(true)
     try {
-      // Insert bill
-      const { data: billData, error: billError } = await supabase.from('purchase_invoices').insert([{
-        invoice_number: form.invoice_number,
-        supplier_id: form.supplier_id,
-        bill_date: form.bill_date,
-        due_date: form.due_date || null,
-        total_amount: grandTotal,
-        paid_amount: advancePayment,
-        vat_amount: totalVat,
-        status: advancePayment <= 0 ? 'pending' : (remainingAmount <= 0 ? 'paid' : 'partial'),
-        notes: form.notes || null,
-        car_id: form.car_id || null,
-        payment_type: form.payment_type || 'cash',
-        expense_category: form.expense_category || null,
-        branch: form.branch || null,
-      }]).select().single()
-
-      if (billError) throw billError
-
-      // Insert items
-      const billId = billData.id
-      const itemsToInsert = items.map(item => ({
-        purchase_invoice_id: billId,
-        description: item.description,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        vat_rate: item.vat_rate,
-        total_price: item.quantity * item.unit_price * (1 + item.vat_rate / 100),
-      }))
-
-      await supabase.from('purchase_invoice_items').insert(itemsToInsert)
-
-      if (advancePayment > 0) {
-        const receiptNumber = await nextDocumentNumber(supabase as any, 'receipt', 'PAY')
-        const { error: paymentError } = await supabase.from('payments').insert({
-          receipt_number: receiptNumber,
-          purchase_id: billId,
-          payment_type: 'payment',
-          amount: advancePayment,
-          payment_method: form.payment_type === 'credit' ? 'bank_transfer' : 'cash',
-          payment_date: form.bill_date,
-          status: 'completed',
-        })
-        if (paymentError) throw paymentError
-      }
-
-      const EXPENSE_ACCOUNT_CODES: Record<string, string> = {
-        fuel: '51001', maintenance: '51002', insurance: '51003',
-        registration: '51004', tyres: '51005', accident_repair: '51006', other: '51099',
-      }
-      const expenseCode = EXPENSE_ACCOUNT_CODES[form.expense_category] || '51099'
-      const cashOrBankCode = form.payment_type === 'cash' ? '11001' : '11002'
-      const { data: accountsData } = await supabase.from('accounts').select('id, code').in('code', [expenseCode, cashOrBankCode, '21001'])
-      const acc = (code: string) => accountsData?.find((a: any) => a.code === code)?.id
-
-      const { data: jvNumberData } = await supabase.rpc('generate_document_number', { p_doc_type: 'journal_entry' })
-      const { data: newJournal } = await supabase.from('journal_entries').insert({
-        journal_number: jvNumberData,
-        entry_date: form.bill_date,
-        reference_number: form.invoice_number,
-        description: isRTL ? `فاتورة مورد - ${form.invoice_number}` : `Supplier bill - ${form.invoice_number}`,
-        total_debit: grandTotal,
-        total_credit: grandTotal,
-        is_balanced: true,
-        status: 'posted',
-        entry_type: 'purchase_invoice',
-      }).select().single()
-
-      if (newJournal) {
-        const lines: any[] = []
-        let lineOrder = 1
-        lines.push({ journal_entry_id: newJournal.id, account_id: acc(expenseCode), debit: grandTotal, credit: 0, description: isRTL ? 'مصروف' : 'Expense', line_order: lineOrder++ })
-        if (advancePayment > 0) {
-          lines.push({ journal_entry_id: newJournal.id, account_id: acc(cashOrBankCode), debit: 0, credit: advancePayment, description: isRTL ? 'دفعة مسددة' : 'Payment made', line_order: lineOrder++ })
-        }
-        if (remainingAmount > 0) {
-          lines.push({ journal_entry_id: newJournal.id, account_id: acc('21001'), debit: 0, credit: remainingAmount, description: isRTL ? 'رصيد مستحق للمورد' : 'Amount due to supplier', line_order: lineOrder++ })
-        }
-        await supabase.from('journal_lines').insert(lines)
-      }
+      const res = await fetch('/api/purchases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoice_number: form.invoice_number,
+          supplier_id: form.supplier_id,
+          bill_date: form.bill_date,
+          due_date: form.due_date || null,
+          items: items.map(i => ({
+            description: i.description,
+            quantity: i.quantity,
+            unit_price: i.unit_price,
+            vat_rate: i.vat_rate,
+          })),
+          advance_payment: advancePayment,
+          payment_type: form.payment_type,
+          expense_category: form.expense_category || null,
+          branch: form.branch || null,
+          car_id: form.car_id || null,
+          notes: form.notes || null,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Purchase failed')
 
       notifyDataChanged()
       router.push('/purchases')

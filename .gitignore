@@ -53,3 +53,6 @@ next-env.d.ts
 *.orig
 *.rej
 *~
+
+# local release artifacts (source snapshots; never commit binaries)
+/release/

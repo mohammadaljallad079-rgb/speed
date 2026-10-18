@@ -38,6 +38,10 @@ function PayrollContent() {
   const [employees, setEmployees] = useState<Employee[]>([])
   const [selectedEmployees, setSelectedEmployees] = useState<Set<string>>(new Set())
   const [payrollDate, setPayrollDate] = useState(new Date().toISOString().split('T')[0])
+  // A stable id for THIS run. The reference is the server's idempotency key, so
+  // a retry after a failed submit reuses it (no double post), while a genuinely
+  // new run — including a second run on the same date — rotates it.
+  const [payrollRunId, setPayrollRunId] = useState(() => Math.random().toString(36).slice(2, 10))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [expandedEmp, setExpandedEmp] = useState<string | null>(null)
@@ -165,7 +169,7 @@ function PayrollContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           payroll_date: payrollDate,
-          reference: `PAYROLL-${payrollDate}`,
+          reference: `PAYROLL-${payrollDate}-${payrollRunId}`,
           entries,
         }),
       })
@@ -174,6 +178,8 @@ function PayrollContent() {
 
       alert(isRTL ? 'تم دفع الرواتب بنجاح' : 'Salaries paid successfully')
       setSelectedEmployees(new Set())
+      // A new run starts with a fresh reference; the previous one stays spent.
+      setPayrollRunId(Math.random().toString(36).slice(2, 10))
     } catch (error: any) {
       console.error('Error processing payroll:', error)
       alert('Error: ' + error.message)

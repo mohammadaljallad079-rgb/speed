@@ -1150,3 +1150,31 @@ that applies the filters it is given and returns only affected rows.
   mapping without rotating a password (use `--rotate-passwords` to rotate).
 - Baseline after Exec 31: 653 tests / 647 pass / 6 skipped / 0 fail; typecheck 129
   (unchanged); lint clean; production build green.
+
+## Execution 36 invariants (release audit fixes)
+
+- **`DELETE`/`PUT /api/journal-entries` are tenant-scoped and manual-only.** They
+  load the row first with `.eq("tenant_id", ...)`/`.is("tenant_id", null)`, so a
+  foreign id is a `404`. They refuse any `entry_type` outside the manual
+  allow-list (`MANUAL_ENTRY_TYPES`): a system-posted entry (sale, purchase,
+  receipt, payment, payroll, transfer, refund) is corrected by reversing the
+  source document, never deleted or rewritten from this screen. Previously the
+  service-role delete had no tenant filter and could destroy another tenant's
+  ledger.
+- **A route's catch-block compensation may only delete what that call created.**
+  `/api/invoices` sets `createdJournalId` only when `postSaleInvoice` returned
+  `created:true`; an idempotent retry (journal already existed) must never be
+  rolled back, or the compensation deletes a real posting.
+- **Payroll idempotency is keyed by the run reference, never the date.** Two
+  legitimate runs can share a date, so `reference` is required and the form sends
+  `PAYROLL-<date>-<runId>` (stable per submission, rotated after success).
+- **Lint is not broken.** `npm run lint` (`next lint`) is clean today; the older
+  "circular structure to JSON" note is stale.
+- **Middleware gates pages, not only `/api/*`.** `PROTECTED_PAGE_PREFIXES` in
+  `src/middleware.ts` redirects an anonymous `/dashboard` (and the other ERP
+  prefixes) to `/login`; `tests/login-flow.test.ts` asserts both the API `401`
+  and the page redirect. The older "page routes return 200 to anonymous callers"
+  note is stale.
+- Baseline after Exec 36: 776 tests / 770 pass / 6 skipped / 0 fail; typecheck 125
+  (unchanged); lint clean; production build green.
+

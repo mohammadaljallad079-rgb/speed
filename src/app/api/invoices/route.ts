@@ -202,7 +202,10 @@ export async function POST(request: Request) {
       entryType: postsAsRental ? "rental_invoice" : "sale_invoice",
       revenueCode: postsAsRental ? SALE_ACCOUNT_CODES.rentalRevenue : SALE_ACCOUNT_CODES.revenue,
     });
-    createdJournalId = journalId;
+    // Only a journal THIS call created may be compensated away on failure.
+    // `created:false` means a posted journal already existed for this invoice
+    // number (an idempotent retry); deleting it would destroy a real posting.
+    if (created) createdJournalId = journalId;
 
     // Record the advance receipt as a payment row (settles AR; not revenue).
     if (paidAmount > 0) {

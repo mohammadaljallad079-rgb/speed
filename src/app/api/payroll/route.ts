@@ -22,10 +22,15 @@ import {
  * Payroll payment.
  *
  * Posts a single balanced entry, Dr salaries expense (51003) / Cr cash (11001),
- * for the whole run, and records one `payroll_records` row per employee. The
- * reference defaults to `PAYROLL-<date>`, so a retry of the same run is
- * idempotent and cannot create a duplicate expense or liability. Identity,
- * tenant and accounts come from the session.
+ * for the whole run, and records one `payroll_records` row per employee.
+ *
+ * Idempotency: a run is identified by its `reference`, NOT by the date. Two
+ * legitimate payroll runs can fall on the same date (e.g. a regular run and a
+ * supplementary/bonus run), so the date alone must never be the idempotency key
+ * — that would make the second run a silent no-op. The caller supplies a stable
+ * `reference` (the form sends `PAYROLL-<date>` for a regular run; a bonus run
+ * sends its own). A retry with the same reference returns the existing journal
+ * instead of double-posting. Identity, tenant and accounts come from the session.
  */
 
 type Entry = { employee_id?: string; amount?: number | string };
@@ -56,6 +61,13 @@ export async function POST(request: Request) {
     }
     const total = entries.reduce((s: number, e: { employee_id: string; amount: number }) => s + e.amount, 0);
 
+    // The run reference is the idempotency key; it must be present so two runs on
+    // the same date cannot collapse into one.
+    const reference = typeof body.reference === "string" ? body.reference.trim() : "";
+    if (!reference) {
+      return NextResponse.json({ error: "reference is required (a stable identifier for the payroll run)", code: "bad_request" }, { status: 400 });
+    }
+
     // Every employee must belong to the caller's tenant (no cross-tenant FK).
     await assertReferences([REF_EMPLOYEE], { employee_id: entries[0].employee_id }, context);
     for (const e of entries.slice(1)) {
@@ -72,8 +84,6 @@ export async function POST(request: Request) {
       context.tenantId,
     );
 
-    const reference =
-      (typeof body.reference === "string" && body.reference) || `PAYROLL-${date}`;
     const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "payroll", "PAY");
     const { journalId, created } = await postPayroll(supabaseAdmin as never, {
       journalNumber,

@@ -3,8 +3,10 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import {
   assertDateInOpenFinancialYear,
   assertWritableTenant,
+  forbidden,
   getActiveFinancialYear,
   logAudit,
+  notFound,
   requireContext,
   toErrorResponse,
 } from "@/lib/auth";
@@ -30,6 +32,26 @@ const num = (v: unknown): number => {
   const n = typeof v === "number" ? v : parseFloat(String(v ?? ""));
   return Number.isFinite(n) ? n : 0;
 };
+
+/**
+ * Entry types the manual screen legitimately owns. Everything else is posted by
+ * a business service (a sale, a purchase, a receipt, a payment, payroll, a
+ * transfer, a refund) and must never be edited or deleted from this screen: the
+ * ledger would silently stop matching its source document, with no reversal to
+ * show for it. A system entry is corrected by reversing/returning it, not by
+ * rewriting history here.
+ */
+const MANUAL_ENTRY_TYPES = new Set([
+  "manual",
+  "custom",
+  "rental_income",
+  "fuel_expense",
+  "maintenance",
+  "insurance",
+  "salary",
+  "loan_given",
+  "loan_received",
+]);
 
 type LineInput = {
   account_id?: string;
@@ -173,6 +195,16 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "id is required", code: "bad_request" }, { status: 400 });
     }
 
+    // A system-posted entry is not editable here (see MANUAL_ENTRY_TYPES).
+    let loadQuery = supabaseAdmin.from("journal_entries").select("id,entry_type").eq("id", id);
+    loadQuery = context.tenantId ? loadQuery.eq("tenant_id", context.tenantId) : loadQuery.is("tenant_id", null);
+    const { data: current, error: loadErr } = await loadQuery.maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!current) throw notFound("Journal entry not found");
+    if (!MANUAL_ENTRY_TYPES.has(String((current as { entry_type?: string }).entry_type ?? "manual"))) {
+      throw forbidden("This entry was posted by a business document and cannot be edited; reverse the document instead.");
+    }
+
     const journalNumber = typeof body.journal_number === "string" ? body.journal_number.trim() : "";
     const date = (typeof body.entry_date === "string" && body.entry_date) || new Date().toISOString().slice(0, 10);
     const rawLines: LineInput[] = Array.isArray(body.lines) ? body.lines : [];
@@ -274,12 +306,28 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "id is required", code: "bad_request" }, { status: 400 });
     }
 
+    // Load the entry inside the caller's tenant first. Without this, the delete
+    // below runs on the service-role client with no tenant filter, so an id from
+    // another tenant would be removed. A foreign id now resolves to "not found".
+    let loadQuery = supabaseAdmin.from("journal_entries").select("id,entry_type").eq("id", id);
+    loadQuery = context.tenantId ? loadQuery.eq("tenant_id", context.tenantId) : loadQuery.is("tenant_id", null);
+    const { data: entry, error: loadErr } = await loadQuery.maybeSingle();
+    if (loadErr) throw loadErr;
+    if (!entry) throw notFound("Journal entry not found");
+
+    const entryType = String((entry as { entry_type?: string }).entry_type ?? "manual");
+    if (!MANUAL_ENTRY_TYPES.has(entryType)) {
+      throw forbidden("This entry was posted by a business document and cannot be deleted; reverse the document instead.");
+    }
+
     const { error: linesErr } = await supabaseAdmin.from("journal_lines").delete().eq("journal_entry_id", id);
     if (linesErr) throw linesErr;
-    const { error: headerErr } = await supabaseAdmin.from("journal_entries").delete().eq("id", id);
+    let headerQuery = supabaseAdmin.from("journal_entries").delete().eq("id", id);
+    headerQuery = context.tenantId ? headerQuery.eq("tenant_id", context.tenantId) : headerQuery.is("tenant_id", null);
+    const { error: headerErr } = await headerQuery;
     if (headerErr) throw headerErr;
 
-    await logAudit(context, { action: "delete", entity: "journal_entries", entityId: id, metadata: {} });
+    await logAudit(context, { action: "delete", entity: "journal_entries", entityId: id, metadata: { entry_type: entryType } });
     return NextResponse.json({ deleted: id });
   } catch (error) {
     const { status, body } = toErrorResponse(error);

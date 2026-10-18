@@ -419,6 +419,28 @@ describe("service shapes", () => {
     );
   });
 
+  test("two payroll runs on the same date post two journals when their references differ", async () => {
+    const { client, written } = makeStub();
+    const base = { tenantId: "t1", date: "2026-02-01", description: "x", salaryAccountId: "sal", cashAccountId: "cash" };
+    const a = await postPayroll(client, { ...base, journalNumber: "PAY-1", amount: 1000, reference: "PAYROLL-2026-02-01-aaaa" });
+    const b = await postPayroll(client, { ...base, journalNumber: "PAY-2", amount: 500, reference: "PAYROLL-2026-02-01-bbbb" });
+    assert.equal(a.created, true);
+    assert.equal(b.created, true, "a second run on the same date is not swallowed");
+    assert.equal(written.journal_entries.length, 2);
+  });
+
+  test("a retry of the same payroll reference is idempotent", async () => {
+    const { client, written } = makeStub({
+      tables: { journal_entries: [{ id: "existing", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01-aaaa" }] },
+    });
+    const again = await postPayroll(client, {
+      tenantId: "t1", date: "2026-02-01", description: "x", journalNumber: "PAY-3",
+      amount: 1000, salaryAccountId: "sal", cashAccountId: "cash", reference: "PAYROLL-2026-02-01-aaaa",
+    });
+    assert.equal(again.created, false);
+    assert.equal(written.journal_entries.length, 0, "a retry writes nothing");
+  });
+
   test("deposit refund debits the deposit liability / credits cash (never revenue)", async () => {
     const { client, written } = makeStub();
     await postDepositRefund(client, {
@@ -593,5 +615,49 @@ describe("manual journal screen: reads stay in the browser, writes move to the s
     assert.match(src, /totalDebit !== totalCredit/, "balanced rule enforced server-side");
     assert.match(src, /accounts are not available to this tenant/, "account must belong to the tenant or be shared");
     assert.match(src, /\.from\("journal_entries"\)\.delete\(\)\.eq\("id", createdId\)/, "a failed line write removes the orphan header");
+  });
+
+  test("DELETE scopes to the caller's tenant and refuses a system-posted entry", () => {
+    const src = read(ROUTE);
+    assert.match(src, /const MANUAL_ENTRY_TYPES/, "the manual allow-list must exist");
+    // The delete must load the row inside the tenant before removing anything.
+    assert.match(src, /loadQuery = context\.tenantId \? loadQuery\.eq\("tenant_id", context\.tenantId\) : loadQuery\.is\("tenant_id", null\)/, "delete must filter by tenant");
+    assert.match(src, /MANUAL_ENTRY_TYPES\.has\(entryType\)/, "a system entry cannot be deleted here");
+    assert.match(src, /throw notFound\("Journal entry not found"\)/, "a foreign id resolves to not found");
+    // The header delete itself must be tenant-scoped too.
+    assert.match(src, /headerQuery = context\.tenantId \? headerQuery\.eq\("tenant_id", context\.tenantId\)/, "header delete is tenant-scoped");
+  });
+
+  test("PUT refuses to edit a system-posted entry", () => {
+    const src = read(ROUTE);
+    assert.match(src, /A system-posted entry is not editable here/, "PUT guards system entries");
+    assert.match(src, /MANUAL_ENTRY_TYPES\.has\(String\(\(current as \{ entry_type\?: string \}\)\.entry_type/, "PUT checks the stored entry_type");
+  });
+});
+
+describe("Exec 36 - compensation must never delete a pre-existing posting", () => {
+  test("/api/invoices only compensates a journal THIS call created", () => {
+    const src = read("src/app/api/invoices/route.ts");
+    assert.match(src, /if \(created\) createdJournalId = journalId/, "createdJournalId is set only when created");
+    // The old unconditional assignment must be gone, or a retry could delete a
+    // real posting in the catch block.
+    assert.doesNotMatch(src, /^\s*createdJournalId = journalId;\s*$/m, "no unconditional assignment");
+  });
+});
+
+describe("Exec 36 - payroll idempotency is keyed by run reference, not the date", () => {
+  const ROUTE = "src/app/api/payroll/route.ts";
+  const PAGE = "src/app/hr/payroll/page.tsx";
+
+  test("the route requires a reference and does not fall back to the date", () => {
+    const src = read(ROUTE);
+    assert.match(src, /reference is required/, "a missing reference is a bad request");
+    assert.doesNotMatch(src, /`PAYROLL-\$\{date\}`/, "must not derive the key from the date alone");
+  });
+
+  test("the form sends a stable per-run reference", () => {
+    const src = read(PAGE);
+    assert.match(src, /reference: `PAYROLL-\$\{payrollDate\}-\$\{payrollRunId\}`/, "reference includes a per-run id");
+    assert.match(src, /setPayrollRunId\(/, "the run id rotates after a successful run");
   });
 });

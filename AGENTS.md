@@ -1224,3 +1224,23 @@ that applies the filters it is given and returns only affected rows.
 - Handoff docs: `SPEED_EXECUTION_38_DEPLOYMENT_HANDOFF_AR.md` (Arabic operator
   runbook) + `SPEED_EXECUTION_38_HANDOFF_REPORT.md`.
 
+
+## Execution 39 invariants (GitHub release promotion)
+
+- **The release is fast-forward-safe onto `origin/main`.** `origin/main` is
+  `29a005c4a9ddc964f6d92662c25ca991ca7fb477`, a direct ancestor of the branch tip.
+  Promotion is `merge --ff-only` + a plain push — never `--force`, `reset --hard`,
+  `clean`, or a branch delete.
+- **The remote release branch is stale.** `origin/feat/final-hardening-round5`
+  still points at `29a005c`; the local commits have never been pushed. Publish the
+  branch (`git push origin feat/final-hardening-round5`) before/with promoting main.
+- **Changes after the frozen release `dd28b5e` are docs-only** (Exec 38/39 reports +
+  AGENTS.md). Never fold a runtime change in without re-freezing and re-checksumming.
+- **Ancestor guard before promoting:** assert `bbc5e3a 795292f f008ec7 595e7d4
+  dd28b5e` are each ancestors of the target, so Exec 33–37 cannot be dropped.
+- `origin/feat/exec07-admin-superadmin-hardening` (`a9f9a9a`) differs from the local
+  branch (`f02125d`) but both are ancestors of the release tip — nothing is lost.
+- The push requires explicit owner authorization (Phase 3); report
+  `SPEED_EXECUTION_39_GITHUB_RELEASE_REPORT.md`. This execution is GitHub-only — no
+  deploy, no SQL, no production contact.
+

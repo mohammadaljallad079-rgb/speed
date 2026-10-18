@@ -1178,3 +1178,23 @@ that applies the filters it is given and returns only affected rows.
 - Baseline after Exec 36: 776 tests / 770 pass / 6 skipped / 0 fail; typecheck 125
   (unchanged); lint clean; production build green.
 
+
+## Execution 37 invariants (release packaging + hygiene)
+
+- **Every migration that backs a live route has a frozen activation package.**
+  007 was the last gap; `supabase/PRODUCTION_ACTIVATION_007.sql` now exists and is
+  emitted by `scripts/generate-activation-bundle.mjs`. Apply order is
+  001→002→003→004→005→006→007. `tests/activation-package-integrity.test.ts`
+  recomputes every embedded SHA-256 (20 assertions), so a stale banner fails CI.
+- **`EXEC07_1_TENANT_POLICY_FIX.sql` is not a file in this repo.** The tenant-policy
+  fix it names (restrictive `activity_logs_no_update`/`_delete`) lives in migration
+  002 and is guarded by `tests/security-tenant-isolation.test.ts`.
+- **Editor-backup files are never tracked.** `*.backup`, `*.backup2`,
+  `*.backup.<ts>` are git-ignored; `git ls-files | grep -c "\.backup"` must stay 0.
+- **Anonymous `/api/*` always returns 401 from middleware**, so a route's presence
+  cannot be fingerprinted with an unauthenticated request — a nonexistent API path
+  also returns 401. Confirm the deployed commit on the VM, not by probing.
+- Production is read-only-reachable over HTTPS: protected pages 307→`/login`,
+  protected APIs 401, `/api/public/*` 200. Deploy + DDL remain operator steps
+  (no `/var/www`, `pm2`, `ssh`, or DDL connection in the sandbox).
+

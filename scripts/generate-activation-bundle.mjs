@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const MIG = path.join(ROOT, "supabase", "migrations");
 const OUT = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_005_006.sql");
+const OUT_007 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_007.sql");
 
 const sha = (s) => createHash("sha256").update(s, "utf8").digest("hex");
 const read = (name) => fs.readFileSync(path.join(MIG, name), "utf8");
@@ -28,6 +29,9 @@ const b005 = read("005_accounting_integrity.sql");
 const b006 = read("006_ai_repair.sql");
 const h005 = sha(b005);
 const h006 = sha(b006);
+
+const b007 = read("007_purchase_sale_links.sql");
+const h007 = sha(b007);
 
 const sep = "-- " + "=".repeat(74);
 
@@ -152,3 +156,83 @@ fs.writeFileSync(OUT, header, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT)}`);
 console.log(`  005 sha256 ${h005}`);
 console.log(`  006 sha256 ${h006}`);
+
+const header007 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (007)
+-- ============================================================================
+-- Purpose : create the analytical purchase <-> credit-sale link table that the
+--           /api/purchase-sale-links route (Exec 30, Item 6) reads and writes.
+--           REPORTING/ANALYSIS ONLY — no inventory, no warehouse, no stock
+--           movement, no cost allocation, no journal entry.
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : run PRODUCTION_ACTIVATION_001_002_003.sql, then
+--           PRODUCTION_ACTIVATION_004.sql, then
+--           PRODUCTION_ACTIVATION_005_006.sql, and ONLY THEN this file.
+--           Dependencies:
+--             * 007 needs can_read_tenant()/can_write_tenant() (defined in 002);
+--             * it references public.purchase_invoices and public.invoices,
+--               which already exist on the live project.
+--           Do NOT run this file before 001 -> 002.
+--
+-- SAFETY  : additive, idempotent, forward-only. No DROP TABLE, no DROP COLUMN,
+--           no TRUNCATE, no DELETE, no row rewrite. It creates one table, five
+--           indexes and four RLS policies. Safe to re-run.
+--
+-- WARNING : RUN THIS ONLY AGAINST THE CORRECT PROJECT.
+--           Confirm the project ref shown in the SQL Editor is
+--           chlkmdobhvfnldqkgdji (SPEED ERP production) before executing.
+--
+-- The migration body below is reproduced verbatim from
+-- supabase/migrations/007_purchase_sale_links.sql (SHA-256 recorded at its
+-- header), so what runs here is exactly what was reviewed and locally verified.
+-- ============================================================================
+
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — visibility only; never aborts the script)
+-- ============================================================================
+select current_database() as database, current_user as executor_role, now() as at_utc;
+
+-- 007 depends on the 002 helpers and on the two tables it references.
+select 'helper can_read_tenant()'  as item, exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='can_read_tenant') as present
+union all select 'helper can_write_tenant()', exists (select 1 from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' and p.proname='can_write_tenant')
+union all select 'table public.purchase_invoices', (to_regclass('public.purchase_invoices') is not null)
+union all select 'table public.invoices', (to_regclass('public.invoices') is not null)
+union all select '007 already applied (purchase_sale_links)', (to_regclass('public.purchase_sale_links') is not null)
+order by present, item;
+
+-- ============================================================================
+-- BEGIN 007_purchase_sale_links.sql
+-- SHA-256 (body): ${h007}
+-- ============================================================================
+
+${b007}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'purchase_sale_links table' as item, (to_regclass('public.purchase_sale_links') is not null) as ok
+union all select 'RLS enabled', (select relrowsecurity from pg_class where oid='public.purchase_sale_links'::regclass)
+union all select 'unique index (tenant)', exists (select 1 from pg_indexes where schemaname='public' and indexname='purchase_sale_links_tenant_pair_uidx')
+union all select 'unique index (null tenant)', exists (select 1 from pg_indexes where schemaname='public' and indexname='purchase_sale_links_null_tenant_pair_uidx')
+union all select 'anon has no privilege', not has_table_privilege('anon', 'public.purchase_sale_links', 'select')
+order by item;
+
+-- The four policies must all exist.
+select polname, polpermissive
+  from pg_policy
+ where polrelid = 'public.purchase_sale_links'::regclass
+ order by polname;
+
+-- ============================================================================
+-- END OF PACKAGE (007)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_007, header007, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_007)}`);
+console.log(`  007 sha256 ${h007}`);

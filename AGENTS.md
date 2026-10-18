@@ -1198,3 +1198,29 @@ that applies the filters it is given and returns only affected rows.
   protected APIs 401, `/api/public/*` 200. Deploy + DDL remain operator steps
   (no `/var/www`, `pm2`, `ssh`, or DDL connection in the sandbox).
 
+
+## Execution 38 invariants (deployment handoff)
+
+- **The deployable release is frozen at `dd28b5e`** (branch
+  `feat/final-hardening-round5`, 22 ahead / 0 behind `origin/main`). Release
+  archive `release/speed-dd28b5e.tar.gz` sha256
+  `5a4c38b40ddd5eca089daa41929dfdad12707e7f8d09e3367a5c6b3c8bce4a7a`, 462 files
+  (== `git ls-files`), git-ignored. Exec 38 handoff docs are a docs-only commit
+  after it, so the checksum stays non-circular.
+- **The release lives only on the feature branch.** `origin/main` does not
+  contain Exec 33–37; the server deploys from `main`. Publishing is a
+  fast-forward: `merge --ff-only feat/final-hardening-round5` then a plain push.
+  Guard that Exec 33–37 cannot be dropped: assert each of
+  `bbc5e3a 795292f f008ec7 595e7d4 dd28b5e` is an ancestor of the release commit.
+  Never `--force`, never `reset --hard`.
+- **All 7 migrations have a checksum-verified activation package**
+  (`PRODUCTION_ACTIVATION_001_002_003/004/005_006/007.sql`). Apply order
+  001→002→003→004→005→006→007 via the Supabase SQL Editor on
+  `chlkmdobhvfnldqkgdji`; run the 005 duplicate pre-check first (must return zero
+  rows). Never continue past a failed statement.
+- **Rollback never restores an old DB over newer transactions** and never edits
+  journals manually — reverse via in-app documents. Each migration has a
+  non-destructive `*_rollback.sql`.
+- Handoff docs: `SPEED_EXECUTION_38_DEPLOYMENT_HANDOFF_AR.md` (Arabic operator
+  runbook) + `SPEED_EXECUTION_38_HANDOFF_REPORT.md`.
+

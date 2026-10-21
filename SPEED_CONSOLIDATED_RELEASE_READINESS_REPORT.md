@@ -226,10 +226,12 @@ here**; the operator must supply a working `DATABASE_URL`. Migrations 001–007 
 ## 12. Git actions in this cycle
 
 - Files changed: `AGENTS.md`, `.gitignore`, `SPEED_CONSOLIDATED_RELEASE_READINESS_REPORT.md`.
-- Commit: one local commit on `feat/final-hardening-round5` (SHA recorded after commit).
-- Push: **normal, non-force** push to `feat/final-hardening-round5` only. `main`
-  untouched. No merge, no deploy.
-- Secret scan of the changed files: **0** matches for keys/tokens/passwords.
+- Commit: `8da21dd182408403ca1dad831eae809b49d1abf9` (`8da21dd`), parent `0d3f126`,
+  on `feat/final-hardening-round5`.
+- Push: **normal, non-force** push to `feat/final-hardening-round5` only
+  (`0d3f126..8da21dd`). `main` untouched (`d6788be`). No merge, no deploy.
+- Secret scan of the changed files: **0** real secrets (only the `service_role` /
+  `SUPABASE_SERVICE_ROLE_KEY` **names** appear in prose — no values).
 
 ---
 

@@ -212,14 +212,23 @@ No test was altered to force a pass; no failure was hidden.
   `SPEED_EXECUTION_41_ORIGINAL_EXCEL_RECONCILIATION_REPORT.md`,
   `SPEED_EXECUTION_42_CHECKLIST_AUDIT_AND_REMEDIATION_REPORT.md`,
   `SPEED_EXECUTION_43_REMAINING_GAPS_AND_RELEASE_READINESS_REPORT.md`.
-  (SHA recorded at the end of this execution.)
+  **Commit SHA: `e239b6acd5f669825e7e865517524b269e73cc82` (`e239b6a`)**, parent
+  `d6788be`.
 - **Base:** `d6788be` (previous HEAD, also `origin/main`).
 
 ## 10. What was actually pushed
 
 Pushed **only** to the approved branch `feat/final-hardening-round5` via a **normal,
-fast-forward push (no force)**. `main` was **not** pushed, merged, or touched. No
-production deploy occurred. (Exact result recorded in the execution log / §11.)
+fast-forward push (no force)**:
+
+```
+d6788be..e239b6a  feat/final-hardening-round5 -> feat/final-hardening-round5
+```
+
+Verified after push: `origin/feat/final-hardening-round5` = `e239b6a…`, and
+`origin/main` still = `d6788be…` (**untouched**). No production deploy occurred.
+The remote URL was restored to the plain form afterwards (no token left in
+`.git/config`).
 
 ---
 

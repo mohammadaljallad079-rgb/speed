@@ -65,10 +65,10 @@ function DashboardContent() {
       })
       setCars(carsRes.data || [])
       const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug"]
-      setEarningsData(months.map((m,i) => ({
+      setEarningsData(months.map((m, monthIdx) => ({
         month: m,
-        value: invoices.filter((i:any) => i.status !== "cancelled" && i.invoice_date && new Date(i.invoice_date).getMonth()===i)
-          .reduce((s:number,i:any) => s + invoiceRevenue(i), 0)
+        value: invoices.filter((inv:any) => inv.status !== "cancelled" && inv.invoice_date && new Date(inv.invoice_date).getMonth()===monthIdx)
+          .reduce((s:number,inv:any) => s + invoiceRevenue(inv), 0)
       })))
       const tot = contracts.length || 1
       setRentStatus([

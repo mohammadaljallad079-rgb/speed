@@ -20,10 +20,11 @@ npm run test:excel   # Excel engine
 
 ### Known pre-existing failures (not caused by new work)
 
-- `npm run typecheck` reports **129 errors** in the legacy ERP pages. This is the
+- `npm run typecheck` reports **125 errors** in the legacy ERP pages. This is the
   baseline; new code must not increase it. Verify with
   `npm run typecheck 2>&1 | grep -c "error TS"`.
-- `npm run lint` fails with `Converting circular structure to JSON` вҖ” a broken
+- `npm run lint` currently passes clean (`next lint`). Historically it failed with
+  `Converting circular structure to JSON` вҖ” a broken
   ESLint config, unrelated to source code. Lint is **not usable** as a gate here.
 
 ## Architecture that must not be bypassed
@@ -44,59 +45,34 @@ Rules learned the hard way:
 - **`resolveAuthContext` always starts from `DEFAULT_ROLE_PERMISSIONS[role]`** and
   only then merges DB overrides. A test that constructs a context with an empty
   permission map tests a state that cannot occur in production.
-- **Split pure logic from DB-bound logic.** `validator.ts` (rules) vs
-  `references.ts` (lookups), `gates.ts` (authorization) vs `http.ts` (scope).
+- **Split pure logic from DB-bound logic.** `policy.ts` (pure rules) vs
+  `references.ts` (DB lookups), `api-guard.ts` (`requireContext`/`withAuth`)
+  vs `scope.ts` (query scoping).
   Importing the `@/lib/auth` barrel pulls `server-only` and breaks client
   components. Import `policy.ts` / `errors.ts` / `types.ts` directly instead.
 - **Tenant filters are applied before any narrowing filter**, so `ids`/`filters`
   can only reduce a result set, never widen it.
 
-## Excel service (`src/lib/excel/`)
+## Excel import/export engine (`src/lib/import/` + `src/lib/reporting/workbook.ts`)
 
-Reusable CORE capability вҖ” import/export for any module, not a business module.
+The real, single Excel capability (there is **no** `src/lib/excel/` module):
 
-- `registry.ts` вҖ” module specs (fields, labels, aliases, types, permissions).
-  Add a module here; nothing else hardcodes module knowledge.
-- Pipeline: `parse` вҶ’ `mapper` вҶ’ `normalize` вҶ’ `validateRow` вҶ’ `references` вҶ’
-  `duplicates` вҶ’ `importer`.
-- `client.ts` exposes an injectable `ExcelDb`; production passes nothing and gets
-  `supabaseAdmin`. Tests inject a recording stub.
-- Import is limited to modules whose table has a `tenant_id` column. Tables without
-  one are export-only until the RLS migration adds it.
-- `src/components/excel/` вҖ” `<ExcelImportButton />` and `<ExcelExportButton />`,
-  both driven by `use-excel.ts`. `Toaster` (sonner) is mounted in `src/app/layout.tsx`.
+- `src/lib/import/registry.ts` — `IMPORT_MODULES` specs (fields, labels, aliases,
+  types, permissions, duplicate keys). Add a module here; nothing else hardcodes
+  module knowledge.
+- Import pipeline: `parse` → `mapHeaders` / `buildPreview` → `commitImport`
+  (`src/lib/import/engine.ts`), with `template.ts` and `export.ts` helpers.
+- Supported import modules are **exactly** `customers`, `suppliers`, `expenses`
+  (verified in `registry.ts`). Do not claim any other module without evidence.
+- Route: `POST /api/import` (guarded by `requireContext` + module permission).
+  UI: `src/components/import/ExcelImportPanel.tsx`, page `settings/import`.
+- Export: `src/lib/reporting/workbook.ts` (ExcelJS), used by the report pages and
+  the dynamic report builder; templates come from `src/lib/reporting/templates.ts`.
 
-### Wiring into module pages (Phase 3)
-
-- A page adds exactly one thing to its header:
-  `<ExcelModuleActions module="customers" filters={...} onImported={reload} />`.
-  Do not call the lower-level buttons directly from pages.
-- Pass the page's own filter so "export" matches what the user sees, and the page's
-  reload function so an import refreshes the list.
-- `ExcelModuleActions` renders nothing until `/api/excel/*` confirms the caller's
-  permissions, so a page cannot show a control the user may not use. A module that
-  is export-only shows an "Export only" hint using the registry's `notes`.
-- **Templates are gated by `resolveTemplateModule`**, not the import gate: importable
-  modules use the import permission, export-only modules use the export permission.
-  Never grant `import` permission just so a template can be downloaded.
-- The module list is cached per session in `use-excel.ts`. Clear that cache if a role
-  change must take effect without a reload.
-- `tax_settings` and `tax_rates` are **different real tables**. The Tax Settings pages
-  use `tax_settings`. Verify a table's live columns before wiring a module.
-- 20 pages are wired; `tests/excel-module-integration.test.ts` asserts the pageвҶ”module
-  mapping. Adding a wired page means updating that list.
-
-### Import safety invariant (do not weaken)
-
-- **A module may only be importable if it declares a `tenantColumn`.** The importer
-  scopes writes with `if (tenantId && module.tenantColumn)`, so a tenant-less module
-  would scope updates by `id` alone вҖ” letting one tenant overwrite another's row.
-  `importSafety()` in `gates.ts` enforces this fail-closed, and
-  `tests/core-security-migration.test.ts` asserts every importable module passes it.
-- Import safety needs three things to agree at once: the registry marks the module
-  `importable: true`, it declares a `tenantColumn`, and **the live table actually has
-  that column**. Never enable import from the registry alone вҖ” confirm the column
-  exists in the live database first.
+> Note: earlier text in this file (and the "Execution 04" section below) referenced a
+> `src/lib/excel/` engine with `ExcelModuleActions` / `/api/excel/*` and tests such as
+> `excel-module-integration.test.ts`. **That engine does not exist**; the import engine
+> above (Execution 25) is the single, real implementation.
 
 ### Database access from this environment
 
@@ -123,10 +99,10 @@ that applies the filters it is given and returns only affected rows.
 
 ## Execution 01 invariants (tenant + financial-year wiring)
 
-- `src/lib/auth/session-context.ts` is the **only** client-safe way for a browser
-  page to learn its `tenant_id` and active `financial_year_id`. It derives both
-  from the authenticated session; neither may ever be read from a form field,
-  query string or other caller input.
+- There is **no** `src/lib/auth/session-context.ts`. Server routes learn the tenant
+  and active financial year from the session via `resolveAuthContext` /
+  `getActiveFinancialYear` (`src/lib/auth/context.ts`); a browser page must never read
+  `tenant_id`/`financial_year_id` from a form field, query string or other caller input.
 - The migration's three `tables text[]` arrays must stay consistent: every table
   that receives a policy (tenant or company) **must** also appear in the RLS-enable
   array, or the policy is inert. `tests/core-security-migration.test.ts` enforces
@@ -167,7 +143,14 @@ that applies the filters it is given and returns only affected rows.
 - `npm test` / `test:core` load `.env.local` via `tsx --env-file-if-exists`. Without it,
   any test that transitively imports the browser Supabase client fails at load.
 
-## Execution 04 invariants (universal Excel engine)
+## Execution 04 invariants (universal Excel engine) — SUPERSEDED by Execution 25
+
+> **Correction:** the `src/lib/excel/` engine, `src/components/excel/`, the
+> `/api/excel/*` routes, `postJournalEntry` (`src/lib/excel/journal-group.ts`),
+> `importSafety()` and the referenced tests do **not** exist in this repository. The
+> real import engine is `src/lib/import/` (see Execution 25). The bullets below are
+> retained for history only and must not be followed literally.
+
 
 - There is **one** Excel engine (`src/lib/excel/`) and **one** action cluster
   (`src/components/excel/ExcelModuleActions`). Never add a per-page import/export
@@ -197,16 +180,20 @@ that applies the filters it is given and returns only affected rows.
   create a second import-history store.
 - The error report carries a "Ш§Щ„ШӯЩ„ Ш§Щ„Щ…ЩӮШӘШұШӯ" / "Resolution" column sourced from the
   `RESOLUTIONS` map in `exporter.ts`; add a code there when adding an error code.
-- `npm run test:excel` includes `tests/excel-duplicates-and-groups.test.ts`;
-  `npm run test:accounting` includes `tests/accounting-tenant-guard.test.ts`.
+- There are **no** `test:excel` / `test:accounting` npm scripts. The suite is the
+  explicit file list in `test:core` (run via `npm test`). Import tests live in
+  `tests/exec25-universal-import.test.ts`; accounting tests in the `exec16/17/18/29/…`
+  files.
 
 
 ## Execution 05 invariants (sales + invoices + payments + returns)
 
-- **One sales engine.** `src/lib/sales/service.ts` owns every financial sales
-  mutation: `createSalesInvoice`, `recordPayment`, `createSalesReturn`,
-  `assertInvoiceMutable`. Pages and routes call it; nothing posts a sales journal
-  entry directly. A second sales/posting path is what this execution forbids.
+- **One sales posting path.** There is **no** `src/lib/sales/service.ts`. Sales
+  financial mutations go through the server route `src/app/api/invoices/route.ts`
+  (`POST` issue, `[id]/reverse`), which posts via `src/lib/accounting/sales-posting.ts`,
+  numbers via `src/lib/numbering.ts`, and guards mutability with
+  `src/lib/accounting/invoice-guards.ts`. Pages (`sales/new`, `invoices/new`) POST to
+  `/api/invoices`; nothing posts a sales journal entry directly from the browser.
 - **Revenue is recognised once, at issue.** Issuing an invoice posts
   `Dr AR / Cr Revenue / Cr Output VAT`. Collecting it posts `Dr Cash/Bank / Cr AR`
   and must never credit revenue again. A return posts

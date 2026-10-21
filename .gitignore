@@ -57,6 +57,13 @@ next-env.d.ts
 *.backup2
 *.backup[0-9]*
 *.backup.*
+# additional editor-save patterns seen in this repo (see Exec 44 report)
+*.bak_*
+*.bak.*
+*.bak[0-9]*
+*.save
+*.save[0-9]*
+*.save.*
 
 # local release artifacts (source snapshots; never commit binaries)
 /release/

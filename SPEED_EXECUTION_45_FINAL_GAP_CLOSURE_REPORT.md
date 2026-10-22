@@ -14,10 +14,10 @@ Report created by an AI agent (OpenHands) on behalf of the repository owner.
 | Item | Before | After |
 | --- | --- | --- |
 | Branch | `feat/final-hardening-round5` | same |
-| HEAD | `c2517c1` (**verified**) | see §12 (new commit) |
+| HEAD | `c2517c1` (**verified**) | **`d663a88f6640be42b241b9bf432adefcc5fe7cf6`** (`d663a88`) |
 | Parent | `8da21dd` (Exec 44) | — |
 | `origin/main` | `d6788be` | **`d6788be` (untouched)** |
-| `origin/feat/final-hardening-round5` | `c2517c1` | fast-forwarded |
+| `origin/feat/final-hardening-round5` | `c2517c1` | `d663a88` (fast-forwarded) |
 | Working tree | clean | clean after commit |
 
 `git reset --hard`, `git clean`, `git push --force` were **never** used. No source or
@@ -185,7 +185,7 @@ Complete all safe work first; these are the only items genuinely requiring the o
 
 ## 7. Single controlled release plan
 
-1. **Freeze** the release commit = this branch HEAD (§12).
+1. **Freeze** the release commit = `d663a88` (this branch HEAD).
 2. **Backups:** app (`/var/www/speed.harbourconsultancies.com`) + Supabase DB
    (PITR/dump), with checksums; verify restorable.
 3. **Preflight:** run `EXEC27_DUPLICATE_JOURNAL_PREFLIGHT.sql` → **zero rows** required.

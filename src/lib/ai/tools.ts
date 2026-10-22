@@ -127,14 +127,15 @@ export async function runTool(
   if (name === "receivables_summary") {
     // The shaped sales rows drop `paid_amount`, so read the invoices directly
     // (still tenant-scoped through the injected db) to compute what is owed.
-    let query = ctx.db.from("invoices").select("total, paid_amount, status, tenant_id");
+    // The live column is `total_amount` (there is no `total` column).
+    let query = ctx.db.from("invoices").select("total_amount, paid_amount, status, tenant_id");
     if (ctx.tenantId) query = query.eq("tenant_id", ctx.tenantId);
     const { data, error } = await query;
     if (error) throw error;
     const open = (data ?? []).filter(
-      (r) => String(r.status ?? "") !== "cancelled" && num(r.total) - num(r.paid_amount) > 0,
+      (r) => String(r.status ?? "") !== "cancelled" && num(r.total_amount) - num(r.paid_amount) > 0,
     );
-    const due = open.reduce((acc, r) => acc + (num(r.total) - num(r.paid_amount)), 0);
+    const due = open.reduce((acc, r) => acc + (num(r.total_amount) - num(r.paid_amount)), 0);
     return {
       tool: name,
       dataset: "receivables",
@@ -142,8 +143,8 @@ export async function runTool(
       count: open.length,
       total: due,
       facts: [
-        { label: "Outstanding invoices", value: open.length, dataset: "receivables", ref: "invoices where total > paid_amount" },
-        { label: "Outstanding amount", value: money(due), dataset: "receivables", ref: "sum(total - paid_amount)" },
+        { label: "Outstanding invoices", value: open.length, dataset: "receivables", ref: "invoices where total_amount > paid_amount" },
+        { label: "Outstanding amount", value: money(due), dataset: "receivables", ref: "sum(total_amount - paid_amount)" },
       ],
     };
   }
@@ -180,19 +181,26 @@ export async function runTool(
   }
 
   if (name === "invoice_lookup") {
+    // `invoices` has no `customer_name` column; the customer name lives on the
+    // related `customers.full_name`. The amount column is `total_amount`.
     let query = ctx.db
       .from("invoices")
-      .select("invoice_number, customer_name, status, total, paid_amount, invoice_date, tenant_id");
+      .select("invoice_number, status, total_amount, paid_amount, invoice_date, tenant_id, customers(full_name)");
     if (ctx.tenantId) query = query.eq("tenant_id", ctx.tenantId);
     const { data, error } = await query;
     if (error) throw error;
     const term = extractLookupTerm(ctx.prompt);
     const all = (data ?? []).filter((r) => String(r.status ?? "") !== "cancelled");
+    const nameOf = (r: Record<string, unknown>): string => {
+      const rel = r.customers as { full_name?: unknown } | { full_name?: unknown }[] | null | undefined;
+      const row = Array.isArray(rel) ? rel[0] : rel;
+      return String(row?.full_name ?? "");
+    };
     const matches = term
-      ? all.filter((r) => String(r.invoice_number ?? "").toLowerCase().includes(term) || String(r.customer_name ?? "").toLowerCase().includes(term))
+      ? all.filter((r) => String(r.invoice_number ?? "").toLowerCase().includes(term) || nameOf(r).toLowerCase().includes(term))
       : all;
     const total = sum(
-      matches.map((r) => ({ total: num(r.total) })),
+      matches.map((r) => ({ total: num(r.total_amount) })),
       "total",
     );
     return {
@@ -203,10 +211,10 @@ export async function runTool(
       total,
       facts: [
         { label: "Invoices found", value: matches.length, dataset: "invoices", ref: term ? `number/customer contains "${term}"` : "all invoices (tenant-scoped)" },
-        { label: "Invoiced total", value: money(total), dataset: "invoices", ref: "sum(invoices.total)" },
+        { label: "Invoiced total", value: money(total), dataset: "invoices", ref: "sum(invoices.total_amount)" },
         ...matches.slice(0, 5).map((r) => ({
           label: String(r.invoice_number ?? "invoice"),
-          value: `${money(num(r.total))} · ${String(r.status ?? "")}`,
+          value: `${money(num(r.total_amount))} · ${String(r.status ?? "")}`,
           dataset: "invoices",
           ref: String(r.invoice_date ?? ""),
         })),

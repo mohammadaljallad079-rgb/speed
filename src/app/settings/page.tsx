@@ -10,7 +10,7 @@ function SettingsPageContent() {
   const router = useRouter()
   
   useEffect(() => {
-    router.replace('/settings/website')
+    router.replace('/settings/company')
   }, [router])
 
   return null

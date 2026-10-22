@@ -114,7 +114,7 @@ function BankTransferContent() {
       <div className="max-w-2xl mx-auto p-4 space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
         {/* Header */}
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => router.push('/accounting')} className="rounded-lg gap-1">
+          <Button variant="outline" size="sm" onClick={() => router.push('/accounting/journal-entries')} className="rounded-lg gap-1">
             <ArrowLeft className="w-4 h-4" /> {isRTL ? 'رجوع' : 'Back'}
           </Button>
           <h1 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -227,7 +227,7 @@ function BankTransferContent() {
 
         {/* Submit */}
         <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={() => router.push('/accounting')} className="rounded-lg">
+          <Button variant="outline" onClick={() => router.push('/accounting/journal-entries')} className="rounded-lg">
             <X className="w-4 h-4 mr-1" /> {isRTL ? 'إلغاء' : 'Cancel'}
           </Button>
           <Button 

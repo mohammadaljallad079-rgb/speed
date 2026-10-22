@@ -1256,4 +1256,32 @@ that applies the filters it is given and returns only affected rows.
   the car form). Verify a nav href against the route tree before adding it; there
   is no `/loans/new` or `/rental-contracts` page.
 
+## Execution 49 invariants (final functional gap audit)
+
+- **`invoices` has `total_amount`, not `total`, and has no `customer_name`.**
+  The customer name is the `customers(full_name)` relation. A `select` listing a
+  phantom column fails the **whole** PostgREST request, so this silently broke the
+  assistant's `receivables_summary` and `invoice_lookup` tools
+  (`src/lib/ai/tools.ts`). Never select `invoices.total` / `invoices.customer_name`.
+- **The fleet table is `cars`; there is no `vehicles` table.** A relation
+  projection `vehicles(*)` (e.g. the old `rentals/[id]/payment` query) fails the
+  request. `tests/exec49-functional-gap-closure.test.ts` rejects any
+  `vehicles(...)` relation repo-wide.
+- **Quotation print** lives at `/quotations/[id]/print` (added), mirroring
+  `payments/[id]/print`. The list links to it; do not reintroduce a
+  `/quotations/print?id=` target — there is no such route.
+- **`/accounting`, `/hr`, `/vehicles`, `/analytics`, `/journal`,
+  `/settings/website`, `/settings/integrations` are not pages.** Back buttons and
+  the sidebar-settings default tree must target a real page
+  (`/accounting/journal-entries`, `/accounting/expenses`, `/hr/employees`,
+  `/cars`, `/financial-dashboard`, `/settings/company`,
+  `/settings/integrations/whatsapp`).
+- `tests/exec49-functional-gap-closure.test.ts` (in `test:core`) enforces all of
+  the above, including a **whole-tree** scan that every `href` /
+  `router.push` / `router.replace` / `redirect` literal (object-form `href:`
+  included) resolves to a real `src/app/**/page.tsx`. Add any new page link to the
+  route tree before shipping it.
+- `npm run lint` currently passes (`No ESLint warnings or errors`) in this
+  environment; the "broken ESLint config" note no longer reproduces.
+
 

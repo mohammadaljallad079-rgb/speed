@@ -37,7 +37,7 @@ function PaymentContent() {
     try {
       const { data, error } = await supabase
         .from("rental_contracts")
-        .select("*, customers(*), vehicles(*)")
+        .select("*, customers(*), cars(*)")
         .eq("id", contractId)
         .single()
 

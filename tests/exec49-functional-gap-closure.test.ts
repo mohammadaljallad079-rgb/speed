@@ -159,3 +159,34 @@ describe("exec49 — phantom `vehicles` relation removed", () => {
     assert.doesNotMatch(src, /vehicles\(\*\)/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 6. No phantom `license_plate` column — the fleet table is `cars` and the
+//    plate column is `plate_number` (the `Car` type in src/lib/supabase.ts has
+//    no `license_plate`; 130+ other usages use `plate_number`). A projection
+//    that requests it makes the whole PostgREST request fail (42703), so the
+//    affected page silently renders no rows.
+// ---------------------------------------------------------------------------
+describe("exec49 — phantom `license_plate` column removed", () => {
+  test("no source file references cars.license_plate", () => {
+    const offenders: string[] = [];
+    for (const file of SRC_FILES) {
+      const src = read(path.relative(ROOT, file));
+      if (/\blicense_plate\b/.test(src)) offenders.push(path.relative(ROOT, file));
+    }
+    assert.deepEqual(offenders, [], `phantom license_plate column: ${offenders.join(", ")}`);
+  });
+
+  test("the Car type and the rental selects use plate_number", () => {
+    const types = read("src/lib/supabase.ts");
+    const carType = types.match(/export type Car = \{[\s\S]*?\n\};/);
+    assert.ok(carType, "Car type must exist");
+    assert.match(carType![0], /plate_number: string;/);
+    assert.doesNotMatch(carType![0], /license_plate/);
+    for (const rel of ["src/app/bookings/page.tsx", "src/app/invoices/[id]/page.tsx"]) {
+      const src = read(rel);
+      assert.match(src, /cars\(make,? ?model,? ?(year, )?plate_number/);
+    }
+  });
+});
+

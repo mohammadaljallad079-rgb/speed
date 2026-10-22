@@ -1285,3 +1285,32 @@ that applies the filters it is given and returns only affected rows.
   environment; the "broken ESLint config" note no longer reproduces.
 
 
+
+## Execution 50 invariants (final completion audit)
+
+- **The `cars` plate column is `plate_number`; `license_plate` does not exist.**
+  Three projections (`bookings/page.tsx`, `invoices/[id]/page.tsx` x2) requested
+  `license_plate`, which failed the whole PostgREST request (42703) so those pages
+  silently loaded no car/contract rows. Fixed in Exec 50; the Exec 49 guard now
+  also rejects `license_plate` repo-wide.
+- **Not every `.from("...")` table is enumerated in repo SQL.** `contracts`,
+  `depreciation_schedules`, `expense_categories`, `leaves`,
+  `payroll_adjustments`, `payroll_records`, `financial_ratios` and the
+  `financial_*` tables exist live but are absent from the migrations/harness, so
+  an "unknown table" scan flags them as false positives. Verify a column/table
+  against the live schema or the app's own insert payloads before calling it a
+  phantom.
+- **The partial TS types in `src/lib/supabase.ts` are not the full column set.**
+  `rental_contracts.daily_rate/deposit_amount/total_days/subtotal/vat_amount`,
+  `invoices.paid_amount/discount_amount/invoice_type` and `expenses.vat_amount`
+  are real (written by `rentals/new`, read by `api/financial/calculate`); a scanner
+  that trusts only those types reports them as false positives.
+- **The Excel import engine is `src/lib/import/*` (Exec 25), not `src/lib/excel/`.**
+  The "Execution 04 (universal Excel engine)" section describes a `src/lib/excel/`
+  tree that is not in this snapshot; the working importer is
+  `src/lib/import/registry.ts` + `engine.ts` + `template.ts` + `export.ts`,
+  proven by `tests/exec25-universal-import.test.ts`.
+- **The original 13-item checklist** (`speed_erp_progress(1)/(2).xlsx`) was never
+  accessible in this environment (Exec 41); the authoritative list audited in
+  Exec 50 is Exec 33's "the Original 13 Items".
+

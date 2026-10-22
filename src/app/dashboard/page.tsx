@@ -125,7 +125,7 @@ function DashboardContent() {
 
   const kpis = [
     { label: isRTL?"اجمالي الايرادات":"Total Revenue", value: stats.revenue.toFixed(3)+" BHD", icon: DollarSign, delta:"+2.86%", up:true, href:"/payments" },
-    { label: isRTL?"الحجوزات":"Bookings", value: stats.bookings, icon: TrendingUp, delta:"+1.73%", up:true, href:"/rental-contracts" },
+    { label: isRTL?"الحجوزات":"Bookings", value: stats.bookings, icon: TrendingUp, delta:"+1.73%", up:true, href:"/rentals" },
     { label: isRTL?"سيارات مؤجرة":"Rented Cars", value: stats.rented, icon: Car, delta:"-2.86%", up:false, href:"/cars?status=rented" },
     { label: isRTL?"سيارات متاحة":"Available Cars", value: stats.available, icon: Users, delta:"+3.45%", up:true, href:"/cars?status=available" },
   ]

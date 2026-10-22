@@ -60,7 +60,7 @@ function NewInvoiceContent() {
       .then(({ data, error }) => {
         if (!error && data) setForm(prev => (prev.invoice_number ? prev : { ...prev, invoice_number: data }))
       })
-    supabase.from("customers").select("id,full_name,name,phone").order("full_name")
+    supabase.from("customers").select("id,full_name,phone").order("full_name")
       .then(({ data }) => setCustomers(data || []))
     supabase.from("rental_contracts").select("id,contract_number,car_id,customer_id,start_date,end_date,daily_rate,total_amount,cars(make,model,plate_number)")
       .then(({ data }) => setContracts(data || []))
@@ -161,7 +161,6 @@ function NewInvoiceContent() {
     setSavingCustomer(true)
     const { data, error } = await supabase.from("customers").insert([{
       full_name: newCustomer.full_name,
-      name: newCustomer.full_name,
       phone: newCustomer.phone || null,
       email: newCustomer.email || null,
     }]).select().single()

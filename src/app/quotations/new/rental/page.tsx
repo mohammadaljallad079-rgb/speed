@@ -20,8 +20,8 @@ function RentalQuotationForm() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [customers, setCustomers] = useState([])
-  const [cars, setCars] = useState([])
+  const [customers, setCustomers] = useState<Array<{ id: string; full_name: string; phone: string | null }>>([])
+  const [cars, setCars] = useState<Array<{ id: string; make: string; model: string; plate_number: string }>>([])
   const [savedData, setSavedData] = useState(null)
   const [form, setForm] = useState({
     customer_id: "",
@@ -35,7 +35,7 @@ function RentalQuotationForm() {
   })
 
   useEffect(() => {
-    supabase.from("customers").select("id, name, phone").then(({data}) => setCustomers(data || []))
+    supabase.from("customers").select("id, full_name, phone").then(({data}) => setCustomers(data || []))
     supabase.from("cars").select("id, make, model, plate_number").then(({data}) => setCars(data || []))
   }, [])
 
@@ -132,7 +132,7 @@ function RentalQuotationForm() {
                 <div className="space-y-2"><Label className="text-xs font-bold text-slate-600 uppercase">{label("رقم العرض","Quotation #")}</Label><div className="flex items-center gap-2 bg-slate-100 px-3 py-2 rounded-lg font-mono text-sm border border-slate-300"><Hash className="w-4 h-4 text-slate-500"/>{qn}</div></div>
                 <div className="space-y-2"><Label className="text-xs font-bold text-slate-600 uppercase">{label("التاريخ","Date")}</Label><div className="flex items-center gap-2"><Calendar className="w-4 h-4 text-slate-500"/><Input type="date" value={form.quotation_date} onChange={e => setForm({...form, quotation_date: e.target.value})} className="border-slate-300"/></div></div>
               </div>
-              <div className="space-y-2"><Label className="text-xs font-bold text-slate-600 uppercase">{label("العميل","Customer")} *</Label><Select value={form.customer_id} onValueChange={v => setForm({...form, customer_id: v})}><SelectTrigger className="border-slate-300"><SelectValue placeholder={label("اختر عميل...","Select customer...")}/></SelectTrigger><SelectContent>{customers.map(c => <SelectItem key={c.id} value={c.id}>{c.name} | {c.phone}</SelectItem>)}</SelectContent></Select></div>
+              <div className="space-y-2"><Label className="text-xs font-bold text-slate-600 uppercase">{label("العميل","Customer")} *</Label><Select value={form.customer_id} onValueChange={v => setForm({...form, customer_id: v})}><SelectTrigger className="border-slate-300"><SelectValue placeholder={label("اختر عميل...","Select customer...")}/></SelectTrigger><SelectContent>{customers.map(c => <SelectItem key={c.id} value={c.id}>{c.full_name} | {c.phone}</SelectItem>)}</SelectContent></Select></div>
               <div className="space-y-2"><Label className="text-xs font-bold text-slate-600 uppercase">{label("السيارة","Car")} *</Label><Select value={form.car_id} onValueChange={v => setForm({...form, car_id: v})}><SelectTrigger className="border-slate-300"><SelectValue placeholder={label("اختر سيارة...","Select car...")}/></SelectTrigger><SelectContent>{cars.map(c => <SelectItem key={c.id} value={c.id}>{c.make} {c.model} ({c.plate_number})</SelectItem>)}</SelectContent></Select></div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2"><Label className="text-xs font-bold text-slate-600 uppercase">{label("السعر اليومي","Daily Rate")}</Label><div className="relative"><DollarSign className="w-4 h-4 absolute left-3 top-3 text-slate-500"/><Input type="number" className="pl-8 border-slate-300" value={form.daily_rate} onChange={e => setForm({...form, daily_rate: e.target.value})} placeholder="0.00"/></div></div>
@@ -195,7 +195,7 @@ function RentalQuotationForm() {
               </div>
               <div className="text-right">
                 <p className="text-xs font-bold text-red-600 uppercase tracking-wider mb-2">To</p>
-                <p className="text-xl font-bold text-slate-900">{savedData.customer?.name}</p>
+                <p className="text-xl font-bold text-slate-900">{savedData.customer?.full_name}</p>
                 <p className="text-slate-600">{savedData.customer?.phone}</p>
               </div>
             </div>

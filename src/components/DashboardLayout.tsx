@@ -298,7 +298,7 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'website', label_ar: 'الموقع', label_en: 'Website', href: '/settings/company', is_active: true },
       { id: 'sidebar', label_ar: 'القائمة الجانبية', label_en: 'Sidebar', href: '/settings/sidebar', is_active: true },
       { id: 'branches', label_ar: 'الفروع', label_en: 'Branches', href: '/settings/branches', is_active: true },
-      { id: 'users', label_ar: 'المستخدمين', label_en: 'Users', href: '/users', is_active: true },
+      { id: 'users', label_ar: 'المستخدمين', label_en: 'Users', href: '/settings/users', is_active: true },
       { id: 'tax-settings', label_ar: 'إعدادات الضريبة', label_en: 'Tax Settings', href: '/settings/tax-rates', is_active: true },
     ],
   },

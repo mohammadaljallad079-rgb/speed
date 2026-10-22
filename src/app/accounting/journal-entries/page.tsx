@@ -40,9 +40,9 @@ const ENTRY_TEMPLATES: Record<string, { name: string; lines: { description: stri
 
 type Account = { id: string; name: string; name_ar?: string; code: string; parent_code: string | null; type: string }
 type VehicleItem = { id: string; make: string; model: string; plate_number: string }
-type Customer = { id: string; name: string }
+type Customer = { id: string; full_name: string }
 type Supplier = { id: string; name: string }
-type Driver = { id: string; name: string }
+type Driver = { id: string; full_name: string }
 type RentalContract = { id: string; contract_number: string }
 
 type RefData = {
@@ -193,9 +193,9 @@ function printJournal(entry: { journal_number: string; entry_date: string; refer
           const rent = refData.rentalContracts.find(r => r.id === l.rental_contract_id)
           const cells = [`<td>${acc ? `${acc.code}-${acc.name}` : "-"}</td>`, `<td>${l.description || "-"}</td>`]
           if (cols.vehicle) cells.push(`<td>${veh ? `${veh.make} ${veh.model}` : "-"}</td>`)
-          if (cols.customer) cells.push(`<td>${cust?.name || "-"}</td>`)
+          if (cols.customer) cells.push(`<td>${cust?.full_name || "-"}</td>`)
           if (cols.supplier) cells.push(`<td>${sup?.name || "-"}</td>`)
-          if (cols.driver) cells.push(`<td>${drv?.name || "-"}</td>`)
+          if (cols.driver) cells.push(`<td>${drv?.full_name || "-"}</td>`)
           if (cols.contract) cells.push(`<td>${rent?.contract_number || "-"}</td>`)
           if (cols.costCenter) cells.push(`<td>${COST_CENTERS.find(c => c.id === l.cost_center)?.name || "-"}</td>`)
           if (cols.branch) cells.push(`<td>${BRANCHES.find(b => b.id === l.branch)?.name || "-"}</td>`)
@@ -811,9 +811,9 @@ function JournalFormView({ entry, refData, onBack, onSaved }: { entry?: JournalE
                           className="w-full h-7 px-1.5 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500" />
                       </td>
                       <td className="py-1 px-1.5">{renderSelectWithAdd(line.vehicle_id, val => updateLine(line.id, "vehicle_id", val), refData.vehicles.map(v => ({ id: v.id, label: `${v.make} ${v.model}` })), "Vehicle...")}</td>
-                      <td className="py-1 px-1.5">{renderSelectWithAdd(line.customer_id, val => updateLine(line.id, "customer_id", val), refData.customers.map(c => ({ id: c.id, label: c.full_name || c.name || "?" })), "Customer...")}</td>
+                      <td className="py-1 px-1.5">{renderSelectWithAdd(line.customer_id, val => updateLine(line.id, "customer_id", val), refData.customers.map(c => ({ id: c.id, label: c.full_name || "?" })), "Customer...")}</td>
                       <td className="py-1 px-1.5">{renderSelectWithAdd(line.supplier_id, val => updateLine(line.id, "supplier_id", val), refData.suppliers.map(s => ({ id: s.id, label: s.name })), "Supplier...")}</td>
-                      <td className="py-1 px-1.5">{renderSelectWithAdd(line.driver_id, val => updateLine(line.id, "driver_id", val), refData.drivers.map((d: any) => ({ id: d.id, label: d.full_name || d.name || "?" })), "Driver...")}</td>
+                      <td className="py-1 px-1.5">{renderSelectWithAdd(line.driver_id, val => updateLine(line.id, "driver_id", val), refData.drivers.map(d => ({ id: d.id, label: d.full_name || "?" })), "Driver...")}</td>
                       <td className="py-1 px-1.5">{renderSelectWithAdd(line.rental_contract_id, val => updateLine(line.id, "rental_contract_id", val), refData.rentalContracts.map(r => ({ id: r.id, label: r.contract_number })), "Contract...")}</td>
                       <td className="py-1 px-1.5">
                         <select value={line.cost_center} onChange={e => updateLine(line.id, "cost_center", e.target.value)} className="w-full h-7 px-1 rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-[10px] focus:outline-none focus:ring-1 focus:ring-indigo-500">
@@ -898,9 +898,9 @@ export default function Page() {
     const results = await Promise.allSettled([
       supabase.from("accounts").select("*").order("code"),
       supabase.from("cars").select("id, make, model, plate_number").order("make"),
-      supabase.from("customers").select("id, full_name, name").order("full_name"),
+      supabase.from("customers").select("id, full_name").order("full_name"),
       supabase.from("suppliers").select("id, name").order("name"),
-      supabase.from("customers").select("id, full_name").order("full_name").limit(1),
+      supabase.from("drivers").select("id, full_name").order("full_name"),
       supabase.from("rental_contracts").select("id, contract_number").order("contract_number", { ascending: false }).limit(200),
     ])
     const [accRes, vehRes, custRes, supRes, drvRes, rentRes] = results

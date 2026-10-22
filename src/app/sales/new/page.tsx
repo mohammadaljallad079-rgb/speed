@@ -54,7 +54,7 @@ function NewSaleContent() {
   }, [])
 
   useEffect(() => {
-    supabase.from("customers").select("id,full_name,name,phone").order("full_name")
+    supabase.from("customers").select("id,full_name,phone").order("full_name")
       .then(({ data }) => setCustomers(data || []))
     supabase.from("tax_settings").select("*").eq("is_active", true).order("created_at")
       .then(({ data }) => setTaxSettings(data || []))

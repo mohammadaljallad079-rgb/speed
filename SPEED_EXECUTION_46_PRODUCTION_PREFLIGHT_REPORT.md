@@ -303,6 +303,11 @@ PRODUCTION_ACTIVATION_001_002_003.sql  ->  PRODUCTION_ACTIVATION_004.sql
 
 Secret scan of changed files: **0** secrets. No `.env` committed.
 
+**Exec 46 commit:** `42d79aff4a5517bf62f5dbc7a20aa5868c2829b6` (`42d79af`),
+parent `d06b649`, on `feat/final-hardening-round5`. Pushed **fast-forward only**
+(`d06b649..42d79af`); `origin/main` remains `d6788be`. Release freeze candidate =
+`42d79af`.
+
 ---
 
 ## 10. Arabic summary (ملخص عربي)

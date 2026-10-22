@@ -1236,4 +1236,24 @@ that applies the filters it is given and returns only affected rows.
   `main`. The final tip is stated in the Exec 39 delivery summary; everything after
   `dd28b5e` is docs-only. Deployment to the server is still a separate step.
 
+## Execution 48 invariants (phantom-column + nav-link hygiene)
+
+- The live `customers` table exposes **`full_name`, not `name`** (evidence:
+  `SPEED_PRODUCTION_READINESS_CHECK.md`, `src/lib/supabase.ts` `Customer` type,
+  `src/lib/reporting/catalog.ts`). PostgREST **fails the whole `select`** when any
+  listed column is unknown, so one phantom `name` silently breaks the entire query
+  (empty dropdown, failed insert, null relation). Never select/insert a
+  `customers.name`; use `customers.full_name`.
+- `journal-entries` reference data must query the **`drivers`** table for the driver
+  dropdown (`drivers.full_name`), not `customers`. A copy-paste bug had the driver
+  slot fetching `customers(...).limit(1)`.
+- `tests/exec48-customer-schema-and-links.test.ts` (in `test:core`) enforces this
+  repo-wide: no standalone `name` in a `customers` select/relation/insert, the
+  driver query targets `drivers`, and `DashboardLayout` / dashboard-KPI / reports
+  hub hrefs resolve against the real `src/app/**/page.tsx` route tree.
+- **Dead nav links corrected:** `/users` → `/settings/users`,
+  `/rental-contracts` → `/rentals`, `/loans/new` → `/cars/new` (financing lives on
+  the car form). Verify a nav href against the route tree before adding it; there
+  is no `/loans/new` or `/rental-contracts` page.
+
 

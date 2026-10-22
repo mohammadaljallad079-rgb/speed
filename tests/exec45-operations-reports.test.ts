@@ -173,6 +173,15 @@ describe("loadOperationsReport — scoping", () => {
       assert.ok(rec.filters.some((f) => f.col === "tenant_id" && f.val === "t1"), `${table} not tenant-scoped`);
     }
   });
+
+  test("customers projection only names real columns (no phantom `name`)", async () => {
+    const src = read("src/lib/reporting/operations-reports.ts");
+    // The live `customers` table has `full_name` but no `name` column; selecting a
+    // non-existent column makes PostgREST return an error (HTTP 400/500).
+    assert.match(src, /"customers", "id,full_name"/);
+    assert.ok(!/"customers", "[^"]*\bname\b[^"]*full_name[^"]*"/.test(src));
+    assert.ok(!/select\([^)]*\bname\b[^)]*full_name/.test(src));
+  });
 });
 
 describe("isOperationsReportKind", () => {
@@ -204,5 +213,17 @@ describe("wiring: pages and route", () => {
     const src = read("src/app/api/reports/operations/route.ts");
     assert.match(src, /requireContext\(request, \{ module: "reports", action: "view" \}\)/);
     assert.match(src, /tenantId: context\.tenantId/);
+  });
+
+  test("the route never reads a tenant from the request (no tenant_id injection)", () => {
+    const src = read("src/app/api/reports/operations/route.ts");
+    const params = [...src.matchAll(/searchParams\.get\("([^"]+)"\)/g)].map((m) => m[1]);
+    assert.deepEqual(params.sort(), ["from", "kind", "to"]);
+    assert.ok(!/searchParams\.get\("tenant/i.test(src), "tenant must never come from the query string");
+  });
+
+  test("the client component sends no tenant identifier", () => {
+    const src = read("src/components/reports/OperationsReportPage.tsx");
+    assert.ok(!/tenant/i.test(src), "client must not send a tenant identifier");
   });
 });

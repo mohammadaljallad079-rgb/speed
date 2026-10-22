@@ -293,7 +293,7 @@ export async function loadOperationsReport(
     case "outstanding_by_client": {
       const [invoices, customers] = await Promise.all([
         fetchScoped(db, "invoices", "*", tenantId, from, to),
-        fetchScoped(db, "customers", "id,full_name,name", tenantId),
+        fetchScoped(db, "customers", "id,full_name", tenantId),
       ]);
       report = buildOutstandingByClient(invoices, customers as OutstandingCustomer[]);
       break;

@@ -1,28 +1,14 @@
 "use client"
-import { Suspense } from 'react'
-import { } from 'react'
 export const dynamic = "force-dynamic"
 
-import DashboardLayout from '@/components/DashboardLayout'
-import StructuredEmptyState from '@/components/StructuredEmptyState'
-import { useLanguage } from '@/lib/LanguageContext'
-
-function PageContent() {
-  const { t } = useLanguage()
-
-  return (
-    <DashboardLayout>
-      <div className="space-y-6">
-        <StructuredEmptyState title={t.receiptsByMonth} />
-      </div>
-    </DashboardLayout>
-  )
-}
+import OperationsReportPage from '@/components/reports/OperationsReportPage'
 
 export default function Page() {
   return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <PageContent />
-    </Suspense>
+    <OperationsReportPage
+      kind="monthly_receipts"
+      titleAr="الإيصالات حسب الشهر"
+      titleEn="Receipts By Month"
+    />
   )
 }

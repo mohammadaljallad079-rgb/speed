@@ -8,7 +8,7 @@ to the feature branch.
 **Branch:** `feat/final-hardening-round5`
 **Commit before:** `797b4d5` (docs(agents): exec48 invariants)
 **`origin/main`:** `d6788be` (untouched)
-**HEAD after:** see §8.
+**HEAD after:** `4f54171` (fix(exec49) …)
 
 ---
 
@@ -144,8 +144,8 @@ deployed, no production host was contacted, no live credential was created.
 
 ```
 HEAD before: 797b4d5
-Commit:      (fix(exec49) …)
-Push:        fast-forward to origin/feat/final-hardening-round5 only
+Commit:      4f54171  fix(exec49): close functional gaps …
+Push:        fast-forward 797b4d5..4f54171 to origin/feat/final-hardening-round5 only
 origin/main: d6788be (untouched)
 ```
 

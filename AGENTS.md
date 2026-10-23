@@ -1314,3 +1314,27 @@ that applies the filters it is given and returns only affected rows.
   accessible in this environment (Exec 41); the authoritative list audited in
   Exec 50 is Exec 33's "the Original 13 Items".
 
+## Execution 51 invariants (public.users role-escalation hardening)
+
+- Migration `008_user_role_hardening.sql` (additive, idempotent, depends on
+  `004`) replaces `prevent_role_escalation()`. It closes the two paths 004 left
+  open: (a) `auth.uid() is null` was treated as proof of the service role, and
+  (b) only `super_admin` was guarded, so a `staff`/`client` row could set its own
+  role to `admin`, and any caller could change `tenant_id`.
+- **Never treat `auth.uid() is null` alone as the service path.** The trust test
+  is `is_trusted_service_context()`: trusted only when there is no uid AND the
+  signed JWT role claim is absent (direct connection) or `service_role`.
+  `authenticated`/`anon` sessions are never trusted. The predicate is revoked
+  from `anon` and `authenticated` (the trigger runs as SECURITY DEFINER).
+- For untrusted sessions the trigger now enforces: no self-promotion from a
+  non-admin role to `admin`/`super_admin`; cross-user role edits require an
+  administrator; `tenant_id` reassignment is super-admin only; grant/revoke of
+  `super_admin` stays super-admin only. The trusted provisioning path is
+  unchanged.
+- Verify by execution, not parsing: `supabase/tests/008_harness/run.sh` applies
+  base -> 004 -> 008 on PostgreSQL 17 and asserts 18 cases (incl. the null-uid
+  session being refused and the service path being allowed). Re-apply is
+  idempotent; `008_user_role_hardening_rollback.sql` restores 004 semantics.
+- `tests/exec51-role-hardening.test.ts` guards the migration's intent; it is in
+  `test:core`. Do not re-introduce an `auth.uid() is null` service check.
+

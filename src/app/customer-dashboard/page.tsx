@@ -24,7 +24,7 @@ interface RentalContract {
   pickup_location: string | null; dropoff_location: string | null
   car?: { make: string | null; model: string | null; year: number | null; plate_number: string | null; category: string | null; daily_rate: number | null }
 }
-interface CarOption { id: string; make: string | null; model: string | null; year: number | null; category: string | null; daily_rate: number | null }
+interface CarOption { id: string; make: string | null; model: string | null; year: number | null; category: string | null; daily_rate: number | null; weekly_rate: number | null; monthly_rate: number | null }
 interface SupportTicket { id: string; subject: string | null; message: string | null; status: string | null; created_at: string | null }
 
 const formatCurrency = (v?: number | null) => v == null ? '—' : new Intl.NumberFormat('ar-BH', { style: 'currency', currency: 'BHD' }).format(v)

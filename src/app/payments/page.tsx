@@ -101,7 +101,7 @@ function PaymentsPageContent() {
   }, [filtered])
 
   const methods = useMemo(() => {
-    const set = new Set(payments.map(p => p.payment_method).filter(Boolean))
+    const set = new Set(payments.map(p => p.payment_method).filter((m): m is string => Boolean(m)))
     return Array.from(set)
   }, [payments])
 

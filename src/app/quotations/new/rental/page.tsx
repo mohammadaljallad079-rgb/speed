@@ -15,15 +15,40 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ArrowLeft, Save, Printer, Car, Calendar, Hash, DollarSign, Clock, CheckCircle } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 
+type QuotationCustomer = { id: string; full_name: string; phone: string | null }
+type QuotationCar = { id: string; make: string; model: string; plate_number: string }
+
+type RentalQuotationForm = {
+  customer_id: string
+  car_id: string
+  quotation_date: string
+  valid_until: string
+  daily_rate: string
+  total_days: string
+  notes: string
+  status: string
+}
+
+type RentalQuotationResult = {
+  qn: string
+  customer: QuotationCustomer | undefined
+  car: QuotationCar | undefined
+  form: RentalQuotationForm
+  subtotal: number
+  vatAmount: number
+  grandTotal: number
+  vatRate: number
+}
+
 function RentalQuotationForm() {
   const { isRTL } = useLanguage()
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [customers, setCustomers] = useState<Array<{ id: string; full_name: string; phone: string | null }>>([])
-  const [cars, setCars] = useState<Array<{ id: string; make: string; model: string; plate_number: string }>>([])
-  const [savedData, setSavedData] = useState(null)
-  const [form, setForm] = useState({
+  const [customers, setCustomers] = useState<QuotationCustomer[]>([])
+  const [cars, setCars] = useState<QuotationCar[]>([])
+  const [savedData, setSavedData] = useState<RentalQuotationResult | null>(null)
+  const [form, setForm] = useState<RentalQuotationForm>({
     customer_id: "",
     car_id: "",
     quotation_date: new Date().toISOString().split("T")[0],
@@ -84,13 +109,13 @@ function RentalQuotationForm() {
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (e) {
-      alert("Error: " + e.message)
+      alert("Error: " + (e instanceof Error ? e.message : String(e)))
     } finally {
       setLoading(false)
     }
   }
 
-  const label = (ar, en) => isRTL ? ar : en
+  const label = (ar: string, en: string) => isRTL ? ar : en
   const dir = isRTL ? "rtl" : "ltr"
 
   return (

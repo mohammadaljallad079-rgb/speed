@@ -5,7 +5,8 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-export function formatCurrency(amount: number, currency = 'BHD'): string {
+export function formatCurrency(amount: number | null | undefined, currency = 'BHD'): string {
+  if (amount == null || !Number.isFinite(amount)) return '—'
   return new Intl.NumberFormat('ar-BH', {
     style: 'currency',
     currency,
@@ -14,16 +15,20 @@ export function formatCurrency(amount: number, currency = 'BHD'): string {
   }).format(amount)
 }
 
-export function formatNumber(num: number): string {
+export function formatNumber(num: number | null | undefined): string {
+  if (num == null || !Number.isFinite(num)) return '—'
   return new Intl.NumberFormat('ar-SA').format(num)
 }
 
-export function formatDate(date: string | Date, locale = 'ar-SA'): string {
+export function formatDate(date: string | Date | null | undefined, locale = 'ar-SA'): string {
+  if (date == null || date === '') return '—'
+  const parsed = new Date(date)
+  if (Number.isNaN(parsed.getTime())) return '—'
   return new Intl.DateTimeFormat(locale, {
     year: 'numeric',
     month: 'short',
     day: 'numeric'
-  }).format(new Date(date))
+  }).format(parsed)
 }
 
 export function generateContractNumber(): string {

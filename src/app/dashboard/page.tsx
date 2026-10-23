@@ -9,8 +9,10 @@ import { useLanguage } from '@/lib/LanguageContext'
 import {
   Car, DollarSign, TrendingUp, Users, MoreHorizontal,
   Plus, FileText, UserPlus, CreditCard, AlertTriangle,
-  Clock, Calendar, Wrench, Bell, ArrowRight, Shield
+  Clock, Calendar, Wrench, Bell, ArrowRight, Shield,
+  Timer, Receipt, AlertCircle
 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import Link from 'next/link'
 
 function DashboardContent() {

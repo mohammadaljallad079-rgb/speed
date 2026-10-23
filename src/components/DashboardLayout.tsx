@@ -95,6 +95,7 @@ interface SidebarItemData {
   is_active: boolean
   has_children: boolean
   children: SidebarChild[]
+  badge?: string
 }
 
 const DEFAULT_ITEMS: SidebarItemData[] = [
@@ -213,6 +214,9 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
     has_children: true,
     children: [
       { id: 'all-expenses', label_ar: 'جميع المصروفات', label_en: 'All Expenses', href: '/expenses', is_active: true },
+      { id: 'add-expense', label_ar: 'إضافة مصروف', label_en: 'Add Expense', href: '/expenses/new', is_active: true },
+    ],
+  },
   {
     id: 'hr',
     label_ar: 'الموارد البشرية',
@@ -228,9 +232,6 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'leaves', label_ar: 'الإجازات', label_en: 'Leaves', href: '/hr/leaves', is_active: true },
       { id: 'payroll', label_ar: 'الرواتب', label_en: 'Payroll', href: '/hr/payroll', is_active: true },
       { id: 'adjustments', label_ar: 'التعديلات', label_en: 'Adjustments', href: '/hr/adjustments', is_active: true },
-    ],
-  },
-      { id: 'add-expense', label_ar: 'إضافة مصروف', label_en: 'Add Expense', href: '/expenses/new', is_active: true },
     ],
   },
   {

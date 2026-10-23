@@ -38,17 +38,26 @@ interface CFRow {
   amount: number
 }
 
+type JournalEntryEmbed = {
+  journal_number: string
+  entry_date: string
+  description: string
+}
+
 interface JournalLine {
   id: string
   journal_entry_id: string
   debit: number
   credit: number
   description: string
-  journal_entries: {
-    journal_number: string
-    entry_date: string
-    description: string
-  }
+  // PostgREST returns the embedded `journal_entries` row either as an object or
+  // as a one-element array depending on the query/relationship; accept both.
+  journal_entries: JournalEntryEmbed | JournalEntryEmbed[] | null
+}
+
+function embeddedEntry(line: JournalLine): JournalEntryEmbed | null {
+  const je = line.journal_entries
+  return Array.isArray(je) ? (je[0] ?? null) : (je ?? null)
 }
 
 function CashFlowContent() {
@@ -705,16 +714,16 @@ useEffect(() => {
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-3">
                         <Badge variant="outline" className="font-mono text-xs bg-slate-50">
-                          {line.journal_entries?.journal_number || '-'}
+                          {embeddedEntry(line)?.journal_number || '-'}
                         </Badge>
-                        <span className="text-sm text-slate-500">{line.journal_entries?.entry_date || '-'}</span>
+                        <span className="text-sm text-slate-500">{embeddedEntry(line)?.entry_date || '-'}</span>
                       </div>
                       <div className="flex gap-2">
                         {line.debit > 0 && <Badge className="bg-blue-100 text-blue-700 text-xs">DEBIT</Badge>}
                         {line.credit > 0 && <Badge className="bg-emerald-100 text-emerald-700 text-xs">CREDIT</Badge>}
                       </div>
                     </div>
-                    <p className="text-sm font-medium text-slate-800 mb-3">{line.description || line.journal_entries?.description || '-'}</p>
+                    <p className="text-sm font-medium text-slate-800 mb-3">{line.description || embeddedEntry(line)?.description || '-'}</p>
                     <div className="flex gap-4 bg-slate-50 rounded-lg p-3">
                       <div className="flex-1">
                         <p className="text-xs text-slate-400 uppercase mb-1">{isRTL ? 'مدين' : 'Debit'}</p>

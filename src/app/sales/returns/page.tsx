@@ -427,7 +427,7 @@ function SalesReturnsContent() {
               </Button>
               <Button 
                 onClick={handleCreateReturn} 
-                disabled={saving || !returnAmount || parseFloat(returnAmount || '0') <= 0 || (selectedInvoice?.paid_amount && parseFloat(returnAmount || '0') > selectedInvoice.paid_amount)}
+                disabled={Boolean(saving || !returnAmount || parseFloat(returnAmount || '0') <= 0 || (selectedInvoice?.paid_amount && parseFloat(returnAmount || '0') > selectedInvoice.paid_amount))}
                 className="rounded-lg bg-red-500 hover:bg-red-600 text-white gap-1"
               >
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}

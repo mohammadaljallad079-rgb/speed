@@ -4,7 +4,7 @@ import { Suspense, useState, useEffect, useRef } from 'react'
 import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { supabase } from '@/lib/supabase'
 import { summarizeVatSources, type VatSourceBreakdown } from '@/lib/reporting/vat'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatDateTime } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -113,7 +113,7 @@ useEffect(() => {
     const printWindow = window.open('', '_blank')
     if (!printWindow) return
     const periodLabel = `${dateFrom || (isRTL ? 'بداية الحسابات' : 'All time')} — ${dateTo || (isRTL ? 'اليوم' : 'Today')}`
-    const printedAt = new Date().toLocaleString(isRTL ? 'ar-BH' : 'en-GB')
+    const printedAt = formatDateTime(new Date(), isRTL ? 'ar-BH' : 'en-GB')
     const html = `<!DOCTYPE html>
 <html dir="${isRTL ? 'rtl' : 'ltr'}" lang="${isRTL ? 'ar' : 'en'}">
 <head>

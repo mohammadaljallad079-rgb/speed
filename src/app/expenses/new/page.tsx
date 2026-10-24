@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase } from "@/lib/supabase"
-import { formatCurrency } from "@/lib/utils"
+import { formatCurrency, formatDateTime } from "@/lib/utils"
 import {
   Receipt, Save, ArrowLeft, Building2, FolderOpen,
   Calculator, Percent, Banknote, CheckCircle,
@@ -363,7 +363,7 @@ function NewExpensePageContent() {
             </div>
           </div>
           <div class="footer">
-            <p>Printed on ${new Date().toLocaleString()}</p>
+            <p>Printed on ${formatDateTime(new Date())}</p>
             <p>ERP Horizon - Official Expense Voucher</p>
           </div>
         </div>

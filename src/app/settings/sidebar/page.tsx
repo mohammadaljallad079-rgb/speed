@@ -89,9 +89,9 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     is_active: true,
     has_children: true,
     children: [
-      { id: 'vehicle-list', label_ar: 'قائمة المركبات', label_en: 'Vehicle List', href: '/vehicles', is_active: true },
-      { id: 'vehicle-status', label_ar: 'حالة المركبات', label_en: 'Vehicle Status', href: '/vehicles/status', is_active: true },
-      { id: 'vehicle-types', label_ar: 'أنواع المركبات', label_en: 'Vehicle Types', href: '/vehicles/types', is_active: true },
+      { id: 'vehicle-list', label_ar: 'قائمة المركبات', label_en: 'Vehicle List', href: '/cars', is_active: true },
+      { id: 'vehicle-status', label_ar: 'حالة المركبات', label_en: 'Vehicle Status', href: '/cars?status=rented', is_active: true },
+      { id: 'vehicle-types', label_ar: 'أنواع المركبات', label_en: 'Vehicle Types', href: '/cars?status=available', is_active: true },
     ],
   },
   {
@@ -132,7 +132,6 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     children: [
       { id: 'all-clients', label_ar: 'جميع العملاء', label_en: 'All Clients', href: '/customers', is_active: true },
       { id: 'new-client', label_ar: 'عميل جديد', label_en: 'New Client', href: '/customers/new', is_active: true },
-      { id: 'client-groups', label_ar: 'مجموعات العملاء', label_en: 'Client Groups', href: '/customers/groups', is_active: true },
     ],
   },
   {
@@ -177,8 +176,6 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     has_children: true,
     children: [
       { id: 'all-expenses', label_ar: 'جميع المصروفات', label_en: 'All Expenses', href: '/expenses', is_active: true },
-      { id: 'expense-categories', label_ar: 'فئات المصروفات', label_en: 'Categories', href: '/expenses/categories', is_active: true },
-      { id: 'expense-reports', label_ar: 'تقارير المصروفات', label_en: 'Expense Reports', href: '/reports/expenses', is_active: true },
     ],
   },
   {
@@ -192,7 +189,8 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     has_children: true,
     children: [
       { id: 'accounts', label_ar: 'شجرة الحسابات', label_en: 'Chart of Accounts', href: '/accounts', is_active: true },
-      { id: 'journal', label_ar: 'القيود اليومية', label_en: 'Journal Entries', href: '/journal', is_active: true },
+      { id: 'journal', label_ar: 'القيود اليومية', label_en: 'Journal Entries', href: '/accounting/journal-entries', is_active: true },
+      { id: 'general-ledger', label_ar: 'دفتر الأستاذ العام', label_en: 'General Ledger', href: '/reports/general-ledger', is_active: true },
       { id: 'trial-balance', label_ar: 'ميزان المراجعة', label_en: 'Trial Balance', href: '/reports/trial-balance', is_active: true },
       { id: 'balance-sheet', label_ar: 'الميزانية العمومية', label_en: 'Balance Sheet', href: '/reports/balance-sheet', is_active: true },
       { id: 'profit-loss', label_ar: 'قائمة الدخل', label_en: 'Profit & Loss', href: '/reports/profit-loss', is_active: true },
@@ -203,7 +201,7 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     id: 'ai-analytics',
     label_ar: 'الذكاء الاصطناعي',
     label_en: 'aiAnalytics',
-    href: '/analytics',
+    href: '/financial-dashboard',
     icon: 'BrainCircuit',
     order: 10,
     is_active: true,
@@ -220,10 +218,10 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     is_active: true,
     has_children: true,
     children: [
-      { id: 'website', label_ar: 'الموقع', label_en: 'Website', href: '/settings/website', is_active: true },
+      { id: 'website', label_ar: 'الموقع', label_en: 'Website', href: '/settings/company', is_active: true },
       { id: 'sidebar', label_ar: 'القائمة الجانبية', label_en: 'Sidebar', href: '/settings/sidebar', is_active: true },
       { id: 'branches', label_ar: 'الفروع', label_en: 'Branches', href: '/settings/branches', is_active: true },
-      { id: 'integrations', label_ar: 'التكاملات', label_en: 'Integrations', href: '/settings/integrations', is_active: true },
+      { id: 'integrations', label_ar: 'التكاملات', label_en: 'Integrations', href: '/settings/integrations/whatsapp', is_active: true },
     ],
   },
 ]

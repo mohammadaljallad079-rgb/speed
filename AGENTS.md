@@ -20,10 +20,11 @@ npm run test:excel   # Excel engine
 
 ### Known pre-existing failures (not caused by new work)
 
-- `npm run typecheck` reports **129 errors** in the legacy ERP pages. This is the
+- `npm run typecheck` reports **125 errors** in the legacy ERP pages. This is the
   baseline; new code must not increase it. Verify with
   `npm run typecheck 2>&1 | grep -c "error TS"`.
-- `npm run lint` fails with `Converting circular structure to JSON` вҖ” a broken
+- `npm run lint` currently passes clean (`next lint`). Historically it failed with
+  `Converting circular structure to JSON` вҖ” a broken
   ESLint config, unrelated to source code. Lint is **not usable** as a gate here.
 
 ## Architecture that must not be bypassed
@@ -44,59 +45,34 @@ Rules learned the hard way:
 - **`resolveAuthContext` always starts from `DEFAULT_ROLE_PERMISSIONS[role]`** and
   only then merges DB overrides. A test that constructs a context with an empty
   permission map tests a state that cannot occur in production.
-- **Split pure logic from DB-bound logic.** `validator.ts` (rules) vs
-  `references.ts` (lookups), `gates.ts` (authorization) vs `http.ts` (scope).
+- **Split pure logic from DB-bound logic.** `policy.ts` (pure rules) vs
+  `references.ts` (DB lookups), `api-guard.ts` (`requireContext`/`withAuth`)
+  vs `scope.ts` (query scoping).
   Importing the `@/lib/auth` barrel pulls `server-only` and breaks client
   components. Import `policy.ts` / `errors.ts` / `types.ts` directly instead.
 - **Tenant filters are applied before any narrowing filter**, so `ids`/`filters`
   can only reduce a result set, never widen it.
 
-## Excel service (`src/lib/excel/`)
+## Excel import/export engine (`src/lib/import/` + `src/lib/reporting/workbook.ts`)
 
-Reusable CORE capability вҖ” import/export for any module, not a business module.
+The real, single Excel capability (there is **no** `src/lib/excel/` module):
 
-- `registry.ts` вҖ” module specs (fields, labels, aliases, types, permissions).
-  Add a module here; nothing else hardcodes module knowledge.
-- Pipeline: `parse` вҶ’ `mapper` вҶ’ `normalize` вҶ’ `validateRow` вҶ’ `references` вҶ’
-  `duplicates` вҶ’ `importer`.
-- `client.ts` exposes an injectable `ExcelDb`; production passes nothing and gets
-  `supabaseAdmin`. Tests inject a recording stub.
-- Import is limited to modules whose table has a `tenant_id` column. Tables without
-  one are export-only until the RLS migration adds it.
-- `src/components/excel/` вҖ” `<ExcelImportButton />` and `<ExcelExportButton />`,
-  both driven by `use-excel.ts`. `Toaster` (sonner) is mounted in `src/app/layout.tsx`.
+- `src/lib/import/registry.ts` — `IMPORT_MODULES` specs (fields, labels, aliases,
+  types, permissions, duplicate keys). Add a module here; nothing else hardcodes
+  module knowledge.
+- Import pipeline: `parse` → `mapHeaders` / `buildPreview` → `commitImport`
+  (`src/lib/import/engine.ts`), with `template.ts` and `export.ts` helpers.
+- Supported import modules are **exactly** `customers`, `suppliers`, `expenses`
+  (verified in `registry.ts`). Do not claim any other module without evidence.
+- Route: `POST /api/import` (guarded by `requireContext` + module permission).
+  UI: `src/components/import/ExcelImportPanel.tsx`, page `settings/import`.
+- Export: `src/lib/reporting/workbook.ts` (ExcelJS), used by the report pages and
+  the dynamic report builder; templates come from `src/lib/reporting/templates.ts`.
 
-### Wiring into module pages (Phase 3)
-
-- A page adds exactly one thing to its header:
-  `<ExcelModuleActions module="customers" filters={...} onImported={reload} />`.
-  Do not call the lower-level buttons directly from pages.
-- Pass the page's own filter so "export" matches what the user sees, and the page's
-  reload function so an import refreshes the list.
-- `ExcelModuleActions` renders nothing until `/api/excel/*` confirms the caller's
-  permissions, so a page cannot show a control the user may not use. A module that
-  is export-only shows an "Export only" hint using the registry's `notes`.
-- **Templates are gated by `resolveTemplateModule`**, not the import gate: importable
-  modules use the import permission, export-only modules use the export permission.
-  Never grant `import` permission just so a template can be downloaded.
-- The module list is cached per session in `use-excel.ts`. Clear that cache if a role
-  change must take effect without a reload.
-- `tax_settings` and `tax_rates` are **different real tables**. The Tax Settings pages
-  use `tax_settings`. Verify a table's live columns before wiring a module.
-- 20 pages are wired; `tests/excel-module-integration.test.ts` asserts the pageвҶ”module
-  mapping. Adding a wired page means updating that list.
-
-### Import safety invariant (do not weaken)
-
-- **A module may only be importable if it declares a `tenantColumn`.** The importer
-  scopes writes with `if (tenantId && module.tenantColumn)`, so a tenant-less module
-  would scope updates by `id` alone вҖ” letting one tenant overwrite another's row.
-  `importSafety()` in `gates.ts` enforces this fail-closed, and
-  `tests/core-security-migration.test.ts` asserts every importable module passes it.
-- Import safety needs three things to agree at once: the registry marks the module
-  `importable: true`, it declares a `tenantColumn`, and **the live table actually has
-  that column**. Never enable import from the registry alone вҖ” confirm the column
-  exists in the live database first.
+> Note: earlier text in this file (and the "Execution 04" section below) referenced a
+> `src/lib/excel/` engine with `ExcelModuleActions` / `/api/excel/*` and tests such as
+> `excel-module-integration.test.ts`. **That engine does not exist**; the import engine
+> above (Execution 25) is the single, real implementation.
 
 ### Database access from this environment
 
@@ -123,10 +99,10 @@ that applies the filters it is given and returns only affected rows.
 
 ## Execution 01 invariants (tenant + financial-year wiring)
 
-- `src/lib/auth/session-context.ts` is the **only** client-safe way for a browser
-  page to learn its `tenant_id` and active `financial_year_id`. It derives both
-  from the authenticated session; neither may ever be read from a form field,
-  query string or other caller input.
+- There is **no** `src/lib/auth/session-context.ts`. Server routes learn the tenant
+  and active financial year from the session via `resolveAuthContext` /
+  `getActiveFinancialYear` (`src/lib/auth/context.ts`); a browser page must never read
+  `tenant_id`/`financial_year_id` from a form field, query string or other caller input.
 - The migration's three `tables text[]` arrays must stay consistent: every table
   that receives a policy (tenant or company) **must** also appear in the RLS-enable
   array, or the policy is inert. `tests/core-security-migration.test.ts` enforces
@@ -167,7 +143,14 @@ that applies the filters it is given and returns only affected rows.
 - `npm test` / `test:core` load `.env.local` via `tsx --env-file-if-exists`. Without it,
   any test that transitively imports the browser Supabase client fails at load.
 
-## Execution 04 invariants (universal Excel engine)
+## Execution 04 invariants (universal Excel engine) — SUPERSEDED by Execution 25
+
+> **Correction:** the `src/lib/excel/` engine, `src/components/excel/`, the
+> `/api/excel/*` routes, `postJournalEntry` (`src/lib/excel/journal-group.ts`),
+> `importSafety()` and the referenced tests do **not** exist in this repository. The
+> real import engine is `src/lib/import/` (see Execution 25). The bullets below are
+> retained for history only and must not be followed literally.
+
 
 - There is **one** Excel engine (`src/lib/excel/`) and **one** action cluster
   (`src/components/excel/ExcelModuleActions`). Never add a per-page import/export
@@ -197,16 +180,20 @@ that applies the filters it is given and returns only affected rows.
   create a second import-history store.
 - The error report carries a "Ш§Щ„ШӯЩ„ Ш§Щ„Щ…ЩӮШӘШұШӯ" / "Resolution" column sourced from the
   `RESOLUTIONS` map in `exporter.ts`; add a code there when adding an error code.
-- `npm run test:excel` includes `tests/excel-duplicates-and-groups.test.ts`;
-  `npm run test:accounting` includes `tests/accounting-tenant-guard.test.ts`.
+- There are **no** `test:excel` / `test:accounting` npm scripts. The suite is the
+  explicit file list in `test:core` (run via `npm test`). Import tests live in
+  `tests/exec25-universal-import.test.ts`; accounting tests in the `exec16/17/18/29/…`
+  files.
 
 
 ## Execution 05 invariants (sales + invoices + payments + returns)
 
-- **One sales engine.** `src/lib/sales/service.ts` owns every financial sales
-  mutation: `createSalesInvoice`, `recordPayment`, `createSalesReturn`,
-  `assertInvoiceMutable`. Pages and routes call it; nothing posts a sales journal
-  entry directly. A second sales/posting path is what this execution forbids.
+- **One sales posting path.** There is **no** `src/lib/sales/service.ts`. Sales
+  financial mutations go through the server route `src/app/api/invoices/route.ts`
+  (`POST` issue, `[id]/reverse`), which posts via `src/lib/accounting/sales-posting.ts`,
+  numbers via `src/lib/numbering.ts`, and guards mutability with
+  `src/lib/accounting/invoice-guards.ts`. Pages (`sales/new`, `invoices/new`) POST to
+  `/api/invoices`; nothing posts a sales journal entry directly from the browser.
 - **Revenue is recognised once, at issue.** Issuing an invoice posts
   `Dr AR / Cr Revenue / Cr Output VAT`. Collecting it posts `Dr Cash/Bank / Cr AR`
   and must never credit revenue again. A return posts
@@ -1249,4 +1236,289 @@ that applies the filters it is given and returns only affected rows.
   `main`. The final tip is stated in the Exec 39 delivery summary; everything after
   `dd28b5e` is docs-only. Deployment to the server is still a separate step.
 
+## Execution 48 invariants (phantom-column + nav-link hygiene)
 
+- The live `customers` table exposes **`full_name`, not `name`** (evidence:
+  `SPEED_PRODUCTION_READINESS_CHECK.md`, `src/lib/supabase.ts` `Customer` type,
+  `src/lib/reporting/catalog.ts`). PostgREST **fails the whole `select`** when any
+  listed column is unknown, so one phantom `name` silently breaks the entire query
+  (empty dropdown, failed insert, null relation). Never select/insert a
+  `customers.name`; use `customers.full_name`.
+- `journal-entries` reference data must query the **`drivers`** table for the driver
+  dropdown (`drivers.full_name`), not `customers`. A copy-paste bug had the driver
+  slot fetching `customers(...).limit(1)`.
+- `tests/exec48-customer-schema-and-links.test.ts` (in `test:core`) enforces this
+  repo-wide: no standalone `name` in a `customers` select/relation/insert, the
+  driver query targets `drivers`, and `DashboardLayout` / dashboard-KPI / reports
+  hub hrefs resolve against the real `src/app/**/page.tsx` route tree.
+- **Dead nav links corrected:** `/users` → `/settings/users`,
+  `/rental-contracts` → `/rentals`, `/loans/new` → `/cars/new` (financing lives on
+  the car form). Verify a nav href against the route tree before adding it; there
+  is no `/loans/new` or `/rental-contracts` page.
+
+## Execution 49 invariants (final functional gap audit)
+
+- **`invoices` has `total_amount`, not `total`, and has no `customer_name`.**
+  The customer name is the `customers(full_name)` relation. A `select` listing a
+  phantom column fails the **whole** PostgREST request, so this silently broke the
+  assistant's `receivables_summary` and `invoice_lookup` tools
+  (`src/lib/ai/tools.ts`). Never select `invoices.total` / `invoices.customer_name`.
+- **The fleet table is `cars`; there is no `vehicles` table.** A relation
+  projection `vehicles(*)` (e.g. the old `rentals/[id]/payment` query) fails the
+  request. `tests/exec49-functional-gap-closure.test.ts` rejects any
+  `vehicles(...)` relation repo-wide.
+- **Quotation print** lives at `/quotations/[id]/print` (added), mirroring
+  `payments/[id]/print`. The list links to it; do not reintroduce a
+  `/quotations/print?id=` target — there is no such route.
+- **`/accounting`, `/hr`, `/vehicles`, `/analytics`, `/journal`,
+  `/settings/website`, `/settings/integrations` are not pages.** Back buttons and
+  the sidebar-settings default tree must target a real page
+  (`/accounting/journal-entries`, `/accounting/expenses`, `/hr/employees`,
+  `/cars`, `/financial-dashboard`, `/settings/company`,
+  `/settings/integrations/whatsapp`).
+- `tests/exec49-functional-gap-closure.test.ts` (in `test:core`) enforces all of
+  the above, including a **whole-tree** scan that every `href` /
+  `router.push` / `router.replace` / `redirect` literal (object-form `href:`
+  included) resolves to a real `src/app/**/page.tsx`. Add any new page link to the
+  route tree before shipping it.
+- `npm run lint` currently passes (`No ESLint warnings or errors`) in this
+  environment; the "broken ESLint config" note no longer reproduces.
+
+
+
+## Execution 50 invariants (final completion audit)
+
+- **The `cars` plate column is `plate_number`; `license_plate` does not exist.**
+  Three projections (`bookings/page.tsx`, `invoices/[id]/page.tsx` x2) requested
+  `license_plate`, which failed the whole PostgREST request (42703) so those pages
+  silently loaded no car/contract rows. Fixed in Exec 50; the Exec 49 guard now
+  also rejects `license_plate` repo-wide.
+- **Not every `.from("...")` table is enumerated in repo SQL.** `contracts`,
+  `depreciation_schedules`, `expense_categories`, `leaves`,
+  `payroll_adjustments`, `payroll_records`, `financial_ratios` and the
+  `financial_*` tables exist live but are absent from the migrations/harness, so
+  an "unknown table" scan flags them as false positives. Verify a column/table
+  against the live schema or the app's own insert payloads before calling it a
+  phantom.
+- **The partial TS types in `src/lib/supabase.ts` are not the full column set.**
+  `rental_contracts.daily_rate/deposit_amount/total_days/subtotal/vat_amount`,
+  `invoices.paid_amount/discount_amount/invoice_type` and `expenses.vat_amount`
+  are real (written by `rentals/new`, read by `api/financial/calculate`); a scanner
+  that trusts only those types reports them as false positives.
+- **The Excel import engine is `src/lib/import/*` (Exec 25), not `src/lib/excel/`.**
+  The "Execution 04 (universal Excel engine)" section describes a `src/lib/excel/`
+  tree that is not in this snapshot; the working importer is
+  `src/lib/import/registry.ts` + `engine.ts` + `template.ts` + `export.ts`,
+  proven by `tests/exec25-universal-import.test.ts`.
+- **The original 13-item checklist** (`speed_erp_progress(1)/(2).xlsx`) was never
+  accessible in this environment (Exec 41); the authoritative list audited in
+  Exec 50 is Exec 33's "the Original 13 Items".
+
+## Execution 51 invariants (public.users role-escalation hardening)
+
+- Migration `008_user_role_hardening.sql` (additive, idempotent, depends on
+  `004`) replaces `prevent_role_escalation()`. It closes the two paths 004 left
+  open: (a) `auth.uid() is null` was treated as proof of the service role, and
+  (b) only `super_admin` was guarded, so a `staff`/`client` row could set its own
+  role to `admin`, and any caller could change `tenant_id`.
+- **Never treat `auth.uid() is null` alone as the service path.** The trust test
+  is `is_trusted_service_context()`: trusted only when there is no uid AND the
+  signed JWT role claim is absent (direct connection) or `service_role`.
+  `authenticated`/`anon` sessions are never trusted. The predicate is revoked
+  from `anon` and `authenticated` (the trigger runs as SECURITY DEFINER).
+- For untrusted sessions the trigger now enforces: no self-promotion from a
+  non-admin role to `admin`/`super_admin`; cross-user role edits require an
+  administrator; `tenant_id` reassignment is super-admin only; grant/revoke of
+  `super_admin` stays super-admin only. The trusted provisioning path is
+  unchanged.
+- Verify by execution, not parsing: `supabase/tests/008_harness/run.sh` applies
+  base -> 004 -> 008 on PostgreSQL 17 and asserts 18 cases (incl. the null-uid
+  session being refused and the service path being allowed). Re-apply is
+  idempotent; `008_user_role_hardening_rollback.sql` restores 004 semantics.
+- `tests/exec51-role-hardening.test.ts` guards the migration's intent; it is in
+  `test:core`. Do not re-introduce an `auth.uid() is null` service check.
+
+
+## Execution 52 invariants (customer booking flow — car must appear)
+
+- **One customer booking path.** `src/lib/rental/booking-service.ts` owns the
+  customer portal's car list and booking creation. The browser never reads `cars`
+  or inserts `rental_contracts`; it calls `GET /api/customer/available-cars` and
+  `POST /api/customer/bookings`. Both are `requireContext(..., { allowRoles:
+  ["client"] })` and take the tenant/customer from the session, never the body.
+- **Root cause fixed:** the portal used the browser client with
+  `.eq('status','available')` and **no tenant filter**, while a customer account
+  had no `tenant_id`. A tenant-less customer therefore saw every company's cars
+  (and, if RLS were enabled, would have seen none). `customer-signup` now stamps
+  the resolved company (unambiguous: the sole car-owning tenant, else the sole
+  `tenants` row) onto the `customers`/`users` rows.
+- **Scoping mirrors the RLS predicate:** tenant-bound callers get
+  `.eq('tenant_id', t)`, tenant-less callers get `.is('tenant_id', null)`. Do not
+  replace this with an unscoped read.
+- **Availability is status + category + window.** Only `status='available'` and
+  `category in ('rental','both')` are rentable (a `sale` car is not). A booking
+  occupies a half-open `[start,end)` interval; an overlapping `pending/active/
+  confirmed/reserved/approved/ongoing/rented` contract hides the car and rejects a
+  duplicate with **409**.
+- **Price is computed server-side** from the car's own rates; a client-supplied
+  amount is never trusted. The booking is stamped with the **car's** tenant (which
+  the scoped read proved is the caller's), so `tenant_id` cannot be smuggled in.
+- `/customer-dashboard` and `/booking` are in `PROTECTED_PAGE_PREFIXES`.
+  `tests/customer-booking-flow.test.ts` (in `test:core`) guards all of the above.
+
+## Execution 41 invariants (routes, global Super Admin console, AI, formats)
+
+- **`/erp` is a public marketing page, not a gated ERP route.** It was wrongly in
+  `PROTECTED_PAGE_PREFIXES`, so anonymous visitors got a 307 to `/login`.
+  `tests/login-flow.test.ts` now asserts `/erp` stays public and that
+  `/super-admin` is protected while `/super-admin-login` stays public.
+- **Two sign-in doors, one authorization source.** `/login` is for company
+  administrators/staff (and routes customers to `/customer-dashboard`); a genuine
+  `super_admin` is routed to `/super-admin`. `/super-admin-login` is the operator
+  door. Both decide the role from **`/api/me`** (server-resolved), never from an
+  email, `user_metadata` or a browser-fetched role. `isSuperAdmin` is the only
+  signal that admits a caller to the global console.
+- **The global console reads through guarded routes only.** `src/app/super-admin/`
+  calls `/api/super-admin/{overview,ai,tenants/[id],users/[id]}`, each of which
+  requires `requireSuperAdmin`. The page never queries an ERP table with the
+  browser client (the browser client is used only to sign out).
+- **The console can never mint a `super_admin`.** `assertRoleChangeAllowed`
+  rejects it; only `admin`/`staff`/`client` are assignable from the console.
+  Migration 004/008 enforce the same in the database.
+- **`/settings/ai-control` is linked from the sidebar** (`DashboardLayout`), so the
+  existing AI Control surface is reachable, not orphaned. The company-facing
+  `AiAssistantPanel` on `/dashboard` reuses the shared `repair-client` and the
+  existing `/api/ai/*` endpoints - no second AI pipeline.
+- **One format helper set.** `src/lib/utils.ts` owns `formatCurrency`,
+  `formatNumber`, `formatDate` and `formatDateTime`. `formatDate`/`formatDateTime`
+  default to `ar-BH` (Western digits, `d MMM y`) instead of `ar-SA`, whose default
+  calendar is Hijri. Ad-hoc `new Date().toLocaleString()` in print headers was
+  replaced with `formatDateTime` so the same screen prints identically everywhere.
+- **`RecordSelect` / `QuickCreateModal` / `sources.ts`** are the single reusable
+  record picker. `sales/new`, `purchases/new`, `invoices/new` and `rentals/new`
+  use it; the inline ad-hoc customer/supplier modals were removed. A field's
+  options come from the module that owns the record (`RECORD_SOURCES`).
+- **`tests/exec41-super-admin-console.test.ts`** guards the console policy, the
+  per-tenant isolation of the overview, and the "no direct browser DB access"
+  rule. `tests/exec31-receipt-and-rental-posting.test.ts` was moved into
+  `test:core` so every suite runs under `npm test`.
+
+## Execution 53 invariants (shared ledger engine + depreciation posting)
+
+### Stage 2 - shared ledger engine and statements
+
+- **One ledger read model.** `src/lib/reporting/ledger.ts` (`buildLedger`,
+  `summarizeAccounts`, `accountBalances`) is the single place that turns
+  `journal_entries` + `journal_lines` + `accounts` into balances. The General
+  Ledger, Trial Balance, P&L, Balance Sheet and Cash Flow screens consume it; do
+  not re-derive balances per page (that is how the four statements drifted apart).
+- **A contra-asset is still an asset.** `Accumulated Depreciation` (14001) has
+  `type='asset'`, so the balance-sheet section total is **cost less accumulated**
+  only if the section sums signed balances (debit - credit). A section that sums
+  `abs(balance)` shows accumulated depreciation as an increase in assets. Section
+  totals are `SectionTotal { debit, credit, balance }` - assert on `.balance`, not
+  on a bare number.
+
+### Stage 3 - depreciation posting (`src/lib/accounting/depreciation-posting.ts`)
+
+- **A schedule is a calculation; posting is a ledger event.** The depreciation
+  screen computed a schedule in the browser and wrote nothing, so the expense was
+  never in the P&L and the contra-asset never on the balance sheet. Posting is now
+  the single path `POST /api/depreciation/post` -> `postDepreciation`:
+  `Dr Depreciation expense (52001) / Cr Accumulated depreciation (14001)`.
+- **The server computes the charge, never the browser.** The route recomputes the
+  amount from the schedule (method, cost, salvage, life) and the accumulated
+  depreciation read from the **ledger**, clamped so accumulated never exceeds the
+  depreciable base. A client-supplied amount is ignored.
+- **Idempotent by `(entry_type='depreciation', reference_number)`.** The reference
+  is `DEP-<car_id>-<period_end>`; re-posting returns the existing journal
+  (`created:false`). Migration 009 adds a supporting lookup index; the partial
+  unique index pattern used by 005 covers the sale/payment types.
+- **An idempotent re-post reports no second charge.** When `created:false`, the
+  route returns `accumulated_after`/`book_value_after` unchanged - reporting
+  `accumulated + amount` would imply a charge that never happened.
+- **Both lookups are tenant-scoped, and a super admin is the only caller not
+  scoped** (`if (!context.isSuperAdmin)`), matching `scopeToCompany`. The
+  accumulated-depreciation query is scoped too: reading another tenant's
+  depreciation for the same asset id would suppress this tenant's charge.
+- **Accounts are seeded by migration 009** (`14001` asset-contra, `52001`
+  expense), idempotently (`where not exists`). The rollback drops only the index
+  and **never deletes a seeded account** (a posted journal may reference it).
+- **`supabase/PRODUCTION_ACTIVATION_009.sql` is generated, never hand-edited** -
+  `node scripts/generate-activation-bundle.mjs` embeds migration 009 verbatim and
+  records its SHA-256. `tests/activation-package-integrity.test.ts` recomputes it.
+  Migration 008 has no package (pre-existing gap, not introduced here).
+
+### Proving it (do not claim DDL or UI works from parsing)
+
+- **Migration 009 is verified by EXECUTION** on real PostgreSQL: the PGlite test
+  in `tests/exec53-stage3-depreciation.test.ts` applies it, re-applies it
+  (idempotent), and rolls it back against a schema mirroring the live tables.
+  `scripts/dev/verify-migration.mjs` (`npm run verify:migration`) is the same
+  proof as a standalone harness.
+- **The posting flow is verified in a REAL browser.** `npm run shots:e2e`
+  (`scripts/dev/e2e-depreciation.mjs`) signs in through the real login form,
+  clicks Post on the depreciation screen, and asserts the journal exists,
+  balances, references the asset, is not duplicated on re-post, and **appears on
+  the P&L and the balance sheet**. Screenshots are written to `docs/screenshots/`.
+- **Bilingual digits break naive assertions.** The Arabic locale renders
+  Arabic-Indic digits (`١٬٨٠٠٫٠٠٠`); normalize `[\u0660-\u0669]`/`[\u06f0-\u06f9]`
+  and the Arabic separators before matching a figure, or a correct number reads as
+  absent.
+- **Local-only tooling.** `scripts/dev/local-supabase-stub.mjs` serves the fixed
+  dataset; nothing here touches a real Supabase project. Run it via
+  `bash scripts/dev/run-dev.sh <port>` (which clears a stale `.next` first - a
+  stale cache serves dead chunk URLs and the page never hydrates).
+
+## Execution 54 invariants (purchasing/accounting closure + 9 purchasing reports)
+
+- **Every purchasing mutation is server-authoritative.** One route per document:
+  `POST /api/purchases` (bill), `POST /api/supplier-payments` (+
+  `[id]/reverse`), `POST /api/debit-notes`, and `DELETE /api/purchases`. The
+  screens POST to these routes; they never insert or delete the document row
+  themselves. Before Exec 54 the browser wrote `purchase_invoices`,
+  `debit_notes` and the payment/bill updates directly, with no `tenant_id`, no
+  journal and no duplicate guard — a document could exist with no ledger entry.
+- **A document and its journal are written together, or neither.** Each route
+  compensates by removing what *it* created when posting fails; a route's
+  catch-block must never roll back a journal an idempotent retry found already
+  present. The document number is the idempotency key.
+- **A posted supplier bill is never deleted from the UI.**
+  `src/lib/accounting/invoice-guards.ts` now mirrors the sales guard:
+  `isPurchaseBillPosted` (a `purchase_invoice` journal exists for the bill number)
+  and `hasPurchaseBillDependents` (payments, debit notes or line items point at
+  the bill). `DELETE /api/purchases` loads the row tenant-scoped (a foreign id is
+  a 404), refuses a posted bill and a bill with dependents (403), then audits.
+  An unreadable dependent table counts as zero so the guard never blocks a
+  legitimate delete. `src/app/purchases/page.tsx` surfaces the server's refusal.
+- **Nine purchasing/expense reports live in one pure module.**
+  `src/lib/reporting/purchasing-reports.ts` (`PURCHASING_REPORT_KINDS`:
+  `purchase_register`, `supplier_ledger`, `supplier_aging`,
+  `expenses_by_vehicle`, `expenses_by_branch`, `expenses_by_category`,
+  `vat_purchases`, `monthly_expenses`, `vehicle_profitability`). One route
+  (`GET /api/reports/purchasing?kind=…`, permission `reports.view`) and one screen
+  (`src/components/reports/PurchasingReportPage.tsx`) serve all nine. Add a kind
+  to the list and a builder — never a per-report page or a second engine.
+- **The purchasing tax base is NOT uniform and is encoded once.**
+  `purchase_invoices.total_amount` is VAT-inclusive (taxable = total − vat);
+  `expenses.amount` is stored pre-VAT (taxable = amount). `billTaxableBase` /
+  `billOutstanding` own this; a screen must not re-derive it. Cancelled documents
+  contribute nothing, everywhere.
+- **Purchasing reports are fail-closed.** `src/app/api/reports/purchasing/route.ts`
+  reads unfiltered only for `context.isSuperAdmin`; every other caller is scoped
+  to its tenant (`q.eq("tenant_id", …)`, `q.is("tenant_id", null)` on the
+  single-tenant install). Never reintroduce a `if (!tenant) return query` helper.
+- **Migration 010** (`supabase/migrations/010_purchasing_accounts.sql`) seeds input
+  VAT `24001`, other expenses `51099` and the `debit_note` sequence, idempotently
+  (`where not exists`). Frozen package `supabase/PRODUCTION_ACTIVATION_010.sql`
+  embeds the body byte-identically (SHA-256 in its banner, guarded by
+  `tests/activation-package-integrity.test.ts`); the rollback refuses to orphan a
+  posted line. **Not applied live** — DDL is an operator step.
+- **The screenshot harness must fail, not warn, on a wrong shot.**
+  `scripts/dev/capture-screenshots.mjs` waits for a tab/select control before
+  interacting and throws if it never appears; a byte-identical screenshot fails
+  the run. Earlier it warned and silently captured the default tab six times —
+  a plausible-looking screenshot that proves nothing is worse than no screenshot.
+- Baseline after Exec 54: 1010 tests / 1004 pass / 6 skipped / 0 fail; typecheck
+  0 errors; lint clean; production build green. 56 committed screenshots, all
+  distinct.

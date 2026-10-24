@@ -355,7 +355,7 @@ function QuotationsPageContent() {
               )}
 
               <div className="flex gap-2 pt-4">
-                <Button variant="outline" className="flex-1" onClick={() => { setDetailModalOpen(false); router.push("/quotations/print?id=" + selectedQuotation.id) }}>
+                <Button variant="outline" className="flex-1" onClick={() => { setDetailModalOpen(false); router.push("/quotations/" + selectedQuotation.id + "/print") }}>
                   <Printer className="w-4 h-4 mr-2" />
                   {isRTL ? "طباعة" : "Print"}
                 </Button>

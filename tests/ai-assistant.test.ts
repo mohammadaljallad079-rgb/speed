@@ -313,12 +313,12 @@ describe("ai settings", () => {
 // ---------------------------------------------------------------------------
 const TABLES: Record<string, Row[]> = {
   invoices: [
-    { tenant_id: "tenant-a", status: "issued", total: 1000, vat_amount: 100, subtotal: 900, paid_amount: 400, invoice_date: "2026-01-05", invoice_number: "INV-1", customer_name: "A" },
-    { tenant_id: "tenant-a", status: "issued", total: 2000, vat_amount: 200, subtotal: 1800, paid_amount: 2000, invoice_date: "2026-01-06", invoice_number: "INV-2", customer_name: "B" },
-    { tenant_id: "tenant-b", status: "issued", total: 9999, vat_amount: 999, subtotal: 9000, paid_amount: 0, invoice_date: "2026-01-07", invoice_number: "OTHER", customer_name: "Z" },
+    { tenant_id: "tenant-a", status: "issued", total_amount: 1000, vat_amount: 100, subtotal: 900, paid_amount: 400, invoice_date: "2026-01-05", invoice_number: "INV-1", customers: { full_name: "A" } },
+    { tenant_id: "tenant-a", status: "issued", total_amount: 2000, vat_amount: 200, subtotal: 1800, paid_amount: 2000, invoice_date: "2026-01-06", invoice_number: "INV-2", customers: { full_name: "B" } },
+    { tenant_id: "tenant-b", status: "issued", total_amount: 9999, vat_amount: 999, subtotal: 9000, paid_amount: 0, invoice_date: "2026-01-07", invoice_number: "OTHER", customers: { full_name: "Z" } },
   ],
   expenses: [{ tenant_id: "tenant-a", amount: 300, expense_date: "2026-01-08", category: "fuel" }],
-  purchase_invoices: [{ tenant_id: "tenant-a", total: 500, vat_amount: 50, bill_date: "2026-01-09" }],
+  purchase_invoices: [{ tenant_id: "tenant-a", total_amount: 500, vat_amount: 50, bill_date: "2026-01-09" }],
   customers: [
     { tenant_id: "tenant-a", id: "c1", full_name: "Alpha Co", phone: "111" },
     { tenant_id: "tenant-b", id: "c2", full_name: "Secret Co", phone: "999" },

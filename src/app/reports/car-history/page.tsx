@@ -121,7 +121,7 @@ useEffect(() => {
     }))
 
     return [...maintenanceExpenses, ...extraExpenses].sort((a, b) =>
-      b.expense_date.localeCompare(a.expense_date)
+      (b.expense_date || '').localeCompare(a.expense_date || '')
     )
   }, [maintenance, expenses])
 

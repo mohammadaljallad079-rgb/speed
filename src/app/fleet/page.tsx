@@ -41,8 +41,8 @@ function FleetContent() {
   }, [])
 
   const makes = useMemo(() => ['all', ...Array.from(new Set(cars.map(c => c.make).filter(Boolean))).sort()], [cars])
-  const colors = useMemo(() => ['all', ...Array.from(new Set(cars.map(c => c.color).filter(Boolean))).sort()], [cars])
-  const bodyTypes = useMemo(() => ['all', ...Array.from(new Set(cars.map(c => c.body_type).filter(Boolean))).sort()], [cars])
+  const colors = useMemo(() => ['all', ...Array.from(new Set(cars.map(c => c.color).filter((c): c is string => Boolean(c)))).sort()], [cars])
+  const bodyTypes = useMemo(() => ['all', ...Array.from(new Set(cars.map(c => c.body_type).filter((b): b is string => Boolean(b)))).sort()], [cars])
 
   const isSale = filters.category === 'sale'
 

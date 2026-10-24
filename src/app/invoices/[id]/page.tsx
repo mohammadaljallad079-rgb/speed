@@ -85,7 +85,7 @@ function PageContent() {
   async function fetchInvoice() {
     if (!id) return
     setFetching(true)
-    const { data } = await supabase.from('invoices').select('*, rental_contracts(car:cars(make,model,plate_number,license_plate))').eq('id', id).single()
+    const { data } = await supabase.from('invoices').select('*, rental_contracts(car:cars(make,model,plate_number))').eq('id', id).single()
     if (data) {
       setIsPosted(await isSaleInvoicePosted(supabase as any, data.invoice_number || ''))
       setHasDependents(await hasInvoiceDependents(supabase as any, data.id))
@@ -119,7 +119,7 @@ function PageContent() {
   }
 
   async function fetchRentals() {
-    const { data } = await supabase.from('rental_contracts').select('*, car:cars(make,model,plate_number,license_plate), customer:customers(full_name)').order('created_at', { ascending: false })
+    const { data } = await supabase.from('rental_contracts').select('*, car:cars(make,model,plate_number), customer:customers(full_name)').order('created_at', { ascending: false })
     setRentals((data || []) as any)
   }
 
@@ -338,7 +338,7 @@ function PageContent() {
                     <SelectContent>
                       <SelectItem value="none">{isRTL ? "بدون عقد" : "No contract"}</SelectItem>
                       {filteredRentals.map((r: any) => (
-                        <SelectItem key={r.id} value={r.id}>{r.car?.make} {r.car?.model} — {r.car?.plate_number || r.car?.license_plate} ({r.contract_number || r.id.slice(0,8)})</SelectItem>
+                        <SelectItem key={r.id} value={r.id}>{r.car?.make} {r.car?.model} — {r.car?.plate_number} ({r.contract_number || r.id.slice(0,8)})</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>

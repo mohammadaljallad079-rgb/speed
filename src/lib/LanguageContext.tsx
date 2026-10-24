@@ -5,6 +5,8 @@ import { Language, translations } from './i18n'
 
 type LanguageContextType = {
   lang: Language
+  // Alias kept for consumers written against `language`; both are the same value.
+  language: Language
   setLang: (lang: Language) => void
   t: typeof translations['ar']
   isRTL: boolean
@@ -31,6 +33,7 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
 
   const value = {
     lang,
+    language: lang,
     setLang,
     t: translations[lang],
     isRTL: lang === 'ar'

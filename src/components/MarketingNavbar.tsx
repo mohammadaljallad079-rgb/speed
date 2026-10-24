@@ -14,6 +14,7 @@ import { Globe, Menu, X } from "lucide-react"
  */
 
 const LINKS = [
+  { href: "/erp", ar: "البرنامج", en: "Product" },
   { href: "/features", ar: "المميزات", en: "Features" },
   { href: "/solutions", ar: "الحلول", en: "Solutions" },
   { href: "/pricing", ar: "الأسعار", en: "Pricing" },

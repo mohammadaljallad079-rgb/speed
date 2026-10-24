@@ -104,8 +104,8 @@ function SalesDashboardContent() {
 
       const topCustomers = customerRevenue?.map(c => ({
         id: c.customer_id,
-        name: c.customers?.full_name || 'Unknown',
-        amount: parseFloat(c.total_amount) || 0
+        name: (Array.isArray(c.customers) ? c.customers[0] : c.customers)?.full_name || 'Unknown',
+        amount: parseFloat(String(c.total_amount)) || 0
       })) || []
 
       setStats({

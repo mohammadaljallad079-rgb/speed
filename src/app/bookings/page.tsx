@@ -45,7 +45,7 @@ function BookingsPageContent() {
     try {
       const { data: contract, error: contractError } = await supabase
         .from('rental_contracts')
-        .select('*, cars(make, model, year, plate_number, license_plate, color)')
+        .select('*, cars(make, model, year, plate_number, color)')
         .eq('id', id)
         .single()
 

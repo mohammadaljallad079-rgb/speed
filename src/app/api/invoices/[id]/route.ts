@@ -18,7 +18,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     let query = supabaseAdmin
       .from("invoices")
-      .select("*, customers(id, name, full_name, phone, email)")
+      .select("*, customers(id, full_name, phone, email)")
       .eq("id", id);
     if (context.tenantId) query = query.eq("tenant_id", context.tenantId);
 

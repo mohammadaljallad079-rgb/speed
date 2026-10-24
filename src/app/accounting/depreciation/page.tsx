@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { TrendingDown, Plus, Calculator } from 'lucide-react'
+import { TrendingDown, Plus, Calculator, BookOpenCheck } from 'lucide-react'
 
 type Car = { id: string; make: string; model: string; year: number; plate_number: string; purchase_price: number; purchase_date?: string | null }
 type DepreciationRecord = {
@@ -32,6 +32,8 @@ function PageContent() {
   const [activeTab, setActiveTab] = useState('auto')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [form, setForm] = useState({ car_id: '', method: 'straight_line', useful_life_years: 5, salvage_value: 0, annual_rate: 20, start_date: new Date().toISOString().split('T')[0] })
+  const [postingId, setPostingId] = useState<string | null>(null)
+  const [postMessage, setPostMessage] = useState<string | null>(null)
 
   const fetchData = async () => {
     setLoading(true)
@@ -51,6 +53,40 @@ function PageContent() {
     setDialogOpen(false)
     setForm({ car_id: '', method: 'straight_line', useful_life_years: 5, salvage_value: 0, annual_rate: 20, start_date: new Date().toISOString().split('T')[0] })
     fetchData()
+  }
+
+  /**
+   * Post one period of depreciation to the ledger.
+   *
+   * The schedule itself is only a calculation. Until this runs, the expense is
+   * not in the P&L and the accumulated depreciation is not on the balance sheet.
+   * The server recomputes the amount from the schedule and the depreciation
+   * already posted, so the browser never dictates the charge.
+   */
+  const handlePost = async (rec: DepreciationRecord) => {
+    setPostingId(rec.id)
+    setPostMessage(null)
+    try {
+      const res = await fetch('/api/depreciation/post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ schedule_id: rec.id, entry_date: rec.start_date }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || 'Posting failed')
+      setPostMessage(
+        data.journal_created
+          ? (isRTL
+              ? `تم ترحيل إهلاك بمبلغ ${Number(data.amount).toFixed(3)} د.ب (قيد ${data.reference})`
+              : `Posted ${Number(data.amount).toFixed(3)} BHD of depreciation (journal ${data.reference})`)
+          : (isRTL
+              ? `الفترة مرحّلة مسبقاً — لم يُنشأ قيد جديد (${data.reference})`
+              : `This period is already posted — no new journal was created (${data.reference})`)
+      )
+    } catch (error: any) {
+      setPostMessage(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
+    }
+    setPostingId(null)
   }
 
   const calcAnnualDepreciation = (rec: DepreciationRecord) => {
@@ -169,6 +205,12 @@ function PageContent() {
           </div>
         )}
 
+        {postMessage && (
+          <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-4 py-3 text-sm text-slate-700 dark:text-slate-200">
+            {postMessage}
+          </div>
+        )}
+
         {activeTab === 'manual' && (
 
         <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
@@ -192,6 +234,7 @@ function PageContent() {
                     <th className="text-start py-3 px-4 text-xs font-semibold text-slate-500 uppercase">{isRTL ? 'العمر الافتراضي' : 'Useful Life'}</th>
                     <th className="text-start py-3 px-4 text-xs font-semibold text-slate-500 uppercase">{isRTL ? 'الإهلاك السنوي' : 'Annual Depreciation'}</th>
                     <th className="text-start py-3 px-4 text-xs font-semibold text-slate-500 uppercase">{isRTL ? 'تاريخ البداية' : 'Start Date'}</th>
+                    <th className="text-start py-3 px-4 text-xs font-semibold text-slate-500 uppercase">{isRTL ? 'الترحيل' : 'Post to Ledger'}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -219,6 +262,18 @@ function PageContent() {
                         </div>
                       </td>
                       <td className="py-3 px-4 text-sm text-slate-600 dark:text-slate-300">{rec.start_date}</td>
+                      <td className="py-3 px-4">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={postingId === rec.id}
+                          onClick={() => handlePost(rec)}
+                          title={isRTL ? 'ترحيل قيد الإهلاك' : 'Post the depreciation journal'}
+                        >
+                          <BookOpenCheck className="w-4 h-4 mr-1" />
+                          {postingId === rec.id ? (isRTL ? 'جارٍ الترحيل…' : 'Posting…') : (isRTL ? 'ترحيل' : 'Post')}
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

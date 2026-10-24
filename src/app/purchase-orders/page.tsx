@@ -4,7 +4,6 @@ import { Suspense, useState, useEffect, useMemo } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, Supplier, PurchaseOrder, PurchaseOrderItem, generatePONumber } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import {
   ClipboardList, Plus, Search, Save, Trash2, CheckCircle, XCircle, Clock,
@@ -211,38 +210,44 @@ function PurchaseOrdersPageContent() {
     setConverting(true)
     try {
       const { data: poItems } = await supabase.from('purchase_order_items').select('*').eq('purchase_order_id', convertOrder.id)
-      const invoiceNumber = await nextDocumentNumber(supabase as any, 'purchase_invoice', 'INV')
-      const { data: invData, error: invError } = await supabase.from('purchase_invoices').insert([{
-        invoice_number: invoiceNumber,
-        supplier_id: convertOrder.supplier_id,
-        bill_date: new Date().toISOString().split('T')[0],
-        due_date: null,
-        total_amount: convertOrder.total_amount,
-        paid_amount: 0,
-        vat_amount: 0,
-        status: 'unpaid',
-        notes: `From PO ${convertOrder.po_number}`,
-        car_id: convertOrder.car_id || null,
-        branch: convertOrder.branch || null,
-        purchase_order_id: convertOrder.id,
-      }]).select().single()
-      if (invError) throw invError
 
-      const invItems = (poItems || []).map((it: any) => ({
-        purchase_invoice_id: invData.id,
-        description: it.description,
-        quantity: it.quantity,
-        unit_price: it.unit_price,
-        vat_rate: 0,
-        total_price: it.total_price,
+      // The bill must be created through the validated server path so it gets a
+      // tenant, a number and a balanced journal. Inserting it here (as the page
+      // did before Execution 54) produced an unposted bill with no ledger entry,
+      // which then made the supplier statement and the GL disagree.
+      const items = (poItems || []).map((it: any) => ({
+        description: it.description || 'Item',
+        quantity: parseFloat(it.quantity) || 0,
+        unit_price: parseFloat(it.unit_price) || 0,
+        vat_rate: parseFloat(it.vat_rate) || 0,
       }))
-      if (invItems.length > 0) await supabase.from('purchase_invoice_items').insert(invItems)
+      if (items.length === 0) {
+        throw new Error(isRTL ? 'أمر الشراء لا يحتوي على بنود' : 'The purchase order has no items')
+      }
+
+      const res = await fetch('/api/purchases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          supplier_id: convertOrder.supplier_id,
+          bill_date: new Date().toISOString().split('T')[0],
+          items,
+          advance_payment: 0,
+          payment_type: 'credit',
+          branch: convertOrder.branch || null,
+          car_id: convertOrder.car_id || null,
+          notes: `From PO ${convertOrder.po_number}`,
+          purchase_order_id: convertOrder.id,
+        }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not create the supplier bill')
 
       await supabase.from('purchase_orders').update({ status: 'received' }).eq('id', convertOrder.id)
 
       setConvertOrder(null)
       fetchOrders()
-      alert(isRTL ? 'تم إنشاء فاتورة المورد: ' + invData.invoice_number : 'Supplier invoice created: ' + invData.invoice_number)
+      alert(isRTL ? 'تم إنشاء فاتورة المورد وترحيلها' : 'Supplier invoice created and posted')
     } catch (error: any) {
       alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
     }

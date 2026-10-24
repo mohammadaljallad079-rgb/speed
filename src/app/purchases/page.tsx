@@ -66,9 +66,25 @@ function SupplierBillsPageContent() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm(isRTL ? 'هل أنت متأكد من الحذف؟' : 'Are you sure?')) return
-    await supabase.from('purchase_invoices').delete().eq('id', id)
-    fetchBills()
+    if (!confirm(isRTL ? 'هل أنت متأكد من حذف الفاتورة؟' : 'Are you sure you want to delete this bill?')) return
+    // The delete is server-authoritative: a posted bill, or one with payments,
+    // debit notes or line items, is refused (the ledger must keep matching the
+    // documents). The browser no longer removes the row itself.
+    try {
+      const res = await fetch('/api/purchases', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      })
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}))
+        alert(payload?.error || (isRTL ? 'تعذر حذف الفاتورة' : 'Could not delete the bill'))
+        return
+      }
+      fetchBills()
+    } catch {
+      alert(isRTL ? 'تعذر حذف الفاتورة' : 'Could not delete the bill')
+    }
   }
 
   const filtered = bills.filter(bill => {

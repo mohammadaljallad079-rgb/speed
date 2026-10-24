@@ -1,4 +1,3 @@
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import * as XLSX from 'xlsx'
 import { logAudit, requireContext, toErrorResponse } from '@/lib/auth'
@@ -6,10 +5,7 @@ import { asUntrustedBlock, scanForInjection } from '@/lib/ai/policy'
 import { loadAiSettings, buildRoutes } from '@/lib/ai/settings'
 import { completeWithFallback } from '@/lib/ai/providers'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+import { supabaseAdmin as supabase } from '@/lib/supabase-admin'
 
 /**
  * AI Excel analysis.

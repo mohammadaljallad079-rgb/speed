@@ -13,7 +13,7 @@ function LoansContent() {
 
   useEffect(() => {
     supabase.from("car_loans")
-      .select("*, cars(make,model,plate_number), customers(name,full_name,phone)")
+      .select("*, cars(make,model,plate_number), customers(full_name,phone)")
       .order("created_at", { ascending: false })
       .then(({ data }) => { setLoans(data || []); setLoading(false) })
   }, [])
@@ -23,7 +23,7 @@ function LoansContent() {
       <div className="p-6 bg-[#f0f2f5] min-h-screen">
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-black text-slate-800">{isRTL ? "القروض والتمويل" : "Loans & Financing"}</h1>
-          <Link href="/loans/new" className="bg-red-600 hover:bg-red-700 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors">
+          <Link href="/cars/new" className="bg-red-600 hover:bg-red-700 text-white font-bold px-5 py-2.5 rounded-xl text-sm transition-colors">
             + {isRTL ? "قرض جديد" : "New Loan"}
           </Link>
         </div>

@@ -47,8 +47,13 @@ function CarDetailContent() {
 
   useEffect(() => {
     if (params?.id) {
-      supabase.from('cars').select('*').eq('id', params.id).single()
-        .then(({ data }) => { setCar(data); setLoading(false) })
+      // Public detail page: read the sanctioned public feed, never `cars`
+      // directly. The feed projects the display columns and keeps internal
+      // commercial data (cost, supplier, VIN, insurance) server-side.
+      fetch(`/api/public/vehicles?id=${encodeURIComponent(String(params.id))}`)
+        .then(res => res.json())
+        .then(json => { setCar(json.data ?? null); setLoading(false) })
+        .catch(() => setLoading(false))
     }
   }, [params?.id])
 

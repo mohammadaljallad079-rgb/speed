@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
 import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
+import RecordSelect from '@/components/records/RecordSelect'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
@@ -282,12 +283,13 @@ function NewPaymentPageContent() {
                 <div className="space-y-3">
                   <div>
                     <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'العميل' : 'Customer'} *</Label>
-                    <Select value={form.customer_id} onValueChange={handleCustomerChange}>
-                      <SelectTrigger className="text-xs h-8 rounded-lg bg-slate-50 dark:bg-slate-900 border-slate-200"><SelectValue placeholder={isRTL ? 'اختر العميل' : 'Select customer'} /></SelectTrigger>
-                      <SelectContent>
-                        {customers.map(c => <SelectItem key={c.id} value={c.id}>{c.full_name} — {c.phone}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
+                    <RecordSelect
+                      kind="customer"
+                      value={form.customer_id}
+                      onChange={(id) => handleCustomerChange(id)}
+                      createMode="inline"
+                      placeholder={isRTL ? 'اختر العميل' : 'Select customer'}
+                    />
                   </div>
 
                   {selectedCustomer && (

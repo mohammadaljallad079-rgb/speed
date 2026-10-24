@@ -8,6 +8,7 @@ export {
   forbidden,
   notFound,
   badRequest,
+  conflict,
   invalidReference,
   toErrorResponse,
 } from "./errors";

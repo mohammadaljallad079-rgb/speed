@@ -4,7 +4,8 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
-import { supabase, Supplier, Car, generateSupplierBillNumber } from "@/lib/supabase"
+import { supabase, Supplier, Car } from "@/lib/supabase"
+import RecordSelect from "@/components/records/RecordSelect"
 import { formatCurrency } from "@/lib/utils"
 import {
   ShoppingBag, Save, ArrowLeft, Plus, Trash2, Car as CarIcon, User, FileText
@@ -31,13 +32,10 @@ function NewBillPageContent() {
   const { t, isRTL } = useLanguage()
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [cars, setCars] = useState<Car[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const [form, setForm] = useState({
-    invoice_number: '',
     supplier_id: '',
     bill_date: new Date().toISOString().split('T')[0],
     due_date: '',
@@ -56,20 +54,7 @@ function NewBillPageContent() {
 
   useEffect(() => {
     setMounted(true)
-    setForm(f => ({ ...f, invoice_number: generateSupplierBillNumber() }))
-    fetchSuppliers()
-    fetchCars()
   }, [])
-
-  async function fetchSuppliers() {
-    const { data } = await supabase.from('suppliers').select('*').order('name')
-    if (data) setSuppliers(data)
-  }
-
-  async function fetchCars() {
-    const { data } = await supabase.from('cars').select('id, make, model, plate_number').order('plate_number')
-    if (data) setCars(data as Car[])
-  }
 
   const totalAmount = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0)
   const totalVat = items.reduce((sum, item) => sum + (item.quantity * item.unit_price * item.vat_rate / 100), 0)
@@ -111,7 +96,6 @@ function NewBillPageContent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          invoice_number: form.invoice_number,
           supplier_id: form.supplier_id,
           bill_date: form.bill_date,
           due_date: form.due_date || null,
@@ -158,7 +142,7 @@ function NewBillPageContent() {
                 <ShoppingBag className="w-6 h-6 text-emerald-500" />
                 {isRTL ? 'فاتورة مورد جديدة' : 'New Supplier Bill'}
               </h1>
-              <p className="text-slate-500 text-sm">{form.invoice_number}</p>
+              <p className="text-slate-500 text-sm">{isRTL ? 'يُخصَّص الرقم عند الحفظ' : 'Number is assigned on save'}</p>
             </div>
           </div>
           <Button onClick={handleSubmit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl gap-2">
@@ -179,20 +163,19 @@ function NewBillPageContent() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
-                  <select
+                  {/* Searchable picker from the Suppliers module with an inline
+                      (+) that reuses the module's own create form. */}
+                  <RecordSelect
+                    kind="supplier"
                     value={form.supplier_id}
-                    onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
-                    className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-                  >
-                    <option value="">{isRTL ? 'اختر المورد...' : 'Select supplier...'}</option>
-                    {suppliers.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
+                    onChange={(id) => setForm({ ...form, supplier_id: id })}
+                    createMode="inline"
+                    placeholder={isRTL ? 'اختر المورد...' : 'Select supplier...'}
+                  />
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'رقم الفاتورة' : 'Bill Number'}</label>
-                  <Input value={form.invoice_number} readOnly className="h-11 rounded-xl bg-slate-50" />
+                  <Input value={isRTL ? 'يُخصَّص تلقائياً' : 'Assigned automatically'} readOnly className="h-11 rounded-xl bg-slate-50" />
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'تاريخ الفاتورة' : 'Bill Date'} *</label>
@@ -224,16 +207,13 @@ function NewBillPageContent() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المركبة' : 'Vehicle'}</label>
-                  <select
+                  <RecordSelect
+                    kind="car"
                     value={form.car_id}
-                    onChange={(e) => setForm({ ...form, car_id: e.target.value })}
-                    className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-                  >
-                    <option value="">{isRTL ? 'اختر المركبة...' : 'Select vehicle...'}</option>
-                    {cars.map(c => (
-                      <option key={c.id} value={c.id}>{c.make} {c.model} ({c.plate_number})</option>
-                    ))}
-                  </select>
+                    onChange={(id) => setForm({ ...form, car_id: id })}
+                    createMode="inline"
+                    placeholder={isRTL ? 'اختر المركبة...' : 'Select vehicle...'}
+                  />
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'فئة المصروف' : 'Expense Category'}</label>

@@ -275,12 +275,12 @@ function RentalsPageContent() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-8 flex-1 md:justify-items-center">
                   <div><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.startDate}</p><p className="font-medium text-slate-900 dark:text-slate-100">{contract.start_date}</p></div>
                   <div><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.carDetails}</p><p className="font-medium text-slate-900 dark:text-slate-100">{contract.car?.make} {contract.car?.model}</p></div>
-                  <div className="hidden md:block text-center"><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.totalAmount}</p><p className="font-bold text-cyan-600 dark:text-cyan-400">{formatCurrency(contract.total_amount)}</p></div>
-                  <div className="hidden md:block text-center"><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{isRTL ? "الوديعة" : "Deposit"}</p><p className="font-bold text-amber-600 dark:text-amber-400">{formatCurrency(contract.deposit_amount)}</p></div>
+                  <div className="hidden md:block text-center"><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{t.totalAmount}</p><p className="font-bold text-cyan-600 dark:text-cyan-400">{formatCurrency(contract.total_amount ?? 0)}</p></div>
+                  <div className="hidden md:block text-center"><p className="text-xs text-slate-500 uppercase tracking-wider mb-1">{isRTL ? "الوديعة" : "Deposit"}</p><p className="font-bold text-amber-600 dark:text-amber-400">{formatCurrency(contract.deposit_amount ?? 0)}</p></div>
                 </div>
 
                 <div className="flex items-center justify-between md:justify-end gap-4 border-t md:border-t-0 pt-4 md:pt-0">
-                  <Badge className={getStatusColor(contract.status)}>{contract.status}</Badge>
+                  <Badge className={getStatusColor(contract.status ?? '')}>{contract.status}</Badge>
                   
                   {/* APPROVE BUTTON FOR PENDING CONTRACTS */}
                   {contract.status === 'pending' && (

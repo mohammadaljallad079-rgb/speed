@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { isSaleInvoicePosted, hasInvoiceDependents } from "@/lib/accounting/invoice-guards";
-import { forbidden, logAudit, notFound, requireContext, toErrorResponse } from "@/lib/auth";
+import { decideInvoiceDeletion } from "@/lib/accounting/invoice-guards";
+import { conflict, forbidden, logAudit, notFound, requireContext, toErrorResponse } from "@/lib/auth";
 
 /**
  * Single invoice lookup.
@@ -18,7 +18,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     let query = supabaseAdmin
       .from("invoices")
-      .select("*, customers(id, name, full_name, phone, email)")
+      .select("*, customers(id, full_name, phone, email)")
       .eq("id", id);
     if (context.tenantId) query = query.eq("tenant_id", context.tenantId);
 
@@ -67,12 +67,18 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     if (!invoice) throw notFound("Invoice not found");
 
     const invoiceNumber = String((invoice as { invoice_number?: string }).invoice_number ?? "");
-    if (await isSaleInvoicePosted(supabaseAdmin as never, invoiceNumber)) {
-      throw forbidden("A posted invoice cannot be deleted; reverse it instead.");
-    }
-    const dependents = await hasInvoiceDependents(supabaseAdmin as never, id);
-    if (dependents) {
-      throw forbidden("This invoice has payments or returns attached and cannot be deleted.");
+
+    // One authority decides, and it fails closed: if the posting state or the
+    // dependents count cannot be established, the delete is refused rather than
+    // assumed safe. See `decideInvoiceDeletion`.
+    const decision = await decideInvoiceDeletion(supabaseAdmin as never, {
+      id,
+      invoiceNumber,
+      tenantId: context.tenantId ?? null,
+    });
+    if (!decision.allowed) {
+      if (decision.code === "unverified") throw conflict(decision.message, "unverified");
+      throw forbidden(decision.message);
     }
 
     const { error: delErr } = await supabaseAdmin.from("invoices").delete().eq("id", id);

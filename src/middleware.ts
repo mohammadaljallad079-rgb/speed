@@ -38,7 +38,6 @@ const PROTECTED_PAGE_PREFIXES = [
   "/purchase-orders",
   "/rentals",
   "/cars",
-  "/fleet",
   "/customers",
   "/suppliers",
   "/supplier-payments",
@@ -53,17 +52,33 @@ const PROTECTED_PAGE_PREFIXES = [
   "/bookings",
   "/hr",
   "/settings",
-  "/erp",
   "/employee-portal",
   "/customer-dashboard",
+  "/booking",
   "/onboarding",
+  // Global operator console. `/super-admin-login` is deliberately NOT here -
+  // it is the public door an unauthenticated operator must be able to reach.
+  "/super-admin",
 ];
 
 /** True when a page path must have a session (else redirect to /login). */
 export function isProtectedPage(pathname: string): boolean {
+  // `/cars/[id]` is the PUBLIC vehicle detail page an anonymous visitor reaches
+  // from the marketing site; only the ERP fleet register (`/cars`, `/cars/new`)
+  // needs a session. `/fleet` is public marketing too (it renders PublicNavbar).
+  if (pathname.startsWith("/cars/") && pathname !== "/cars/new") return false;
   return PROTECTED_PAGE_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
+}
+
+/**
+ * The global operator console. It has its own sign-in page, so an anonymous
+ * visitor is sent there rather than to the ERP login: the ERP login signs a user
+ * in as a company identity, which then cannot open the console.
+ */
+export function isSuperAdminPage(pathname: string): boolean {
+  return pathname === "/super-admin" || pathname.startsWith("/super-admin/");
 }
 
 /** True when an `/api/*` path is intentionally public. */
@@ -124,7 +139,10 @@ export async function middleware(request: NextRequest) {
 
   if (isProtectedPage(pathname) && !user) {
     const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
+    // The global operator console has its own door. Sending an operator to the
+    // ERP login would have them sign in as a company user and then be bounced,
+    // so `/super-admin` (and its children) redirect to `/super-admin-login`.
+    loginUrl.pathname = isSuperAdminPage(pathname) ? "/super-admin-login" : "/login";
     loginUrl.search = "";
     return NextResponse.redirect(loginUrl);
   }

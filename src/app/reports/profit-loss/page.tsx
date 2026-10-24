@@ -5,7 +5,7 @@ import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatDateTime } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -144,18 +144,20 @@ useEffect(() => {
       }).filter(item => item.balance !== 0)
 
       // 5. Categorize: Revenue / Direct Cost of Sales (51xxx) / Operating Expenses
+      const accs = accounts ?? []
       const revenueItems = allItems
-        .filter(a => a.balance !== 0 && accounts.find((x: any) => x.code === a.code)?.type === 'revenue')
+        .filter(a => a.balance !== 0 && accs.find((x: any) => x.code === a.code)?.type === 'revenue')
         .sort((a, b) => a.code.localeCompare(b.code))
 
       function isUnderCogs(code: string): boolean {
         if (code.startsWith('51')) return true
-        let current = accounts.find((x: any) => x.code === code)
+        let current = accs.find((x: any) => x.code === code)
         const visited = new Set<string>()
         while (current?.parent_code && !visited.has(current.parent_code)) {
           visited.add(current.parent_code)
           if (current.parent_code.startsWith('51')) return true
-          current = accounts.find((x: any) => x.code === current.parent_code)
+          const parentCode = current.parent_code
+          current = accs.find((x: any) => x.code === parentCode)
         }
         return false
       }
@@ -166,7 +168,7 @@ useEffect(() => {
 
       const opexItems = allItems
         .filter(a => {
-          const acc = accounts.find((x: any) => x.code === a.code)
+          const acc = accs.find((x: any) => x.code === a.code)
           return acc?.type === 'expense' && !isUnderCogs(a.code)
         })
         .sort((a, b) => a.code.localeCompare(b.code))
@@ -224,7 +226,7 @@ useEffect(() => {
     if (!printWindow) return
 
     const periodLabel = `${dateFrom || (isRTL ? 'بداية الحسابات' : 'All time')} — ${dateTo || (isRTL ? 'اليوم' : 'Today')}`
-    const printedAt = new Date().toLocaleString(isRTL ? 'ar-BH' : 'en-GB')
+    const printedAt = formatDateTime(new Date(), isRTL ? 'ar-BH' : 'en-GB')
 
     const html = `<!DOCTYPE html>
 <html dir="${isRTL ? 'rtl' : 'ltr'}" lang="${isRTL ? 'ar' : 'en'}">

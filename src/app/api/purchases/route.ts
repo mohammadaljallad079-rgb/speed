@@ -8,12 +8,16 @@ import {
   PURCHASE_ACCOUNT_CODES,
 } from "@/lib/accounting/purchase-posting";
 import { writeJournal } from "@/lib/accounting/manual-posting";
+import { decidePurchaseBillDeletion } from "@/lib/accounting/invoice-guards";
 import {
   assertDateInOpenFinancialYear,
   assertReferences,
   assertWritableTenant,
+  conflict,
+  forbidden,
   getActiveFinancialYear,
   logAudit,
+  notFound,
   REF_CAR,
   REF_SUPPLIER,
   requireContext,
@@ -44,6 +48,8 @@ type Body = {
   branch?: string | null;
   car_id?: string | null;
   notes?: string | null;
+  purchase_order_id?: string | null;
+  tenant_id?: unknown;
 };
 
 const num = (v: unknown): number => {
@@ -60,7 +66,6 @@ export async function POST(request: Request) {
     const body = (await request.json()) ?? {};
 
     const supplierId = typeof body.supplier_id === "string" ? body.supplier_id : "";
-    const invoiceNumber = typeof body.invoice_number === "string" ? body.invoice_number.trim() : "";
     const date = (typeof body.bill_date === "string" && body.bill_date) || new Date().toISOString().slice(0, 10);
     const rawItems: Item[] = Array.isArray(body.items) ? body.items : [];
     const items = rawItems.map((i: Item) => ({
@@ -72,9 +77,6 @@ export async function POST(request: Request) {
 
     if (!supplierId) {
       return NextResponse.json({ error: "supplier_id is required", code: "bad_request" }, { status: 400 });
-    }
-    if (!invoiceNumber) {
-      return NextResponse.json({ error: "invoice_number is required", code: "bad_request" }, { status: 400 });
     }
     if (items.length === 0 || items.some((i: { description: string }) => !i.description)) {
       return NextResponse.json({ error: "Every item needs a description", code: "bad_request" }, { status: 400 });
@@ -92,7 +94,13 @@ export async function POST(request: Request) {
     const year = await getActiveFinancialYear(context.tenantId);
     assertDateInOpenFinancialYear(year, date, "bill date");
 
-    // Idempotency: a supplier bill number is unique per tenant.
+    // Idempotency: a supplier bill number is unique per tenant. The number is
+    // allocated server-side so a caller cannot collide with (or reuse) another
+    // document's number, and a retry of the same bill resolves to the first row.
+    const invoiceNumber =
+      (typeof body.invoice_number === "string" && body.invoice_number.trim()) ||
+      (await nextDocumentNumber(supabaseAdmin as never, "purchase_invoice", "BILL"));
+
     let existingQuery = supabaseAdmin.from("purchase_invoices").select("id").eq("invoice_number", invoiceNumber);
     existingQuery = context.tenantId ? existingQuery.eq("tenant_id", context.tenantId) : existingQuery.is("tenant_id", null);
     const { data: existing } = await existingQuery.maybeSingle();
@@ -116,6 +124,11 @@ export async function POST(request: Request) {
       expense_category: body.expense_category || null,
       branch: body.branch || null,
     };
+    // The originating purchase order, when the bill was converted from one, so
+    // the PO and the bill stay linked in both directions.
+    if (typeof body.purchase_order_id === "string" && body.purchase_order_id) {
+      billRow.purchase_order_id = body.purchase_order_id;
+    }
     if (tenantId) billRow.tenant_id = tenantId;
     if (context.financialYearId) billRow.financial_year_id = context.financialYearId;
 
@@ -124,8 +137,20 @@ export async function POST(request: Request) {
       .insert([billRow])
       .select("id")
       .single();
-    if (billErr) throw billErr;
-    createdBillId = (bill as { id: string }).id;
+    if (billErr) {
+      // `purchase_order_id` is an optional link column that may not exist on an
+      // older install. A missing column must not cost us the bill itself, so the
+      // insert is retried once without it rather than failing the whole posting.
+      const missingPoColumn =
+        billRow.purchase_order_id !== undefined && /purchase_order_id/.test(String((billErr as { message?: string }).message ?? ""));
+      if (!missingPoColumn) throw billErr;
+      delete billRow.purchase_order_id;
+      const retry = await supabaseAdmin.from("purchase_invoices").insert([billRow]).select("id").single();
+      if (retry.error) throw retry.error;
+      createdBillId = (retry.data as { id: string }).id;
+    } else {
+      createdBillId = (bill as { id: string }).id;
+    }
 
     const itemRows = items.map((i: { description: string; quantity: number; unit_price: number; vat_rate: number }) => ({
       purchase_invoice_id: createdBillId,
@@ -202,6 +227,65 @@ export async function POST(request: Request) {
         /* best effort */
       }
     }
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
+  }
+}
+
+/**
+ * Delete a supplier bill (Exec 54).
+ *
+ * The screen used to delete a bill directly from the browser. A posted bill has
+ * a journal in the ledger, and a bill with payments, debit notes or line items
+ * has dependents; deleting either orphans rows and leaves the general ledger
+ * describing a document that no longer exists. This handler is the single
+ * server-authoritative path: it refuses a posted bill, refuses a bill with
+ * dependents, scopes the delete to the caller's tenant and audits it.
+ *
+ * The request body carries `{ id }` (the screen holds the row id), matching the
+ * way the page calls it.
+ */
+export async function DELETE(request: Request) {
+  try {
+    const context = await requireContext(request, { module: "purchases", action: "delete" });
+    const body = (await request.json().catch(() => ({}))) as { id?: string };
+    const id = typeof body.id === "string" ? body.id : "";
+    if (!id) {
+      return NextResponse.json({ error: "id is required", code: "bad_request" }, { status: 400 });
+    }
+
+    let query = supabaseAdmin.from("purchase_invoices").select("id,invoice_number,tenant_id").eq("id", id);
+    query = context.tenantId ? query.eq("tenant_id", context.tenantId) : query.is("tenant_id", null);
+    const { data: bill, error } = await query.maybeSingle();
+    if (error) throw error;
+    if (!bill) throw notFound("Supplier bill not found");
+
+    const invoiceNumber = String((bill as { invoice_number?: string }).invoice_number ?? "");
+
+    // One authority decides, and it fails closed: an unverifiable posting state or
+    // an unreadable dependents count refuses the delete rather than assuming the
+    // bill is clean. A guard whose error path permits is not a guard.
+    const decision = await decidePurchaseBillDeletion(supabaseAdmin as never, {
+      id,
+      invoiceNumber,
+      tenantId: context.tenantId ?? null,
+    });
+    if (!decision.allowed) {
+      if (decision.code === "unverified") throw conflict(decision.message, "unverified");
+      throw forbidden(decision.message);
+    }
+
+    const { error: delErr } = await supabaseAdmin.from("purchase_invoices").delete().eq("id", id);
+    if (delErr) throw delErr;
+
+    await logAudit(context, {
+      action: "delete",
+      entity: "purchase_invoices",
+      entityId: id,
+      metadata: { invoice_number: invoiceNumber },
+    });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
     const { status, body } = toErrorResponse(error);
     return NextResponse.json(body, { status });
   }

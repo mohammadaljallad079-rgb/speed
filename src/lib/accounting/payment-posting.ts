@@ -1,3 +1,5 @@
+import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+
 /**
  * Supplier-payment posting.
  *
@@ -40,7 +42,7 @@ export type SupplierPaymentJournal = {
     total_credit: number;
     is_balanced: true;
     status: "posted";
-    entry_type: "supplier_payment";
+    entry_type: "supplier_payment" | "supplier_payment_reversal";
   };
   lines: SupplierPaymentJournalLine[];
 };
@@ -96,6 +98,47 @@ type Builder = {
 type PostingClient = { from: (table: string) => Builder };
 
 /**
+ * Build the mirror journal that reverses a posted supplier payment:
+ *   Dr Cash / Bank (11001/11002)  amount
+ *   Cr Accounts Payable (21001)   amount
+ *
+ * A posted payment is never deleted — deleting the rows would erase the fact
+ * that money moved. The reversal is its own `entry_type` so both the original
+ * and its undoing stay visible in the ledger. Returns null for a non-positive
+ * amount or a missing account, so a caller can never post an empty reversal.
+ */
+export function buildSupplierPaymentReversalJournal(params: {
+  journalNumber: string;
+  paymentNumber: string;
+  supplierId: string;
+  amount: number;
+  paymentDate: string;
+  description: string;
+  apAccountId: string;
+  cashAccountId: string;
+}): SupplierPaymentJournal | null {
+  const { journalNumber, paymentNumber, supplierId, amount, paymentDate, description, apAccountId, cashAccountId } = params;
+  if (!(amount > 0) || !apAccountId || !cashAccountId) return null;
+  return {
+    header: {
+      journal_number: journalNumber,
+      entry_date: paymentDate,
+      reference_number: paymentNumber,
+      description,
+      total_debit: amount,
+      total_credit: amount,
+      is_balanced: true,
+      status: "posted",
+      entry_type: "supplier_payment_reversal",
+    },
+    lines: [
+      { account_id: cashAccountId, debit: amount, credit: 0, description, supplier_id: supplierId, line_order: 1 },
+      { account_id: apAccountId, debit: 0, credit: amount, description, supplier_id: supplierId, line_order: 2 },
+    ],
+  };
+}
+
+/**
  * Post a supplier payment to the ledger. Resolves AP and cash/bank by their
  * codes (the codes are fixed system accounts, verified against the live chart),
  * then writes the header and the two lines.
@@ -138,18 +181,8 @@ export async function postSupplierPayment(
   });
   if (!journal) throw new Error("Cannot post a supplier payment without a positive amount and resolvable accounts.");
 
-  const { data: header, error: headerErr } = await client.from("journal_entries").insert(journal.header).select("id").single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    // Best-effort removal of the orphan header so a failed line write does not
-    // leave an unbalanced entry behind.
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
+  // Shared atomic writer (migration 011): header + lines in one transaction, so
+  // a failed line write cannot leave an orphan header behind.
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
   return { journalId };
 }

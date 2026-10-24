@@ -371,7 +371,10 @@ describe("route and UI respect the security model", () => {
 
   test("the existing AI analysis route is unchanged in its key handling", () => {
     const route = read("src/app/api/financial/ai-excel-analysis/route.ts");
-    assert.match(route, /SUPABASE_SERVICE_ROLE_KEY/); // server-side only
+    // The service-role key is read only by the server-only admin module; the
+    // route must reach it through that import, never via a browser client.
+    assert.match(route, /supabase-admin/);
+    assert.doesNotMatch(route, /NEXT_PUBLIC_SUPABASE_ANON_KEY/);
     assert.doesNotMatch(route, /return.*apiKey/);
   });
 

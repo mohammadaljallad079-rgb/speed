@@ -347,7 +347,7 @@ function CarReportsPageContent() {
                       <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b' }} />
                       <Tooltip 
                         contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
-                        formatter={(value: number) => formatCurrency(value)}
+                        formatter={(value) => formatCurrency(Number(value))}
                       />
                       <Bar dataKey="value" radius={[10, 10, 0, 0]} barSize={60}>
                         {chartData.map((entry, index) => (

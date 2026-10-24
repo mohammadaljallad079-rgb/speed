@@ -25,6 +25,14 @@ export const notFound = (message = "Resource not found") => new ApiError(404, "n
 
 export const badRequest = (message: string) => new ApiError(400, "bad_request", message);
 
+/**
+ * 409 - the request is well-formed and permitted, but the system cannot carry it
+ * out safely right now. Used by the deletion guards when a posting/dependency
+ * check could not be completed: the caller is not forbidden, the delete is simply
+ * unverifiable, and a delete must never proceed on an unverified check.
+ */
+export const conflict = (message: string, code = "conflict") => new ApiError(409, code, message);
+
 export const invalidReference = (field: string) =>
   new ApiError(422, "invalid_reference", `Invalid or unauthorized reference: ${field}`);
 

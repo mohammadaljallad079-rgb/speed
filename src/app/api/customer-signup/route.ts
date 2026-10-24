@@ -2,6 +2,30 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
+/**
+ * The company a self-registered customer belongs to.
+ *
+ * There is one SPEED company in this install, but the resolver stays
+ * conservative: it only assigns a tenant when the choice is unambiguous — the
+ * company that owns rentable cars, or the single company row. Otherwise it
+ * returns null and the account stays unassigned (the tenant-less path), rather
+ * than guessing and mis-scoping a customer into another company.
+ */
+async function resolveDefaultTenantId(): Promise<string | null> {
+  const { data: carRows } = await supabaseAdmin
+    .from("cars")
+    .select("tenant_id")
+    .eq("status", "available");
+  const carTenants = [
+    ...new Set(((carRows ?? []) as Array<{ tenant_id: string | null }>).map((r) => r.tenant_id).filter(Boolean)),
+  ] as string[];
+  if (carTenants.length === 1) return carTenants[0];
+
+  const { data: tenantRows } = await supabaseAdmin.from("tenants").select("id");
+  const ids = ((tenantRows ?? []) as Array<{ id: string }>).map((r) => r.id);
+  return ids.length === 1 ? ids[0] : null;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -81,10 +105,15 @@ export async function POST(request: NextRequest) {
 
     let customerId = existingCustomer?.id ?? null;
 
+    // Assign the authorized company so the customer portal can scope cars to it.
+    const tenantId = await resolveDefaultTenantId();
+
     if (customerId) {
+      const updatePayload: Record<string, unknown> = { full_name: fullName, phone, status: "active" };
+      if (tenantId) updatePayload.tenant_id = tenantId;
       const { error: updateCustomerError } = await supabaseAdmin
         .from("customers")
-        .update({ full_name: fullName, phone, status: "active" })
+        .update(updatePayload)
         .eq("id", customerId);
 
       if (updateCustomerError) {
@@ -94,14 +123,17 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: updateCustomerError.message ?? "تعذر تحديث بيانات العميل." }, { status: 400 });
       }
     } else {
+      const customerPayload: Record<string, unknown> = {
+        full_name: fullName,
+        email,
+        phone,
+        status: "active",
+      };
+      if (tenantId) customerPayload.tenant_id = tenantId;
+
       const { data: customerRows, error: customerError } = await supabaseAdmin
         .from("customers")
-        .insert({
-          full_name: fullName,
-          email,
-          phone,
-          status: "active",
-        })
+        .insert(customerPayload)
         .select("id");
 
       if (customerError || !customerRows || customerRows.length === 0) {
@@ -114,18 +146,20 @@ export async function POST(request: NextRequest) {
       customerId = customerRows[0].id;
     }
 
-    const { error: userError } = await supabaseAdmin.from("users").upsert(
-      {
-        id: authUserId,
-        full_name: fullName,
-        email,
-        role: "client",
-        customer_id: customerId,
-        phone,
-        is_active: true,
-      },
-      { onConflict: "id" }
-    );
+    const userPayload: Record<string, unknown> = {
+      id: authUserId,
+      full_name: fullName,
+      email,
+      role: "client",
+      customer_id: customerId,
+      phone,
+      is_active: true,
+    };
+    if (tenantId) userPayload.tenant_id = tenantId;
+
+    const { error: userError } = await supabaseAdmin.from("users").upsert(userPayload, {
+      onConflict: "id",
+    });
 
     if (userError) {
       return NextResponse.json({ error: userError.message ?? "تعذر تفعيل الحساب." }, { status: 400 });

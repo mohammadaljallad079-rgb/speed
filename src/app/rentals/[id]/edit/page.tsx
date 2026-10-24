@@ -155,7 +155,7 @@ function EditContent() {
       router.push("/rentals/" + contractId)
     } catch (error) {
       console.error("Error saving:", error)
-      alert("Error: " + (error.message || JSON.stringify(error)))
+      alert("Error: " + (error instanceof Error ? error.message : JSON.stringify(error)))
       alert("Error saving contract")
     }
     setSaving(false)

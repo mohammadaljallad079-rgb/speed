@@ -1,3 +1,5 @@
+import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+
 /**
  * Customer-receipt posting (Execution 31).
  *
@@ -142,16 +144,8 @@ export async function postCustomerReceipt(
   });
   if (!journal) throw new Error("Cannot post a receipt without a positive amount and resolvable accounts.");
 
-  const { data: header, error: headerErr } = await client.from("journal_entries").insert(journal.header).select("id").single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
+  // Shared atomic writer (migration 011). A private header/lines pair here would
+  // be a second posting path with its own orphan window.
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
   return { journalId };
 }

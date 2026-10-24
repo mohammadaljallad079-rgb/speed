@@ -15,6 +15,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ArrowLeft, Plus, Trash2, Save, Printer, FileText, CalendarDays, User, Building2, Phone, Mail, Hash, Calculator } from "lucide-react"
 
+type QuotationItem = {
+  id: number
+  description: string
+  // Bound to text inputs, so these arrive as strings and are coerced when used.
+  quantity: number | string
+  unit_price: number | string
+  discount: number | string
+  total: number
+}
+
 function GeneralQuotationForm() {
   const { isRTL } = useLanguage()
   const router = useRouter()
@@ -32,7 +42,7 @@ function GeneralQuotationForm() {
     status: "draft",
   })
 
-  const [items, setItems] = useState([
+  const [items, setItems] = useState<QuotationItem[]>([
     { id: 1, description: "", quantity: 1, unit_price: 0, discount: 0, total: 0 }
   ])
 
@@ -42,17 +52,17 @@ function GeneralQuotationForm() {
     setItems([...items, { id: Date.now(), description: "", quantity: 1, unit_price: 0, discount: 0, total: 0 }])
   }
 
-  const removeItem = (id) => {
+  const removeItem = (id: number) => {
     if (items.length > 1) setItems(items.filter(i => i.id !== id))
   }
 
-  const updateItem = (id, field, value) => {
+  const updateItem = (id: number, field: keyof QuotationItem, value: QuotationItem[keyof QuotationItem]) => {
     setItems(items.map(item => {
       if (item.id !== id) return item
       const updated = { ...item, [field]: value }
-      const qty = parseFloat(updated.quantity) || 0
-      const price = parseFloat(updated.unit_price) || 0
-      const disc = parseFloat(updated.discount) || 0
+      const qty = parseFloat(String(updated.quantity)) || 0
+      const price = parseFloat(String(updated.unit_price)) || 0
+      const disc = parseFloat(String(updated.discount)) || 0
       updated.total = (qty * price) - disc
       return updated
     }))
@@ -83,7 +93,7 @@ function GeneralQuotationForm() {
     }
   }
 
-  const label = (ar, en) => isRTL ? ar : en
+  const label = (ar: string, en: string) => isRTL ? ar : en
   const dir = isRTL ? "rtl" : "ltr"
 
   return (

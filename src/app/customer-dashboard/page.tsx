@@ -24,8 +24,27 @@ interface RentalContract {
   pickup_location: string | null; dropoff_location: string | null
   car?: { make: string | null; model: string | null; year: number | null; plate_number: string | null; category: string | null; daily_rate: number | null }
 }
-interface CarOption { id: string; make: string | null; model: string | null; year: number | null; category: string | null; daily_rate: number | null }
+interface CarOption { id: string; make: string | null; model: string | null; year: number | null; category: string | null; daily_rate: number | null; weekly_rate: number | null; monthly_rate: number | null }
 interface SupportTicket { id: string; subject: string | null; message: string | null; status: string | null; created_at: string | null }
+
+/**
+ * Car list + booking are resolved server-side (tenant-scoped, overlap-aware) via
+ * `/api/customer/*`; the browser never reads `cars`/`rental_contracts` directly,
+ * so it cannot widen the company scope or bypass the double-booking guard.
+ */
+async function fetchAvailableCars(start?: string, end?: string): Promise<{ cars: CarOption[]; error: string | null }> {
+  try {
+    const qs = new URLSearchParams()
+    if (start) qs.set('start', start)
+    if (end) qs.set('end', end)
+    const res = await fetch(`/api/customer/available-cars${qs.toString() ? `?${qs}` : ''}`, { cache: 'no-store' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) return { cars: [], error: data?.error || 'Failed to load cars' }
+    return { cars: (data?.cars ?? []) as CarOption[], error: null }
+  } catch {
+    return { cars: [], error: 'Failed to load cars' }
+  }
+}
 
 const formatCurrency = (v?: number | null) => v == null ? '—' : new Intl.NumberFormat('ar-BH', { style: 'currency', currency: 'BHD' }).format(v)
 
@@ -119,6 +138,8 @@ function DashboardContent() {
   const [customer, setCustomer] = useState<CustomerProfile | null>(null)
   const [rentals, setRentals] = useState<RentalContract[]>([])
   const [cars, setCars] = useState<CarOption[]>([])
+  const [loadingCars, setLoadingCars] = useState(false)
+  const [carsError, setCarsError] = useState('')
   const [tickets, setTickets] = useState<SupportTicket[]>([])
   const [tab, setTab] = useState<'overview'|'booking'|'rentals'|'support'>('overview')
   const [selectedCar, setSelectedCar] = useState('')
@@ -207,22 +228,37 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
     if (!user) { router.push('/customer-login'); return }
     const { data: up } = await supabase.from('users').select('customer_id, role').eq('id', user.id).maybeSingle()
     if (!up || up.role !== 'client' || !up.customer_id) { router.push('/customer-login'); return }
-    const [cr, rr, car, tr] = await Promise.all([
+    const [cr, rr, tr] = await Promise.all([
       supabase.from('customers').select('*').eq('id', up.customer_id).maybeSingle(),
       supabase.from('rental_contracts').select('id,car_id,start_date,end_date,status,total_amount,notes,pickup_location,dropoff_location,car:cars(make,model,year,plate_number,category,daily_rate)').eq('customer_id', up.customer_id).order('start_date', { ascending: false }),
-      supabase.from('cars').select('id,make,model,year,category,daily_rate,weekly_rate,monthly_rate').eq('status', 'available'),
       supabase.from('support_tickets').select('id,subject,message,status,created_at').eq('customer_id', up.customer_id).order('created_at', { ascending: false }),
     ])
     const c = cr.data; setCustomer(c ?? null)
     if (c?.cpr_number) setCprNumber(c.cpr_number)
     if (c?.driver_license) setLicense(c.driver_license)
     setRentals((rr.data ?? []).map((r: any) => ({ ...r, car: Array.isArray(r.car) ? r.car[0] : r.car })))
-    setCars(car.data ?? [])
     setTickets(tr.data ?? [])
     setLoading(false)
   }
 
+  // Cars are fetched from the tenant-scoped server route; a window hides cars
+  // that are already booked, so the list always reflects what can be reserved.
+  const loadCars = async (start?: string, end?: string) => {
+    setLoadingCars(true); setCarsError('')
+    const { cars: list, error } = await fetchAvailableCars(start, end)
+    setCars(list)
+    setCarsError(error ?? '')
+    setLoadingCars(false)
+  }
+
   useEffect(() => { load() }, [])
+
+  // (Re)load the available cars whenever the customer opens the booking tab or
+  // changes the requested dates, so a car booked for that window disappears.
+  useEffect(() => {
+    if (tab === 'booking') loadCars(startDate || undefined, endDate || undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, startDate, endDate])
 
   const uploadFile = async (file: File, folder: string) => {
     const ext = file.name.split('.').pop()
@@ -233,40 +269,45 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
   }
 
   const handleBooking = async () => {
-    setSubmitting(true); setError('')
+    setSubmitting(true); setError(''); setSuccess('')
     if (!selectedCar || !startDate || !endDate || !pickup || !dropoff) { setError(isRTL ? 'يرجى تعبئة جميع الحقول' : 'Fill all required fields'); setSubmitting(false); return }
     if (new Date(endDate) <= new Date(startDate)) { setError(isRTL ? 'تاريخ النهاية يجب أن يكون بعد تاريخ البداية' : 'End date must be after start date'); setSubmitting(false); return }
+
+    // Persist the identity documents on the caller's own customer row (RLS-scoped).
     const upd: any = { cpr_number: cprNumber, driver_license: license }
     if (cprFile) { const u = await uploadFile(cprFile, 'cpr'); if (u) upd.cpr_image_url = u }
     if (licenseFile) { const u = await uploadFile(licenseFile, 'license'); if (u) upd.license_image_url = u }
     await supabase.from('customers').update(upd).eq('id', customer!.id)
-    const days = Math.max(1, Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000))
-    const selectedCarData = cars.find(c => c.id === selectedCar)
-    let dailyRate = selectedCarData?.daily_rate ?? 0
-    let subtotal = 0
-    
-    if (rentalType === 'weekly' && selectedCarData?.weekly_rate && selectedCarData.weekly_rate > 0) {
-      const weeks = Math.ceil(days / 7)
-      subtotal = selectedCarData.weekly_rate * weeks
-      dailyRate = selectedCarData.weekly_rate / 7
-    } else if (rentalType === 'monthly' && selectedCarData?.monthly_rate && selectedCarData.monthly_rate > 0) {
-      const months = Math.ceil(days / 30)
-      subtotal = selectedCarData.monthly_rate * months
-      dailyRate = selectedCarData.monthly_rate / 30
-    } else {
-      subtotal = dailyRate * days
-    }
-    const totalAmount = subtotal
-    
-    let nextContractNumber = 'RC-' + Date.now()
+
+    // The booking is created server-side: the customer id and company come from
+    // the session, the price from the car's own rates, and an overlapping booking
+    // is rejected (409). The browser never sends car_id/tenant_id as authority.
+    let res: Response
     try {
-      const { data: rpcNumber } = await supabase.rpc('get_next_contract_number')
-      if (rpcNumber) nextContractNumber = rpcNumber
-    } catch {}
-    const { data: newBooking, error: re } = await supabase.from('rental_contracts').insert({ customer_id: customer!.id, car_id: selectedCar, start_date: startDate, end_date: endDate, pickup_location: pickup, dropoff_location: dropoff, status: 'pending', contract_number: nextContractNumber, notes: notes || null, daily_rate: dailyRate, total_days: days, subtotal: subtotal, discount: 0, vat_rate: 0, vat_amount: 0, total_amount: totalAmount, paid_amount: 0, deposit_amount: 0, rental_type: rentalType }).select().single()
-    if (re) setError(re.message)
-    else { router.push('/booking/' + newBooking.id) }
-    setSubmitting(false)
+      res = await fetch('/api/customer/bookings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          car_id: selectedCar,
+          start_date: startDate,
+          end_date: endDate,
+          pickup_location: pickup,
+          dropoff_location: dropoff,
+          notes: notes || null,
+          rental_type: rentalType,
+        }),
+      })
+    } catch {
+      setError(isRTL ? 'تعذر الاتصال بالخادم. حاول مرة أخرى.' : 'Could not reach the server. Please try again.')
+      setSubmitting(false); return
+    }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      setError(data?.error || (isRTL ? 'تعذر إنشاء الحجز.' : 'Could not create the booking.'))
+      setSubmitting(false)
+      return
+    }
+    router.push('/booking/' + data.id)
   }
 
   const handleTicket = async () => {
@@ -471,10 +512,21 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
                   {/* Car select */}
                   <div>
                     <label className="block text-sm font-black text-gray-700 mb-2">{isRTL ? 'اختر السيارة' : 'Select Car'} <span className="text-red-500">*</span></label>
-                    <select value={selectedCar} onChange={e => setSelectedCar(e.target.value)} className="w-full h-12 rounded-xl border border-gray-200 px-4 text-gray-700 bg-white text-sm font-semibold focus:border-red-400 focus:ring-1 focus:ring-red-400 outline-none">
-                      <option value="">{isRTL ? 'اختر من السيارات المتاحة' : 'Select available car'}</option>
-                      {cars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model} {c.year} — {c.category === 'sale' ? (isRTL ? 'للبيع' : 'For Sale') : (isRTL ? 'للتأجير' : 'For Rent')}</option>)}
-                    </select>
+                    {carsError ? (
+                      <div className="flex items-center justify-between gap-3 bg-red-50 border border-red-200 rounded-xl p-3">
+                        <p className="text-red-700 text-sm font-bold">{carsError}</p>
+                        <button type="button" onClick={() => loadCars(startDate || undefined, endDate || undefined)} className="text-sm font-bold text-red-600 hover:underline">{isRTL ? 'إعادة المحاولة' : 'Retry'}</button>
+                      </div>
+                    ) : loadingCars ? (
+                      <div className="h-12 rounded-xl border border-gray-200 px-4 flex items-center text-gray-400 text-sm font-semibold">{isRTL ? 'جاري تحميل السيارات...' : 'Loading cars...'}</div>
+                    ) : cars.length === 0 ? (
+                      <div className="h-12 rounded-xl border border-amber-200 bg-amber-50 px-4 flex items-center text-amber-700 text-sm font-semibold">{isRTL ? 'لا توجد سيارات متاحة للفترة المحددة. جرّب تغيير التواريخ.' : 'No cars available for the selected period. Try changing the dates.'}</div>
+                    ) : (
+                      <select value={selectedCar} onChange={e => setSelectedCar(e.target.value)} className="w-full h-12 rounded-xl border border-gray-200 px-4 text-gray-700 bg-white text-sm font-semibold focus:border-red-400 focus:ring-1 focus:ring-red-400 outline-none">
+                        <option value="">{isRTL ? 'اختر من السيارات المتاحة' : 'Select available car'}</option>
+                        {cars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model} {c.year} — {c.category === 'sale' ? (isRTL ? 'للبيع' : 'For Sale') : (isRTL ? 'للتأجير' : 'For Rent')}</option>)}
+                      </select>
+                    )}
                   </div>
                   
                   {/* Rental Type */}

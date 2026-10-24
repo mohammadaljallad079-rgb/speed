@@ -54,6 +54,11 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
       this.inVals = v;
       return this;
     }
+    is(_c: string, _v: any) {
+      // Tenant scoping: `tenant_id is null` for the single-tenant install.
+      this.filters.push([_c, null]);
+      return this;
+    }
     limit(_n: number) {
       return this;
     }
@@ -69,7 +74,12 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") return { data: (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
-        const rows = (tables[this.table] ?? []).filter((r) => this.filters.every(([c, v]) => r[c] === v));
+        // `is(col, null)` must match a column that is absent from the seed row as
+        // well as one explicitly set to null - a fixture omits `tenant_id`, and a
+        // strict `===` would treat that as a different value and hide the row.
+        const rows = (tables[this.table] ?? []).filter((r) =>
+          this.filters.every(([c, v]) => (v === null ? r[c] == null : r[c] === v)),
+        );
         return { data: rows, error: null };
       }
       if (this.op === "insert") {
@@ -124,9 +134,41 @@ describe("Priority 2 - posted invoice guard", () => {
     assert.equal(await isSaleInvoicePosted(client as never, "SI-1"), false);
   });
 
-  test("fails closed to not-posted on an empty number", async () => {
+  // A document with no number has an unknowable posting state, so the advisory
+  // boolean must report "posted" - the reading that refuses an edit/delete.
+  // Reporting "not posted" here would let an unnumbered-but-posted invoice be
+  // destroyed. The authoritative delete decision reports `unverified` instead.
+  test("an empty number is not treated as proof of not-posted", async () => {
     const { client } = makeStub({ tables: { journal_entries: [{ id: "x", entry_type: "sale_invoice", reference_number: "SI-1" }] } });
-    assert.equal(await isSaleInvoicePosted(client as never, ""), false);
+    assert.equal(await isSaleInvoicePosted(client as never, ""), true);
+
+    const { decideInvoiceDeletion } = await import("../src/lib/accounting/invoice-guards.ts");
+    const decision = await decideInvoiceDeletion(client as never, {
+      id: "inv-1",
+      invoiceNumber: "",
+      tenantId: null,
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, "unverified");
+  });
+
+  test("a database error refuses the delete instead of permitting it", async () => {
+    const { decideInvoiceDeletion } = await import("../src/lib/accounting/invoice-guards.ts");
+    const failing = {
+      from: () => {
+        const b: any = { select: () => b, eq: () => b, is: () => b, limit: () => b };
+        b.maybeSingle = async () => ({ data: null, error: { message: "permission denied for table journal_entries" } });
+        return b;
+      },
+    };
+    const decision = await decideInvoiceDeletion(failing as never, {
+      id: "inv-1",
+      invoiceNumber: "SI-1",
+      tenantId: null,
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, "unverified");
+    assert.match(decision.message, /permission denied/);
   });
 
   test("invoice edit page blocks edit and delete when posted", () => {
@@ -224,14 +266,18 @@ describe("Priority 3 - supplier payment posting", () => {
     );
   });
 
-  test("supplier-payments page posts the GL entry and compensates on failure", () => {
+  test("supplier-payments page delegates the GL entry to the server route", () => {
+    // Exec 54 moved the whole operation (payment row + journal + bill balance)
+    // server-side, so the page no longer posts or compensates itself. The
+    // service-level guarantees are asserted in the service/route tests; here we
+    // pin that the page cannot write the ledger or the balance directly.
     const src = read("src/app/supplier-payments/page.tsx");
-    assert.match(src, /postSupplierPayment/);
-    assert.match(src, /nextDocumentNumber\(supabase as any, "supplier_payment"/);
-    assert.match(src, /createdPaymentId/);
-    assert.match(src, /entry_type', 'supplier_payment'|entry_type', 'supplier_payment'/);
-    // The bill balance must be read fresh, not from a possibly-stale list.
-    assert.match(src, /from\('purchase_invoices'\)[\s\S]*?select\('total_amount, paid_amount'\)/);
+    assert.match(src, /fetch\('\/api\/supplier-payments'/);
+    assert.match(src, /\/api\/supplier-payments\/\$\{id\}\/reverse/);
+    assert.doesNotMatch(src, /from\('supplier_payments'\)\.insert/);
+    assert.doesNotMatch(src, /from\('journal_entries'\)\.(insert|delete)/);
+    assert.doesNotMatch(src, /from\('journal_lines'\)\.(insert|delete)/);
+    assert.doesNotMatch(src, /nextDocumentNumber/);
   });
 });
 
@@ -302,25 +348,40 @@ describe("Priority 4 - ledger integrity detection", () => {
 });
 
 describe("Priority 4b - document numbering has one mechanism", () => {
-  // Exec 35: purchases/new now posts through /api/purchases, which allocates the
-  // journal number from the RPC; the remaining pages still number locally.
-  const files = [
+  // Exec 54: the debit-note and purchase-order pages now POST to their server
+  // route, which allocates the number from the RPC. The pages must therefore not
+  // allocate anything themselves — the "one mechanism" rule is now enforced by
+  // requiring the server route, not by requiring a call inside the page.
+  const delegatedPages = [
     "src/app/purchases/returns/page.tsx",
     "src/app/purchase-orders/page.tsx",
-    "src/app/purchase-orders/requisitions/page.tsx",
   ];
+  const serverNumberingRoutes = [
+    "src/app/api/debit-notes/route.ts",
+    "src/app/api/purchases/route.ts",
+  ];
+  // Requisitions still numbers locally from the RPC.
+  const localNumberingPages = ["src/app/purchase-orders/requisitions/page.tsx"];
 
   test("no Date.now()-based document numbers remain", () => {
-    for (const f of files) {
+    for (const f of [...delegatedPages, ...localNumberingPages]) {
       const src = read(f);
       assert.doesNotMatch(src, /(receipt_number|note_number|invoice_number|po_number)\s*:\s*[`'"]?(PAY-|DN-|INV-|PO-)?\$\{?Date\.now|(PAY-|DN-|INV-|PO-)' \+ Date\.now/, `${f} still builds a document number from Date.now()`);
     }
   });
 
-  test("each converted site takes its number from nextDocumentNumber", () => {
-    for (const f of files) {
-      assert.match(read(f), /nextDocumentNumber\(supabase as any, '(receipt|debit_note|purchase_invoice|purchase_order)'/, `${f} must use nextDocumentNumber`);
+  test("delegated pages allocate no number and POST to their route", () => {
+    assert.match(read("src/app/purchases/returns/page.tsx"), /fetch\('\/api\/debit-notes'/);
+    assert.doesNotMatch(read("src/app/purchases/returns/page.tsx"), /nextDocumentNumber/);
+    assert.match(read("src/app/purchase-orders/page.tsx"), /fetch\('\/api\/purchases'/);
+    assert.doesNotMatch(read("src/app/purchase-orders/page.tsx"), /nextDocumentNumber/);
+  });
+
+  test("each server route allocates its number from nextDocumentNumber", () => {
+    for (const f of serverNumberingRoutes) {
+      assert.match(read(f), /nextDocumentNumber\(/, `${f} must use nextDocumentNumber`);
     }
+    assert.match(read("src/app/purchase-orders/requisitions/page.tsx"), /nextDocumentNumber\(/);
   });
 
   test("purchases/new delegates numbering to the server route", () => {

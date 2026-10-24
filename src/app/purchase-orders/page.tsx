@@ -4,7 +4,6 @@ import { Suspense, useState, useEffect, useMemo } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, Supplier, PurchaseOrder, PurchaseOrderItem, generatePONumber } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import {
   ClipboardList, Plus, Search, Save, Trash2, CheckCircle, XCircle, Clock,
@@ -13,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import RecordSelect from "@/components/records/RecordSelect"
 
 const STATUS_OPTIONS = [
   { key: 'draft', labelAr: 'مسودة', labelEn: 'Draft', color: 'bg-slate-100 text-slate-700' },
@@ -211,38 +211,44 @@ function PurchaseOrdersPageContent() {
     setConverting(true)
     try {
       const { data: poItems } = await supabase.from('purchase_order_items').select('*').eq('purchase_order_id', convertOrder.id)
-      const invoiceNumber = await nextDocumentNumber(supabase as any, 'purchase_invoice', 'INV')
-      const { data: invData, error: invError } = await supabase.from('purchase_invoices').insert([{
-        invoice_number: invoiceNumber,
-        supplier_id: convertOrder.supplier_id,
-        bill_date: new Date().toISOString().split('T')[0],
-        due_date: null,
-        total_amount: convertOrder.total_amount,
-        paid_amount: 0,
-        vat_amount: 0,
-        status: 'unpaid',
-        notes: `From PO ${convertOrder.po_number}`,
-        car_id: convertOrder.car_id || null,
-        branch: convertOrder.branch || null,
-        purchase_order_id: convertOrder.id,
-      }]).select().single()
-      if (invError) throw invError
 
-      const invItems = (poItems || []).map((it: any) => ({
-        purchase_invoice_id: invData.id,
-        description: it.description,
-        quantity: it.quantity,
-        unit_price: it.unit_price,
-        vat_rate: 0,
-        total_price: it.total_price,
+      // The bill must be created through the validated server path so it gets a
+      // tenant, a number and a balanced journal. Inserting it here (as the page
+      // did before Execution 54) produced an unposted bill with no ledger entry,
+      // which then made the supplier statement and the GL disagree.
+      const items = (poItems || []).map((it: any) => ({
+        description: it.description || 'Item',
+        quantity: parseFloat(it.quantity) || 0,
+        unit_price: parseFloat(it.unit_price) || 0,
+        vat_rate: parseFloat(it.vat_rate) || 0,
       }))
-      if (invItems.length > 0) await supabase.from('purchase_invoice_items').insert(invItems)
+      if (items.length === 0) {
+        throw new Error(isRTL ? 'أمر الشراء لا يحتوي على بنود' : 'The purchase order has no items')
+      }
+
+      const res = await fetch('/api/purchases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          supplier_id: convertOrder.supplier_id,
+          bill_date: new Date().toISOString().split('T')[0],
+          items,
+          advance_payment: 0,
+          payment_type: 'credit',
+          branch: convertOrder.branch || null,
+          car_id: convertOrder.car_id || null,
+          notes: `From PO ${convertOrder.po_number}`,
+          purchase_order_id: convertOrder.id,
+        }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not create the supplier bill')
 
       await supabase.from('purchase_orders').update({ status: 'received' }).eq('id', convertOrder.id)
 
       setConvertOrder(null)
       fetchOrders()
-      alert(isRTL ? 'تم إنشاء فاتورة المورد: ' + invData.invoice_number : 'Supplier invoice created: ' + invData.invoice_number)
+      alert(isRTL ? 'تم إنشاء فاتورة المورد وترحيلها' : 'Supplier invoice created and posted')
     } catch (error: any) {
       alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
     }
@@ -299,10 +305,13 @@ function PurchaseOrdersPageContent() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
-                <select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })} className="h-11 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 w-full px-3 text-sm">
-                  <option value="">{isRTL ? '— اختر —' : '— Select —'}</option>
-                  {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                <RecordSelect
+                  kind="supplier"
+                  value={form.supplier_id}
+                  onChange={(id) => setForm({ ...form, supplier_id: id })}
+                  createMode="inline"
+                  placeholder={isRTL ? '— اختر —' : '— Select —'}
+                />
               </div>
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'تاريخ التسليم المتوقع' : 'Expected Date'}</label>

@@ -334,6 +334,11 @@ describe("Exec29 Item 11 - dependent-record guard", () => {
         const b: any = {
           select: () => b,
           eq: () => b,
+          // The posting lookup is tenant-scoped, so `.is`/`.limit`/`.maybeSingle`
+          // must exist on the chain even when the test only exercises counts.
+          is: () => b,
+          limit: () => b,
+          maybeSingle: async () => ({ data: null, error: null }),
           then: (res: any) =>
             Promise.resolve(
               errorTables.includes(table)
@@ -349,7 +354,8 @@ describe("Exec29 Item 11 - dependent-record guard", () => {
   test("counts payments and returns for an invoice", async () => {
     const { countInvoiceDependents } = await import("../src/lib/accounting/invoice-guards.ts");
     const d = await countInvoiceDependents(countStub({ payments: 2, sales_returns: 1 }) as never, "inv-1");
-    assert.deepEqual(d, { payments: 2, returns: 1, total: 3 });
+    assert.equal(d.state, "found");
+    assert.deepEqual(d.state === "found" ? d.value : null, { payments: 2, returns: 1, total: 3 });
   });
 
   test("hasInvoiceDependents is false for a clean invoice", async () => {
@@ -362,22 +368,41 @@ describe("Exec29 Item 11 - dependent-record guard", () => {
     assert.equal(await hasInvoiceDependents(countStub({ payments: 1, sales_returns: 0 }) as never, "inv-1"), true);
   });
 
-  test("an unreadable table is treated as zero (guard never blocks a legit delete)", async () => {
-    const { hasInvoiceDependents } = await import("../src/lib/accounting/invoice-guards.ts");
-    assert.equal(await hasInvoiceDependents(countStub({}, ["payments", "sales_returns"]) as never, "inv-1"), false);
+  // The guard must fail CLOSED. Treating an unreadable table as "zero dependents"
+  // reads a failure to check as permission to delete, which would orphan the rows
+  // the check existed to protect.
+  test("an unreadable table blocks the delete rather than counting as zero", async () => {
+    const { hasInvoiceDependents, countInvoiceDependents, decideInvoiceDeletion } = await import(
+      "../src/lib/accounting/invoice-guards.ts"
+    );
+    const stub = countStub({}, ["payments", "sales_returns"]);
+    assert.equal(await hasInvoiceDependents(stub as never, "inv-1"), true);
+    assert.equal((await countInvoiceDependents(stub as never, "inv-1")).state, "unknown");
+
+    const decision = await decideInvoiceDeletion(stub as never, {
+      id: "inv-1",
+      invoiceNumber: "SI-1",
+      tenantId: null,
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, "unverified");
   });
 
-  test("an empty id is treated as no dependents", async () => {
-    const { hasInvoiceDependents } = await import("../src/lib/accounting/invoice-guards.ts");
-    assert.equal(await hasInvoiceDependents(countStub({ payments: 5 }) as never, ""), false);
+  test("an empty id cannot be counted, so it is not proof of no dependents", async () => {
+    const { hasInvoiceDependents, countInvoiceDependents } = await import("../src/lib/accounting/invoice-guards.ts");
+    assert.equal(await hasInvoiceDependents(countStub({ payments: 5 }) as never, ""), true);
+    assert.equal((await countInvoiceDependents(countStub({ payments: 5 }) as never, "")).state, "unknown");
   });
 
   test("DELETE route is server-authoritative and blocks posted/dependent deletes", () => {
     assert.match(invoiceRoute, /export async function DELETE/);
     assert.match(invoiceRoute, /requireContext\(request, \{ module: "invoices", action: "delete" \}/);
-    assert.match(invoiceRoute, /isSaleInvoicePosted/);
-    assert.match(invoiceRoute, /hasInvoiceDependents/);
+    // One fail-closed decision authority rather than two fail-open checks.
+    assert.match(invoiceRoute, /decideInvoiceDeletion/);
     assert.match(invoiceRoute, /logAudit/);
+    // An unverifiable check is a 409, not a silent permit.
+    assert.match(invoiceRoute, /code === "unverified"/);
+    assert.match(invoiceRoute, /conflict\(/);
     assert.match(invoiceRoute, /\.eq\("tenant_id", context\.tenantId\)/);
   });
 

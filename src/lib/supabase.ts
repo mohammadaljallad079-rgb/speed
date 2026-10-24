@@ -53,6 +53,8 @@ export type Car = {
   updated_at: string | null;
   status: CarStatus;
   category: CarCategory;
+  body_type?: string | null;
+  condition?: "new" | "used" | string | null;
 };
 
 export type Customer = {
@@ -67,8 +69,26 @@ export type Customer = {
   nationality?: string | null;
   address?: string | null;
   city?: string | null;
+  country?: string | null;
   notes?: string | null;
   rating?: number | null;
+  credit_limit?: number | null;
+  customer_type?: "individual" | "company" | string | null;
+  company_name?: string | null;
+  commercial_reg?: string | null;
+  contract_end?: string | null;
+  tax_number?: string | null;
+  industry?: string | null;
+  employee_count?: string | null;
+  emergency_phone?: string | null;
+  has_police_case?: boolean | null;
+  date_of_birth?: string | null;
+  id_type?: string | null;
+  id_expiry?: string | null;
+  license_expiry?: string | null;
+  // `customers.name` exists on the live table but is not the display field
+  // (`full_name` is); some legacy screens read it, so it stays optional.
+  name?: string | null;
 };
 
 export type RentalContract = {
@@ -84,8 +104,27 @@ export type RentalContract = {
   dropoff_location: string | null;
   created_at: string | null;
   contract_number?: string | null;
+  contract_type?: string | null;
+  daily_rate?: number | null;
+  deposit_amount?: number | null;
+  total_days?: number | null;
+  foc_days?: number | null;
+  billable_days?: number | null;
+  subtotal?: number | null;
+  vat_rate?: number | null;
+  vat_amount?: number | null;
+  discount?: number | null;
+  paid_amount?: number | null;
+  payment_type?: string | null;
+  payment_term?: string | null;
+  pickup_mileage?: number | null;
+  dropoff_mileage?: number | null;
   car?: Car | null;
   customer?: Customer | null;
+  // PostgREST embeds an embedded resource under its table name, so
+  // `select('*, customers(full_name)')` yields `customers`, not `customer`.
+  // `customer` (singular) is the aliased form (`customer:customers(...)`).
+  customers?: Pick<Customer, "full_name"> | null;
 };
 
 export type Payment = {
@@ -102,6 +141,8 @@ export type Payment = {
   notes: string | null;
   created_at: string | null;
   customer?: Customer | null;
+  // Embed of the `customers` table under its own name (see RentalContract).
+  customers?: Pick<Customer, "full_name"> | null;
   invoice?: Invoice | null;
 };
 
@@ -152,6 +193,42 @@ export type Supplier = {
   payment_terms?: string | null;
   opening_balance?: number | null;
   balance?: number | null;
+};
+
+// ==================== SALES & MAINTENANCE TYPES ====================
+
+// A vehicle sale (the `sales` table). Distinct from `invoices`: the sales report
+// pages read this table directly.
+export type Sale = {
+  id: string;
+  car_id: string | null;
+  customer_id: string | null;
+  sale_date: string | null;
+  sale_price: number | null;
+  purchase_price: number | null;
+  total_amount: number | null;
+  paid_amount?: number | null;
+  status: string | null;
+  notes: string | null;
+  created_at: string | null;
+  car?: Car | null;
+  customer?: Customer | null;
+};
+
+// A maintenance record (the `maintenance` table).
+export type Maintenance = {
+  id: string;
+  car_id: string | null;
+  service_type: string | null;
+  maintenance_type?: string | null;
+  service_date: string | null;
+  next_service_date?: string | null;
+  cost: number | null;
+  status: string | null;
+  vendor: string | null;
+  notes: string | null;
+  created_at?: string | null;
+  car?: Car | null;
 };
 
 // ==================== PURCHASE MODULE TYPES ====================

@@ -3,14 +3,17 @@ import { Suspense, useState, useEffect } from 'react'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
 import { summarizeRevenue } from '@/lib/reporting/revenue'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatDate } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
+import AiAssistantPanel from '@/components/ai/AiAssistantPanel'
 import { useLanguage } from '@/lib/LanguageContext'
 import {
   Car, DollarSign, TrendingUp, Users, MoreHorizontal,
   Plus, FileText, UserPlus, CreditCard, AlertTriangle,
-  Clock, Calendar, Wrench, Bell, ArrowRight, Shield
+  Clock, Calendar, Wrench, Bell, ArrowRight, Shield,
+  Timer, Receipt, AlertCircle
 } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import Link from 'next/link'
 
 function DashboardContent() {
@@ -65,10 +68,10 @@ function DashboardContent() {
       })
       setCars(carsRes.data || [])
       const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug"]
-      setEarningsData(months.map((m,i) => ({
+      setEarningsData(months.map((m, monthIdx) => ({
         month: m,
-        value: invoices.filter((i:any) => i.status !== "cancelled" && i.invoice_date && new Date(i.invoice_date).getMonth()===i)
-          .reduce((s:number,i:any) => s + invoiceRevenue(i), 0)
+        value: invoices.filter((inv:any) => inv.status !== "cancelled" && inv.invoice_date && new Date(inv.invoice_date).getMonth()===monthIdx)
+          .reduce((s:number,inv:any) => s + invoiceRevenue(inv), 0)
       })))
       const tot = contracts.length || 1
       setRentStatus([
@@ -125,7 +128,7 @@ function DashboardContent() {
 
   const kpis = [
     { label: isRTL?"اجمالي الايرادات":"Total Revenue", value: stats.revenue.toFixed(3)+" BHD", icon: DollarSign, delta:"+2.86%", up:true, href:"/payments" },
-    { label: isRTL?"الحجوزات":"Bookings", value: stats.bookings, icon: TrendingUp, delta:"+1.73%", up:true, href:"/rental-contracts" },
+    { label: isRTL?"الحجوزات":"Bookings", value: stats.bookings, icon: TrendingUp, delta:"+1.73%", up:true, href:"/rentals" },
     { label: isRTL?"سيارات مؤجرة":"Rented Cars", value: stats.rented, icon: Car, delta:"-2.86%", up:false, href:"/cars?status=rented" },
     { label: isRTL?"سيارات متاحة":"Available Cars", value: stats.available, icon: Users, delta:"+3.45%", up:true, href:"/cars?status=available" },
   ]
@@ -344,7 +347,7 @@ function DashboardContent() {
                 <h3 className="text-base font-black mb-4">{isRTL?"توفر السيارات":"Car Availability"}</h3>
                 <div className="space-y-3">
                   <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"نوع السيارة":"Car Type"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">SUV</div></div>
-                  <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"التاريخ":"Date"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">{new Date().toLocaleDateString()}</div></div>
+                  <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"التاريخ":"Date"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">{formatDate(new Date(), isRTL ? "ar-BH" : "en-GB")}</div></div>
                   <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"الوقت":"Time"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">10:00 AM</div></div>
                   <Link href="/cars?status=available" className="block w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl text-sm text-center transition-colors">{isRTL?"تحقق":"Check"}</Link>
                 </div>
@@ -378,6 +381,11 @@ function DashboardContent() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* AI Assistant — company-facing, permission-gated by the AI APIs. */}
+      <div className="mt-6 px-6 pb-6">
+        <AiAssistantPanel screen="dashboard" />
       </div>
     </DashboardLayout>
   )

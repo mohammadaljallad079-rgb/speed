@@ -4,6 +4,7 @@ import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
+import { buildBalanceSheet, type BalanceSheetSection } from '@/lib/reporting/ledger'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -42,17 +43,26 @@ interface BSRow {
   closing: number
 }
 
+type JournalEntryEmbed = {
+  journal_number: string
+  entry_date: string
+  description: string
+}
+
 interface JournalLine {
   id: string
   journal_entry_id: string
   debit: number
   credit: number
   description: string
-  journal_entries: {
-    journal_number: string
-    entry_date: string
-    description: string
-  }
+  // PostgREST returns the embedded `journal_entries` row either as an object or
+  // as a one-element array depending on the query/relationship; accept both.
+  journal_entries: JournalEntryEmbed | JournalEntryEmbed[] | null
+}
+
+function embeddedEntry(line: JournalLine): JournalEntryEmbed | null {
+  const je = line.journal_entries
+  return Array.isArray(je) ? (je[0] ?? null) : (je ?? null)
 }
 
 function BalanceSheetContent() {
@@ -61,6 +71,7 @@ function BalanceSheetContent() {
   const [assets, setAssets] = useState<BSRow[]>([])
   const [liabilities, setLiabilities] = useState<BSRow[]>([])
   const [equity, setEquity] = useState<BSRow[]>([])
+  const [balanceCheck, setBalanceCheck] = useState<BalanceSheetSection | null>(null)
   const [loading, setLoading] = useState(true)
   const [fromDate, setFromDate] = useState('2026-01-01')
   const [toDate, setToDate] = useState('2026-12-31')
@@ -91,11 +102,15 @@ useEffect(() => {
     return Number(n || 0)
   }
 
-  function getSection(code: string): 'assets' | 'liabilities' | 'equity' {
-    const num = parseInt(code)
-    if (num >= 10000 && num < 20000) return 'assets'
-    if (num >= 20000 && num < 30000) return 'liabilities'
-    if (num >= 30000 && num < 40000) return 'equity'
+  /**
+   * Classify a balance-sheet account by its declared type, not its code prefix.
+   * A code-prefix fallback sent any unmatched account (including revenue and
+   * expense) to "assets", which silently inflated total assets.
+   */
+  function getSection(type: string): 'assets' | 'liabilities' | 'equity' {
+    if (type === 'asset') return 'assets'
+    if (type === 'liability') return 'liabilities'
+    if (type === 'equity') return 'equity'
     return 'assets'
   }
 
@@ -113,7 +128,7 @@ useEffect(() => {
       const { data: accounts, error: accErr } = await supabase
         .from('accounts')
         .select('*')
-        .in('type', ['asset', 'liability', 'equity'])
+        .in('type', ['asset', 'liability', 'equity', 'revenue', 'expense'])
         .eq('is_active', true)
         .order('code')
 
@@ -195,21 +210,48 @@ useEffect(() => {
           name: acc.name_en || acc.name || '',
           name_ar: acc.name_ar || acc.name || '',
           type: acc.type || '',
-          section: getSection(acc.code || '0'),
+          section: getSection(acc.type || ''),
           opening,
           movement_debit: movementDebit,
           movement_credit: movementCredit,
           closing
         }
 
-        if (row.section === 'assets') assetRows.push(row)
-        else if (row.section === 'liabilities') liabilityRows.push(row)
-        else equityRows.push(row)
+        if (acc.type === 'asset') assetRows.push(row)
+        else if (acc.type === 'liability') liabilityRows.push(row)
+        else if (acc.type === 'equity') equityRows.push(row)
+        // revenue/expense accounts are not balance-sheet lines; their total is
+        // folded into equity below as current earnings.
       })
+
+      // A balance sheet only balances when the period's unclosed profit is
+      // carried into equity. Without this an in-progress year reports assets far
+      // above liabilities + equity and a spurious "not balanced" warning.
+      const earnings = buildBalanceSheet(
+        (accounts || []) as never,
+        (journalEntries || []) as never,
+        lines as never,
+        { from: fromDate, to: toDate },
+      )
+      if (Math.abs(earnings.currentEarnings) > 0.001) {
+        equityRows.push({
+          id: '__current_earnings__',
+          code: '',
+          name: 'Current Earnings',
+          name_ar: 'أرباح الفترة الحالية',
+          type: 'equity',
+          section: 'equity',
+          opening: 0,
+          movement_debit: 0,
+          movement_credit: 0,
+          closing: earnings.currentEarnings,
+        })
+      }
 
       setAssets(assetRows)
       setLiabilities(liabilityRows)
       setEquity(equityRows)
+      setBalanceCheck(earnings)
     } catch (err) {
       console.error('Balance Sheet Error:', err)
     } finally {
@@ -258,9 +300,12 @@ useEffect(() => {
     window.print()
   }
 
-  const totalAssets = assets.reduce((s, r) => s + Math.abs(r.closing), 0)
-  const totalLiabilities = liabilities.reduce((s, r) => s + Math.abs(r.closing), 0)
-  const totalEquity = equity.reduce((s, r) => s + Math.abs(r.closing), 0)
+  // Section totals are the SIGNED closing balances. Using `Math.abs` here made
+  // an overdrawn or contra account add to the total instead of reducing it, so
+  // the header figures disagreed with the ledger engine's balance check.
+  const totalAssets = assets.reduce((s, r) => s + r.closing, 0)
+  const totalLiabilities = liabilities.reduce((s, r) => s + r.closing, 0)
+  const totalEquity = equity.reduce((s, r) => s + r.closing, 0)
   const totalLiabEquity = totalLiabilities + totalEquity
 
   const todayStr = new Date().toLocaleDateString(isRTL ? 'ar-BH' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -522,15 +567,16 @@ useEffect(() => {
             </Card>
           </div>
 
-          {/* BALANCE CHECK */}
-          {Math.abs(totalAssets - totalLiabEquity) > 0.001 && (
+          {/* BALANCE CHECK — the authoritative check comes from the ledger
+              engine (assets vs liabilities + equity + unclosed earnings). */}
+          {balanceCheck && !balanceCheck.balanced && (
             <div className="no-print p-4 bg-red-50 border border-red-200 rounded-xl text-center">
               <p className="text-sm font-bold text-red-600">
                 {isRTL ? 'تنبيه: الميزانية غير متوازنة!' : 'Warning: Balance Sheet is not balanced!'}
               </p>
               <p className="text-xs text-red-500">
                 {isRTL ? 'الفرق: ' : 'Difference: '}
-                {Math.abs(totalAssets - totalLiabEquity).toFixed(3)} BHD
+                {Math.abs(balanceCheck.difference).toFixed(3)} BHD
               </p>
             </div>
           )}
@@ -768,16 +814,16 @@ useEffect(() => {
                     <div className="flex items-center justify-between mb-3">
                       <div className="flex items-center gap-3">
                         <Badge variant="outline" className="font-mono text-xs bg-slate-50">
-                          {line.journal_entries?.journal_number || '-'}
+                          {embeddedEntry(line)?.journal_number || '-'}
                         </Badge>
-                        <span className="text-sm text-slate-500">{line.journal_entries?.entry_date || '-'}</span>
+                        <span className="text-sm text-slate-500">{embeddedEntry(line)?.entry_date || '-'}</span>
                       </div>
                       <div className="flex gap-2">
                         {line.debit > 0 && <Badge className="bg-blue-100 text-blue-700 text-xs">DEBIT</Badge>}
                         {line.credit > 0 && <Badge className="bg-emerald-100 text-emerald-700 text-xs">CREDIT</Badge>}
                       </div>
                     </div>
-                    <p className="text-sm font-medium text-slate-800 mb-3">{line.description || line.journal_entries?.description || '-'}</p>
+                    <p className="text-sm font-medium text-slate-800 mb-3">{line.description || embeddedEntry(line)?.description || '-'}</p>
                     <div className="flex gap-4 bg-slate-50 rounded-lg p-3">
                       <div className="flex-1">
                         <p className="text-xs text-slate-400 uppercase mb-1">{isRTL ? 'مدين' : 'Debit'}</p>

@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { NextRequest } from "next/server";
 
-import { middleware } from "../src/middleware.ts";
+import { middleware, isProtectedPage } from "../src/middleware.ts";
 
 /**
  * Execution 06.2.3 — the main website is the ORIGINAL car-rental website, and
@@ -140,11 +140,32 @@ describe("existing car-rental pages are preserved", () => {
 
 describe("public routes stay reachable and protected routes stay protected", () => {
   test("public marketing routes are not gated", async () => {
-    for (const p of ["/", "/fleet", "/services", "/contact", "/erp", "/signup", "/login"]) {
+    for (const p of [
+      "/",
+      "/fleet",
+      "/services",
+      "/contact",
+      "/erp",
+      "/signup",
+      "/login",
+      // The public vehicle detail page a marketing visitor opens from a card.
+      "/cars/00000000-0000-0000-0000-000000000001",
+    ]) {
       // middleware only gates /api/*, so page routes are always allowed through
       const res = await middleware(new NextRequest(`http://localhost${p}`));
       assert.equal(res.status, 200, `${p} must be reachable`);
     }
+  });
+
+  test("the ERP fleet register stays behind the login", () => {
+    // `/fleet` and `/cars/[id]` are public marketing; the register and the
+    // create form are ERP data and must not leak to an anonymous caller.
+    // Asserted on the pure predicate: the middleware's status depends on whether
+    // the Supabase env is present, the gate decision does not.
+    assert.equal(isProtectedPage("/cars"), true, "/cars (register) must be protected");
+    assert.equal(isProtectedPage("/cars/new"), true, "/cars/new must be protected");
+    assert.equal(isProtectedPage("/cars/abc-123"), false, "/cars/[id] is the public detail page");
+    assert.equal(isProtectedPage("/fleet"), false, "/fleet is public marketing");
   });
 
   test("the public marketing API stays public", async () => {

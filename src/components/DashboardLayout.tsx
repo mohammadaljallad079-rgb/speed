@@ -95,6 +95,7 @@ interface SidebarItemData {
   is_active: boolean
   has_children: boolean
   children: SidebarChild[]
+  badge?: string
 }
 
 const DEFAULT_ITEMS: SidebarItemData[] = [
@@ -213,6 +214,9 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
     has_children: true,
     children: [
       { id: 'all-expenses', label_ar: 'جميع المصروفات', label_en: 'All Expenses', href: '/expenses', is_active: true },
+      { id: 'add-expense', label_ar: 'إضافة مصروف', label_en: 'Add Expense', href: '/expenses/new', is_active: true },
+    ],
+  },
   {
     id: 'hr',
     label_ar: 'الموارد البشرية',
@@ -230,9 +234,6 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'adjustments', label_ar: 'التعديلات', label_en: 'Adjustments', href: '/hr/adjustments', is_active: true },
     ],
   },
-      { id: 'add-expense', label_ar: 'إضافة مصروف', label_en: 'Add Expense', href: '/expenses/new', is_active: true },
-    ],
-  },
   {
     id: 'accounting',
     label_ar: 'المحاسبة',
@@ -246,6 +247,7 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'chart-of-accounts', label_ar: 'شجرة الحسابات', label_en: 'Chart of Accounts', href: '/accounting/chart-of-accounts', is_active: true },
       { id: 'journal-entries', label_ar: 'القيود اليومية', label_en: 'Journal Entries', href: '/accounting/journal-entries', is_active: true },
       { id: 'bank-transfer', label_ar: 'تحويل نقدي', label_en: 'Bank Transfer', href: '/accounting/bank-transfer', is_active: true },
+      { id: 'general-ledger', label_ar: 'دفتر الأستاذ العام', label_en: 'General Ledger', href: '/reports/general-ledger', is_active: true },
       { id: 'trial-balance', label_ar: 'ميزان المراجعة', label_en: 'Trial Balance', href: '/reports/trial-balance', is_active: true },
       { id: 'balance-sheet', label_ar: 'الميزانية العمومية', label_en: 'Balance Sheet', href: '/reports/balance-sheet', is_active: true },
       { id: 'profit-loss', label_ar: 'قائمة الدخل', label_en: 'Profit & Loss', href: '/reports/profit-loss', is_active: true },
@@ -282,6 +284,15 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'monthly-invoices', label_ar: 'الفواتير الشهرية', label_en: 'Monthly Invoices', href: '/reports/monthly-invoices', is_active: true },
       { id: 'rented-vehicles', label_ar: 'المركبات المؤجرة', label_en: 'Rented Vehicles', href: '/reports/rented-vehicles', is_active: true },
       { id: 'outstanding', label_ar: 'المبالغ المستحقة', label_en: 'Outstanding', href: '/reports/outstanding-by-client', is_active: true },
+      { id: 'purchase-register', label_ar: 'سجل المشتريات', label_en: 'Purchase Register', href: '/reports/purchase-register', is_active: true },
+      { id: 'supplier-ledger', label_ar: 'حساب المورد', label_en: 'Supplier Ledger', href: '/reports/supplier-ledger', is_active: true },
+      { id: 'supplier-aging', label_ar: 'أعمار الموردين', label_en: 'Supplier Aging', href: '/reports/supplier-aging', is_active: true },
+      { id: 'expenses-by-vehicle', label_ar: 'المصروفات حسب المركبة', label_en: 'Expenses By Vehicle', href: '/reports/expenses-by-vehicle', is_active: true },
+      { id: 'expenses-by-branch', label_ar: 'المصروفات حسب الفرع', label_en: 'Expenses By Branch', href: '/reports/expenses-by-branch', is_active: true },
+      { id: 'expenses-by-category', label_ar: 'المصروفات حسب الفئة', label_en: 'Expenses By Category', href: '/reports/expenses-by-category', is_active: true },
+      { id: 'vat-purchases', label_ar: 'ضريبة المدخلات', label_en: 'Input VAT', href: '/reports/vat-purchases', is_active: true },
+      { id: 'monthly-expenses', label_ar: 'المصروفات الشهرية', label_en: 'Monthly Expenses', href: '/reports/monthly-expenses', is_active: true },
+      { id: 'vehicle-profitability', label_ar: 'ربحية المركبات', label_en: 'Vehicle Profitability', href: '/reports/vehicle-profitability', is_active: true },
       { id: 'financial-reports', label_ar: 'التقارير المالية', label_en: 'Financial Reports', href: '/reports/financial', is_active: true },
     ],
   },
@@ -298,7 +309,8 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'website', label_ar: 'الموقع', label_en: 'Website', href: '/settings/company', is_active: true },
       { id: 'sidebar', label_ar: 'القائمة الجانبية', label_en: 'Sidebar', href: '/settings/sidebar', is_active: true },
       { id: 'branches', label_ar: 'الفروع', label_en: 'Branches', href: '/settings/branches', is_active: true },
-      { id: 'users', label_ar: 'المستخدمين', label_en: 'Users', href: '/users', is_active: true },
+      { id: 'users', label_ar: 'المستخدمين', label_en: 'Users', href: '/settings/users', is_active: true },
+      { id: 'ai-control', label_ar: 'التحكم بالذكاء الاصطناعي', label_en: 'AI Control', href: '/settings/ai-control', is_active: true },
       { id: 'tax-settings', label_ar: 'إعدادات الضريبة', label_en: 'Tax Settings', href: '/settings/tax-rates', is_active: true },
     ],
   },

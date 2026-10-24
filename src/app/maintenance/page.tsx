@@ -69,7 +69,7 @@ function MaintenancePageContent() {
 
   const filteredMaintenance = maintenanceList.filter(m =>
     (m.car?.plate_number || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-    m.service_type.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (m.service_type || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
     (m.vendor || '').toLowerCase().includes(searchTerm.toLowerCase())
   )
 

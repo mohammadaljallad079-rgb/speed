@@ -5,8 +5,9 @@ import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, DebitNote, Supplier, PurchaseInvoice } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
+import RecordSelect from "@/components/records/RecordSelect"
+import { isSelectableAccount } from "@/lib/records/sources"
 import {
   RotateCcw, Plus, Search, Save, Trash2, ArrowLeft, FileText, AlertTriangle
 } from "lucide-react"
@@ -30,6 +31,8 @@ function DebitNotesPageContent() {
     supplier_id: '',
     purchase_invoice_id: '',
     amount: '',
+    vat_amount: '',
+    expense_account_id: '',
     note_date: new Date().toISOString().split('T')[0],
     reason: '',
   })
@@ -73,23 +76,32 @@ function DebitNotesPageContent() {
 
     setSaving(true)
     try {
-      const noteNumber = await nextDocumentNumber(supabase as any, 'debit_note', 'DN')
-      const { error } = await supabase.from('debit_notes').insert([{
-        note_number: noteNumber,
-        supplier_id: form.supplier_id,
-        purchase_invoice_id: form.purchase_invoice_id || null,
-        amount: parseFloat(form.amount),
-        note_date: form.note_date,
-        reason: form.reason || null,
-        status: 'active',
-      }])
-
-      if (error) throw error
+      // The note and its ledger journal are written together by the server.
+      // The browser must not insert `debit_notes` itself: a note that reaches the
+      // supplier statement without a journal makes the books disagree with the
+      // screens, which is the defect Execution 54 closes.
+      const res = await fetch('/api/debit-notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          supplier_id: form.supplier_id,
+          purchase_invoice_id: form.purchase_invoice_id || null,
+          amount: parseFloat(form.amount),
+          vat_amount: parseFloat(form.vat_amount || '0'),
+          note_date: form.note_date,
+          reason: form.reason || null,
+          expense_account_id: form.expense_account_id || null,
+        }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not create the debit note')
 
       setForm({
         supplier_id: '',
         purchase_invoice_id: '',
         amount: '',
+        vat_amount: '',
+        expense_account_id: '',
         note_date: new Date().toISOString().split('T')[0],
         reason: '',
       })
@@ -103,8 +115,15 @@ function DebitNotesPageContent() {
   }
 
   async function handleDelete(id: string) {
-    if (!confirm(isRTL ? 'هل أنت متأكد من الحذف؟' : 'Are you sure?')) return
-    await supabase.from('debit_notes').delete().eq('id', id)
+    // A posted note is not deleted: its journal would be orphaned. It is
+    // cancelled (status 'cancelled') so the audit trail keeps the document.
+    if (!confirm(isRTL ? 'هل أنت متأكد من إلغاء الإشعار؟' : 'Are you sure you want to cancel this note?')) return
+    const { error } = await supabase.from('debit_notes').update({ status: 'cancelled' }).eq('id', id)
+    if (error) {
+      alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
+      return
+    }
+    notifyDataChanged()
     fetchNotes()
   }
 
@@ -165,16 +184,13 @@ function DebitNotesPageContent() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
-                <select
+                <RecordSelect
+                  kind="supplier"
                   value={form.supplier_id}
-                  onChange={(e) => setForm({ ...form, supplier_id: e.target.value, purchase_invoice_id: '' })}
-                  className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-                >
-                  <option value="">{isRTL ? 'اختر المورد...' : 'Select supplier...'}</option>
-                  {suppliers.map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
+                  onChange={(id) => setForm({ ...form, supplier_id: id, purchase_invoice_id: '' })}
+                  createMode="inline"
+                  placeholder={isRTL ? 'اختر المورد...' : 'Select supplier...'}
+                />
               </div>
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'الفاتورة الأصلية' : 'Original Bill'}</label>
@@ -192,6 +208,20 @@ function DebitNotesPageContent() {
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المبلغ' : 'Amount'} *</label>
                 <Input type="number" step="0.001" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="h-11 rounded-xl" placeholder="0.000" />
+              </div>
+              <div>
+                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'ضريبة القيمة المضافة' : 'VAT'}</label>
+                <Input type="number" step="0.001" value={form.vat_amount} onChange={(e) => setForm({ ...form, vat_amount: e.target.value })} className="h-11 rounded-xl" placeholder="0.000" />
+              </div>
+              <div>
+                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'حساب المصروف' : 'Expense account'}</label>
+                <RecordSelect
+                  kind="account"
+                  value={form.expense_account_id}
+                  onChange={(v) => setForm({ ...form, expense_account_id: v })}
+                  filter={isSelectableAccount}
+                  placeholder={isRTL ? 'اختر الحساب (افتراضي: مصروفات أخرى)' : 'Select account (default: other expenses)'}
+                />
               </div>
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'التاريخ' : 'Date'}</label>

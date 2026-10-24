@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import RecordSelect from "@/components/records/RecordSelect"
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Upload, X, Car, User, FileText, MapPin, DollarSign, Wrench, Image as ImageIcon, CreditCard } from "lucide-react"
 import Link from "next/link"
@@ -78,16 +79,6 @@ function NewRentalForm() {
   const [plateNotFound, setPlateNotFound] = useState(false)
   const [showPlateSuggestions, setShowPlateSuggestions] = useState(false)
   const [companySettings, setCompanySettings] = useState({ name: "", phone: "", email: "", address: "", crNumber: "" })
-  const [showNewCustomerModal, setShowNewCustomerModal] = useState(false)
-  const [savingNewCustomer, setSavingNewCustomer] = useState(false)
-  const [newCustomerForm, setNewCustomerForm] = useState({
-    customer_type: "individual", full_name: "", email: "", phone: "", phone_2: "",
-    address: "", city: "", country: "Bahrain", notes: "", status: "active", rating: "5", credit_limit: "0",
-    national_id: "", id_expiry: "", date_of_birth: "", license_number: "", license_expiry: "", nationality: "",
-    has_police_case: false, company_name: "", commercial_reg: "", contract_end: "", tax_number: "", industry: "",
-    employee_count: "", emergency_phone: "",
-  })
-
   const [pickupSuggestions, setPickupSuggestions] = useState<PlaceSuggestion[]>([])
   const [dropoffSuggestions, setDropoffSuggestions] = useState<PlaceSuggestion[]>([])
   const [showPickupSuggestions, setShowPickupSuggestions] = useState(false)
@@ -233,73 +224,6 @@ function NewRentalForm() {
     const customer = customers.find(c => c.id === customerId) || null
     setSelectedCustomer(customer)
     setContract(prev => ({ ...prev, customer_id: customerId }))
-  }
-
-  const handleAddCustomer = async () => {
-    if (!newCustomerForm.full_name.trim() || !newCustomerForm.phone.trim()) {
-      alert(isRTL ? "الاسم ورقم الهاتف مطلوبان" : "Full name and phone are required")
-      return
-    }
-    if (newCustomerForm.customer_type === "company" && !newCustomerForm.company_name.trim()) {
-      alert(isRTL ? "اسم الشركة مطلوب" : "Company name is required")
-      return
-    }
-    setSavingNewCustomer(true)
-    try {
-      let payload: any = {
-        customer_type: newCustomerForm.customer_type,
-        full_name: newCustomerForm.full_name.trim(),
-        email: newCustomerForm.email.trim() || null,
-        phone: newCustomerForm.phone.trim(),
-        phone_2: newCustomerForm.phone_2.trim() || null,
-        address: newCustomerForm.address.trim() || null,
-        city: newCustomerForm.city.trim() || null,
-        country: newCustomerForm.country.trim() || null,
-        notes: newCustomerForm.notes.trim() || null,
-        status: newCustomerForm.status || "active",
-        rating: Number(newCustomerForm.rating) || 0,
-        credit_limit: Number(newCustomerForm.credit_limit) || 0,
-      }
-      if (newCustomerForm.customer_type === "individual") {
-        payload = {
-          ...payload,
-          national_id: newCustomerForm.national_id.trim() || null,
-          id_expiry: newCustomerForm.id_expiry || null,
-          date_of_birth: newCustomerForm.date_of_birth || null,
-          license_number: newCustomerForm.license_number.trim() || null,
-          license_expiry: newCustomerForm.license_expiry || null,
-          nationality: newCustomerForm.nationality.trim() || null,
-          has_police_case: newCustomerForm.has_police_case || false,
-        }
-      } else {
-        payload = {
-          ...payload,
-          company_name: newCustomerForm.company_name.trim(),
-          commercial_reg: newCustomerForm.commercial_reg.trim() || null,
-          contract_end: newCustomerForm.contract_end || null,
-          tax_number: newCustomerForm.tax_number.trim() || null,
-          industry: newCustomerForm.industry.trim() || null,
-          employee_count: newCustomerForm.employee_count.trim() || null,
-          emergency_phone: newCustomerForm.emergency_phone.trim() || null,
-        }
-      }
-      const { data, error } = await supabase.from("customers").insert([payload]).select().single()
-      if (error) throw error
-      setCustomers(prev => [...prev, data])
-      handleCustomerChange(data.id)
-      setShowNewCustomerModal(false)
-      setNewCustomerForm({
-        customer_type: "individual", full_name: "", email: "", phone: "", phone_2: "",
-        address: "", city: "", country: "Bahrain", notes: "", status: "active", rating: "5", credit_limit: "0",
-        national_id: "", id_expiry: "", date_of_birth: "", license_number: "", license_expiry: "", nationality: "",
-        has_police_case: false, company_name: "", commercial_reg: "", contract_end: "", tax_number: "", industry: "",
-        employee_count: "", emergency_phone: "",
-      })
-    } catch (error: any) {
-      alert(isRTL ? "خطأ في إضافة العميل: " + error.message : "Error adding customer: " + error.message)
-    } finally {
-      setSavingNewCustomer(false)
-    }
   }
 
   // Free, no-API-key place search via OpenStreetMap's Nominatim service.
@@ -578,25 +502,30 @@ function NewRentalForm() {
           <Card className="rounded-xl shadow-sm border-slate-200 dark:border-slate-700 overflow-hidden">
             <CardContent className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="space-y-1">
-                <div className="flex items-center justify-between">
-                  <Label className={labelClass}>{isRTL ? "العميل" : "Customer"}</Label>
-                  <button type="button" onClick={() => setShowNewCustomerModal(true)} className="text-xs font-semibold text-blue-600 hover:underline">+ {isRTL ? "جديد" : "New"}</button>
-                </div>
-                <select className={selectClass} value={contract.customer_id} onChange={e => handleCustomerChange(e.target.value)} required>
-                  <option value="">{isRTL ? "اختر العميل..." : "Select customer..."}</option>
-                  {customers.map(c => (
-                    <option key={c.id} value={c.id}>{c.full_name} — {c.phone}</option>
-                  ))}
-                </select>
+                <Label className={labelClass}>{isRTL ? "العميل" : "Customer"}</Label>
+                {/* Searchable picker from the Customers module; the full
+                    two-tab customer form opens as a link. */}
+                <RecordSelect
+                  kind="customer"
+                  value={contract.customer_id}
+                  onChange={(id) => handleCustomerChange(id)}
+                  createMode="inline"
+                  placeholder={isRTL ? "اختر العميل..." : "Select customer..."}
+                />
               </div>
               <div className="space-y-1">
                 <Label className={labelClass}>{isRTL ? "السيارة" : "Car"}</Label>
-                <select className={selectClass} value={contract.car_id} onChange={e => { handleCarChange(e.target.value); const c = cars.find(x => x.id === e.target.value); if (c) setPlateSearch(c.plate_number || '') }} required>
-                  <option value="">{isRTL ? "اختر السيارة..." : "Select car..."}</option>
-                  {cars.map(c => (
-                    <option key={c.id} value={c.id}>{carLabel(c)}</option>
-                  ))}
-                </select>
+                <RecordSelect
+                  kind="car"
+                  value={contract.car_id}
+                  onChange={(id) => {
+                    handleCarChange(id)
+                    const c = cars.find(x => x.id === id)
+                    if (c) setPlateSearch(c.plate_number || '')
+                  }}
+                  createMode="inline"
+                  placeholder={isRTL ? "اختر السيارة..." : "Select car..."}
+                />
               </div>
               <div className="space-y-1">
                 <Label className={labelClass}>{isRTL ? "نوع العقد" : "Contract Type"}</Label>
@@ -943,151 +872,6 @@ function NewRentalForm() {
 
         </form>
 
-        {showNewCustomerModal && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => setShowNewCustomerModal(false)}>
-            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 dark:border-slate-700 sticky top-0 bg-white dark:bg-slate-800 z-10">
-                <h3 className="text-base font-bold text-slate-800 dark:text-slate-100">{isRTL ? "إضافة عميل جديد" : "Add New Customer"}</h3>
-                <button type="button" onClick={() => setShowNewCustomerModal(false)} className="text-slate-400 hover:text-slate-600">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="p-5 space-y-4">
-                <div className="flex gap-2">
-                  <button type="button" onClick={() => setNewCustomerForm(f => ({...f, customer_type: "individual"}))} className={`flex-1 py-2 rounded-lg border-2 text-sm font-semibold ${newCustomerForm.customer_type === "individual" ? "border-cyan-500 bg-cyan-50 text-cyan-700" : "border-slate-200 text-slate-500"}`}>{isRTL ? "فرد" : "Individual"}</button>
-                  <button type="button" onClick={() => setNewCustomerForm(f => ({...f, customer_type: "company"}))} className={`flex-1 py-2 rounded-lg border-2 text-sm font-semibold ${newCustomerForm.customer_type === "company" ? "border-cyan-500 bg-cyan-50 text-cyan-700" : "border-slate-200 text-slate-500"}`}>{isRTL ? "شركة" : "Company"}</button>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "الاسم الكامل *" : "Full Name *"}</Label>
-                    <Input className={inputClass} value={newCustomerForm.full_name} onChange={e => setNewCustomerForm(f => ({...f, full_name: e.target.value}))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "البريد الإلكتروني" : "Email"}</Label>
-                    <Input className={inputClass} type="email" value={newCustomerForm.email} onChange={e => setNewCustomerForm(f => ({...f, email: e.target.value}))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "رقم الهاتف *" : "Phone *"}</Label>
-                    <Input className={inputClass} value={newCustomerForm.phone} onChange={e => setNewCustomerForm(f => ({...f, phone: e.target.value}))} dir="ltr" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "رقم الهاتف 2" : "Phone 2"}</Label>
-                    <Input className={inputClass} value={newCustomerForm.phone_2} onChange={e => setNewCustomerForm(f => ({...f, phone_2: e.target.value}))} dir="ltr" />
-                  </div>
-                </div>
-
-                {newCustomerForm.customer_type === "individual" ? (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "رقم الهوية / الجواز" : "ID / Passport Number"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.national_id} onChange={e => setNewCustomerForm(f => ({...f, national_id: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "تاريخ انتهاء الهوية" : "ID Expiry"}</Label>
-                      <Input className={inputClass} type="date" value={newCustomerForm.id_expiry} onChange={e => setNewCustomerForm(f => ({...f, id_expiry: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "تاريخ الميلاد" : "Date of Birth"}</Label>
-                      <Input className={inputClass} type="date" value={newCustomerForm.date_of_birth} onChange={e => setNewCustomerForm(f => ({...f, date_of_birth: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "رقم رخصة القيادة" : "License Number"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.license_number} onChange={e => setNewCustomerForm(f => ({...f, license_number: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "تاريخ انتهاء الرخصة" : "License Expiry"}</Label>
-                      <Input className={inputClass} type="date" value={newCustomerForm.license_expiry} onChange={e => setNewCustomerForm(f => ({...f, license_expiry: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "الجنسية" : "Nationality"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.nationality} onChange={e => setNewCustomerForm(f => ({...f, nationality: e.target.value}))} />
-                    </div>
-                    <div className="md:col-span-3 flex items-center gap-2 p-2.5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                      <input type="checkbox" checked={newCustomerForm.has_police_case} onChange={e => setNewCustomerForm(f => ({...f, has_police_case: e.target.checked}))} className="w-4 h-4" />
-                      <span className="text-xs font-semibold text-red-700 dark:text-red-400">{isRTL ? "عليه قضية / Police Case" : "Has Police Case"}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "اسم الشركة *" : "Company Name *"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.company_name} onChange={e => setNewCustomerForm(f => ({...f, company_name: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "رقم الترخيص التجاري" : "Trade License"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.commercial_reg} onChange={e => setNewCustomerForm(f => ({...f, commercial_reg: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "تاريخ انتهاء الترخيص" : "License Expiry"}</Label>
-                      <Input className={inputClass} type="date" value={newCustomerForm.contract_end} onChange={e => setNewCustomerForm(f => ({...f, contract_end: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "رقم VAT" : "VAT Number"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.tax_number} onChange={e => setNewCustomerForm(f => ({...f, tax_number: e.target.value}))} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "القطاع" : "Industry"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.industry} onChange={e => setNewCustomerForm(f => ({...f, industry: e.target.value}))} placeholder={isRTL ? "تجارة، مقاولات..." : "Trading, Construction..."} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "حجم الشركة" : "Company Size"}</Label>
-                      <select className={selectClass} value={newCustomerForm.employee_count} onChange={e => setNewCustomerForm(f => ({...f, employee_count: e.target.value}))}>
-                        <option value="">{isRTL ? "اختر" : "Select"}</option>
-                        <option value="small">{isRTL ? "صغيرة (1-10)" : "Small (1-10)"}</option>
-                        <option value="medium">{isRTL ? "متوسطة (11-50)" : "Medium (11-50)"}</option>
-                        <option value="large">{isRTL ? "كبيرة (50+)" : "Large (50+)"}</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label className={labelClass}>{isRTL ? "هاتف الطوارئ" : "Emergency Phone"}</Label>
-                      <Input className={inputClass} value={newCustomerForm.emergency_phone} onChange={e => setNewCustomerForm(f => ({...f, emergency_phone: e.target.value}))} dir="ltr" />
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="space-y-1 md:col-span-2">
-                    <Label className={labelClass}>{isRTL ? "العنوان" : "Address"}</Label>
-                    <Input className={inputClass} value={newCustomerForm.address} onChange={e => setNewCustomerForm(f => ({...f, address: e.target.value}))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "المدينة" : "City"}</Label>
-                    <Input className={inputClass} value={newCustomerForm.city} onChange={e => setNewCustomerForm(f => ({...f, city: e.target.value}))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "الدولة" : "Country"}</Label>
-                    <Input className={inputClass} value={newCustomerForm.country} onChange={e => setNewCustomerForm(f => ({...f, country: e.target.value}))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "حد الائتمان (د.ب)" : "Credit Limit (BHD)"}</Label>
-                    <Input className={inputClass} type="number" step="0.001" value={newCustomerForm.credit_limit} onChange={e => setNewCustomerForm(f => ({...f, credit_limit: e.target.value}))} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className={labelClass}>{isRTL ? "حالة العميل" : "Customer Status"}</Label>
-                    <select className={selectClass} value={newCustomerForm.status} onChange={e => setNewCustomerForm(f => ({...f, status: e.target.value}))}>
-                      <option value="active">{isRTL ? "نشط" : "Active"}</option>
-                      <option value="vip">VIP</option>
-                      <option value="defaulted">{isRTL ? "متعثر" : "Defaulted"}</option>
-                      <option value="blocked">{isRTL ? "محظور" : "Blocked"}</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className={labelClass}>{isRTL ? "ملاحظات" : "Notes"}</Label>
-                  <textarea className="min-h-[70px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm" value={newCustomerForm.notes} onChange={e => setNewCustomerForm(f => ({...f, notes: e.target.value}))} />
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-100 dark:border-slate-700 sticky bottom-0 bg-white dark:bg-slate-800">
-                <Button type="button" variant="outline" onClick={() => setShowNewCustomerModal(false)}>{isRTL ? "إلغاء" : "Cancel"}</Button>
-                <Button type="button" disabled={savingNewCustomer} onClick={handleAddCustomer} className="bg-cyan-600 hover:bg-cyan-700 text-white">
-                  {savingNewCustomer ? (isRTL ? "جاري الحفظ..." : "Saving...") : (isRTL ? "حفظ العميل" : "Save Customer")}
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </DashboardLayout>
   )

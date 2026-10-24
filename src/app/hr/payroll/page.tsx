@@ -203,7 +203,7 @@ function PayrollContent() {
         {/* Header */}
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => router.push('/hr')} className="rounded-lg gap-1">
+            <Button variant="outline" size="sm" onClick={() => router.push('/hr/employees')} className="rounded-lg gap-1">
               <ArrowLeft className="w-4 h-4" /> {isRTL ? 'رجوع' : 'Back'}
             </Button>
             <h1 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">

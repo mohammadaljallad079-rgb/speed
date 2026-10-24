@@ -1558,3 +1558,38 @@ that applies the filters it is given and returns only affected rows.
 - See `SPEED_SUPER_ADMIN_404_DIAGNOSIS.md` for the full evidence and the
   backup/migration/rollback checklist. **Nothing was deployed and no database or
   administrator account was touched** — the probes were read-only HTTP GETs.
+
+## Execution 56 invariants (public marketing surface + operator door)
+
+- **The public marketing pages must not be behind the login wall.** `/fleet` and
+  `/cars/[id]` render `PublicNavbar`, have no session, and are reached from the
+  homepage and the public navbar. They were in `PROTECTED_PAGE_PREFIXES`, so a
+  visitor clicking "Fleet" was redirected to `/login` — the catalogue was
+  unreachable. `/fleet` is now public; `/cars/[id]` is exempted by an explicit
+  branch in `isProtectedPage`, while the ERP register (`/cars`) and the create
+  form (`/cars/new`) stay gated. Only those three routes exist under `/cars`.
+- **Public pages never read a tenant-owned table with the browser client.** Both
+  pages read `cars` with `select('*')`. With RLS on that is blocked for an
+  anonymous caller (empty page); with RLS off it ships purchase cost, supplier,
+  VIN, insurance and notes to the browser. They now read
+  `/api/public/vehicles`, which projects an explicit safe list server-side. The
+  projection gained the display fields the pages render (`body_type`,
+  `condition`, `description`, `features`) and still withholds every commercial
+  and identifying column.
+- **`APPROVED_VEHICLE_FIELDS` in `tests/public-api-routes.test.ts` must track the
+  route's projection.** Adding a column to the projection fails the suite until it
+  is reviewed and listed, so the public surface cannot widen silently.
+- **The operator door and the staff door are different doors.** `/super-admin` and
+  its children redirect to `/super-admin-login` (not `/login`): an operator sent to
+  the company login gets a company identity, is refused by `/api/me`, and never
+  reaches the console. `/super-admin-login` is deliberately public — it is the door.
+- **A green `npm test` needs no placeholder `.env.local`.** A throwaway
+  `NEXT_PUBLIC_SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` un-skips the live-DB
+  describes in `tests/public-api-routes.test.ts`, which then fail against a fake
+  project. The true baseline is the run without those variables: 1053 tests /
+  1047 pass / 0 fail / 6 skipped.
+- **The production 404 is a release gap, not a routing fault.** `main` is
+  `d6788be` (Exec 39); the Super Admin console and the `/fleet` fix exist only on
+  `feat/final-hardening-round5`. Live confirmed: `/super-admin*` 404, `/fleet`
+  307→`/login`, `/login` 200. Publishing is a fast-forward of `main`; deploying
+  it is an operator step (no access to the VM from the sandbox).

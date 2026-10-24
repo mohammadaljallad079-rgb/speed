@@ -1529,3 +1529,32 @@ that applies the filters it is given and returns only affected rows.
 - Baseline after Exec 54: 1012 tests / 1006 pass / 6 skipped / 0 fail; typecheck
   0 errors; lint clean; production build green. 56 committed screenshots, all
   distinct.
+
+## Execution 55 invariants (Super Admin production 404 diagnosis)
+
+- **The production 404 on `/super-admin` and `/super-admin-login` is a release
+  gap, not a code fault.** `main` (`d6788be`) never received Exec 41 onward; the
+  Super Admin console was added by `c536858` and is absent from `main` entirely.
+  The server deploys `main`, so the running build has no such routes. Confirmed
+  by `git ls-tree -r --name-only origin/main | grep '^src/app/super-admin'`
+  returning nothing, while the branch has both pages.
+- **Exec 39 was the last promotion.** Everything from Exec 41 onward (Super Admin
+  console, General Ledger, the nine purchasing reports, the purchasing APIs,
+  migrations 008–010 and their activation packages) is missing from production.
+- **`main` is a direct ancestor of the branch**, so the release is a clean
+  fast-forward: `git merge --ff-only feat/final-hardening-round5` then a plain
+  push. Never `--force`, never `reset --hard`.
+- **Diagnosing a production 404: check who answered it.** `x-powered-by: Next.js`
+  plus the app's own RTL not-found shell means Next.js served it (a missing
+  route), not nginx (a proxy/`try_files` miss). Response headers settle this in
+  one request.
+- **A `307` on a protected path only proves the middleware knows the prefix, not
+  that the page exists** — those prefixes predate Exec 41. Route presence cannot
+  be established from an unauthenticated request; verify on the VM after deploy.
+  Expected post-deploy: `/super-admin-login` = 200, anonymous `/super-admin` = 307.
+- **`/super-admin` needs migration 004** (`is_super_admin()` + the extended tenant
+  predicates). Code without 004 gives a console that loads but cannot read across
+  tenants.
+- See `SPEED_SUPER_ADMIN_404_DIAGNOSIS.md` for the full evidence and the
+  backup/migration/rollback checklist. **Nothing was deployed and no database or
+  administrator account was touched** — the probes were read-only HTTP GETs.

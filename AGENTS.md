@@ -1515,10 +1515,17 @@ that applies the filters it is given and returns only affected rows.
   `tests/activation-package-integrity.test.ts`); the rollback refuses to orphan a
   posted line. **Not applied live** — DDL is an operator step.
 - **The screenshot harness must fail, not warn, on a wrong shot.**
-  `scripts/dev/capture-screenshots.mjs` waits for a tab/select control before
-  interacting and throws if it never appears; a byte-identical screenshot fails
-  the run. Earlier it warned and silently captured the default tab six times —
-  a plausible-looking screenshot that proves nothing is worse than no screenshot.
-- Baseline after Exec 54: 1010 tests / 1004 pass / 6 skipped / 0 fail; typecheck
+  `scripts/dev/capture-screenshots.mjs` takes an `expect` marker per shot and
+  throws when that text never renders; a tab click is retried until the target
+  panel's own text appears (`pageHasText`), because a click landing before React
+  hydration is silently dropped; a byte-identical screenshot fails the run.
+  A plain `innerText.length > 80` check is NOT sufficient — the page shell
+  (header + tab bar) already satisfies it, which is how six super-admin tabs were
+  once committed as the same frame under six names.
+- **Verify the images, not the run exit code.** The duplicate-hash guard passed
+  while five of six tab shots were the same frame; only a pairwise pixel diff
+  exposed it. Check `PIL.ImageChops.difference` (or equivalent) before treating
+  screenshots as evidence.
+- Baseline after Exec 54: 1012 tests / 1006 pass / 6 skipped / 0 fail; typecheck
   0 errors; lint clean; production build green. 56 committed screenshots, all
   distinct.

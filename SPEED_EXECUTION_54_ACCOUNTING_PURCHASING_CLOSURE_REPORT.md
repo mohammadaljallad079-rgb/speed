@@ -4,6 +4,8 @@
 **Repository:** `github.com/mohammadaljallad079-rgb/speed`
 **Branch:** `feat/final-hardening-round5`
 **Base commit:** `127ead3cfe7294fd16ac52f5275741405c8e3488` (Exec 53, last verified)
+**Commits:** `318e0ae` (purchasing/accounting closure) → `9348ad7` (screenshot fix)
+**Branch tip:** `9348ad758c7c97d66ecb201341fe8c05ab9cc6df`
 **Scope:** close the remaining accounting-integrity, purchasing and reporting gaps,
 add the nine missing purchasing/expense reports, and prove every screen in a real
 Chromium browser.
@@ -38,7 +40,8 @@ Exec 54 re-verified it in a real browser and captured fresh evidence.
 
 * `/super-admin` renders all six tabs (`Overview`, `Companies`, `Users`,
   `AI Management`, `Subscriptions`, `Settings`); each tab is a distinct, populated
-  panel — verified by 7 unique desktop screenshot hashes.
+  panel — verified by 6 unique desktop and 6 unique mobile screenshot hashes, with
+  5–60 % pairwise pixel difference between tabs.
 * `super_admin` is the global, tenant-less operator; a company `admin` is refused
   by `requireSuperAdmin`.
 * Screenshots are captured through the **real** `/super-admin-login` form (which
@@ -72,6 +75,13 @@ captured the default panel six times. Fixed in
 * navigate with `domcontentloaded` + the existing content poll instead of
   `networkidle` (the dev HMR socket keeps `networkidle` from settling);
 * the existing SHA-256 duplicate guard now passes: **0 duplicate images**.
+
+The tab-panel fix was found by **verifying the images, not the run exit code**: the
+first corrected run exited 0 with six unique files, yet a pixel diff showed five of
+them were the same frame (0.3–0.7 % difference, confined to the tab-bar highlight).
+The real cause was a click landing before hydration; the script now retries the
+click until the target panel's own text is on screen and fails otherwise. The six
+tab images now differ by 5–60 %.
 
 ---
 
@@ -174,7 +184,7 @@ byte-identically with its SHA-256 in the banner; a non-destructive rollback
 ### 5.1 Automated
 
 ```
-npm test        → 1010 tests, 1004 pass, 0 fail, 6 skipped
+npm test        → 1012 tests, 1006 pass, 0 fail, 6 skipped
 npx tsc --noEmit → 0 errors
 npm run lint     → ✔ No ESLint warnings or errors
 npm run build    → ✓ Compiled successfully (exit 0)
@@ -204,7 +214,9 @@ form. Every report was probed for **rendered table rows**, not just HTTP 200:
 
 ### 5.3 Screenshots
 
-56 PNGs in `docs/screenshots/`, all distinct (0 duplicate hashes), all non-blank.
+56 PNGs in `docs/screenshots/`, all distinct (0 duplicate hashes), none near-blank
+(verified by pixel-range, not by file size). The six super-admin tab shots were
+re-captured after the harness fix and are now genuinely different frames.
 Purchasing screens added in Exec 54:
 
 * `report-purchase-register-{desktop,mobile}.png`

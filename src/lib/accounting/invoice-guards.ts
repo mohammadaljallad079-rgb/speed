@@ -102,3 +102,68 @@ export async function countInvoiceDependents(
 export async function hasInvoiceDependents(client: CountClient, invoiceId: string): Promise<boolean> {
   return (await countInvoiceDependents(client, invoiceId)).total > 0;
 }
+
+// ---------------------------------------------------------------------------
+// Purchase-bill posting guard (Exec 54)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the posted purchase journal for a supplier bill number, or null when
+ * the bill has not been posted (or the number is empty). Same fail-closed
+ * contract as `findPostedSaleJournal`.
+ */
+export async function findPostedPurchaseJournal(
+  client: GuardClient,
+  invoiceNumber: string,
+): Promise<PostedJournal | null> {
+  if (!invoiceNumber) return null;
+  const { data, error } = await client
+    .from("journal_entries")
+    .select("id,journal_number")
+    .eq("entry_type", "purchase_invoice")
+    .eq("reference_number", invoiceNumber)
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data as PostedJournal;
+}
+
+/** True when the supplier bill number already has a posted purchase journal. */
+export async function isPurchaseBillPosted(
+  client: GuardClient,
+  invoiceNumber: string,
+): Promise<boolean> {
+  return (await findPostedPurchaseJournal(client, invoiceNumber)) !== null;
+}
+
+export type PurchaseBillDependents = {
+  payments: number;
+  debitNotes: number;
+  items: number;
+  total: number;
+};
+
+/**
+ * Count the records that reference a supplier bill. Deleting a bill that still
+ * has payments, debit notes or line items would orphan those rows, so a caller
+ * must refuse the delete and cancel/reverse the document instead. Best-effort:
+ * an unreadable table counts as zero so the guard never blocks a legitimate
+ * delete on a schema that lacks the table.
+ */
+export async function countPurchaseBillDependents(
+  client: CountClient,
+  billId: string,
+): Promise<PurchaseBillDependents> {
+  if (!billId) return { payments: 0, debitNotes: 0, items: 0, total: 0 };
+  const [payments, debitNotes, items] = await Promise.all([
+    countRows(client, "supplier_payments", "purchase_invoice_id", billId),
+    countRows(client, "debit_notes", "purchase_invoice_id", billId),
+    countRows(client, "purchase_invoice_items", "purchase_invoice_id", billId),
+  ]);
+  return { payments, debitNotes, items, total: payments + debitNotes + items };
+}
+
+/** True when a supplier bill may not be deleted because dependent rows would orphan. */
+export async function hasPurchaseBillDependents(client: CountClient, billId: string): Promise<boolean> {
+  return (await countPurchaseBillDependents(client, billId)).total > 0;
+}

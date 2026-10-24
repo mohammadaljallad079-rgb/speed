@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
+import { buildCashFlowStatement, type CashFlowRow } from '@/lib/reporting/cash-flow'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -73,6 +74,9 @@ function CashFlowContent() {
   const [toDraft, setToDraft] = useState('2026-12-31')
   const [selectedAccountName, setSelectedAccountName] = useState('')
   const [selectedAccountCode, setSelectedAccountCode] = useState('')
+  const [openingCash, setOpeningCash] = useState(0)
+  const [closingCash, setClosingCash] = useState(0)
+  const [reconciled, setReconciled] = useState(true)
   const [journalLines, setJournalLines] = useState<JournalLine[]>([])
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogLoading, setDialogLoading] = useState(false)
@@ -93,23 +97,6 @@ useEffect(() => {
 
   function applyDates() { setFromDate(fromDraft); setToDate(toDraft) }
 
-  function formatNum(n: number | null | undefined): number {
-    return Number(n || 0)
-  }
-
-  function getSection(code: string): 'operating' | 'investing' | 'financing' {
-    const num = parseInt(code)
-    // Operating: revenue, expenses, receivables, payables, VAT, accrued
-    if ((num >= 12000 && num < 13000) || (num >= 21000 && num < 22000) || 
-        (num >= 23000 && num < 24000) || (num >= 24000 && num < 25000) ||
-        (num >= 41000 && num < 62000)) return 'operating'
-    // Investing: fixed assets
-    if (num >= 13000 && num < 14000) return 'investing'
-    // Financing: loans, capital
-    if ((num >= 22000 && num < 23000) || (num >= 30000 && num < 40000)) return 'financing'
-    return 'operating'
-  }
-
   async function loadData() {
     setLoading(true)
     try {
@@ -117,6 +104,9 @@ useEffect(() => {
         setOperating([])
         setInvesting([])
         setFinancing([])
+        setOpeningCash(0)
+        setClosingCash(0)
+        setReconciled(true)
         setLoading(false)
         return
       }
@@ -124,9 +114,13 @@ useEffect(() => {
       const { data: accounts } = await supabase
         .from('accounts').select('*').eq('is_active', true).order('code')
 
+      // The opening balance needs every entry before the period too, so the read
+      // is bounded by the end date only; the engine splits before/in-period.
       const { data: journalEntries } = await applyReportScope(
         supabase
-          .from('journal_entries').select('id,entry_date').gte('entry_date', fromDate).lte('entry_date', toDate),
+          .from('journal_entries')
+          .select('id,entry_date,status')
+          .lte('entry_date', toDate),
         currentScope,
       )
 
@@ -138,50 +132,27 @@ useEffect(() => {
         lines = result.data || []
       }
 
-      const opRows: CFRow[] = []
-      const invRows: CFRow[] = []
-      const finRows: CFRow[] = []
-
-      ;(accounts || []).forEach((acc: any) => {
-        const accLines = lines.filter((l: any) => l.account_id === acc.id)
-        let amount = 0
-
-        if (acc.type === 'revenue') {
-          const credit = accLines.reduce((s: number, e: any) => s + formatNum(e.credit), 0)
-          const debit = accLines.reduce((s: number, e: any) => s + formatNum(e.debit), 0)
-          amount = credit - debit
-        } else if (acc.type === 'expense') {
-          const debit = accLines.reduce((s: number, e: any) => s + formatNum(e.debit), 0)
-          const credit = accLines.reduce((s: number, e: any) => s + formatNum(e.credit), 0)
-          amount = debit - credit
-        } else if (['asset', 'liability', 'equity'].includes(acc.type)) {
-          // For BS accounts, show net movement affecting cash
-          const debit = accLines.reduce((s: number, e: any) => s + formatNum(e.debit), 0)
-          const credit = accLines.reduce((s: number, e: any) => s + formatNum(e.credit), 0)
-          amount = debit - credit
-        }
-
-        // Only include accounts with movement
-        if (Math.abs(amount) < 0.001) return
-
-        const row = {
-          id: acc.id,
-          code: acc.code || '',
-          name: acc.name_en || acc.name || '',
-          name_ar: acc.name_ar || acc.name || '',
-          section: getSection(acc.code || '0'),
-          amount
-        }
-
-        if (row.section === 'operating') opRows.push(row)
-        else if (row.section === 'investing') invRows.push(row)
-        else finRows.push(row)
+      // One engine owns the cash-flow arithmetic; the page only renders it, so
+      // the screen cannot drift from the General Ledger it derives from.
+      const statement = buildCashFlowStatement({
+        accounts: (accounts || []) as any,
+        entries: (journalEntries || []) as any,
+        lines: lines as any,
+        fromDate,
+        toDate,
       })
 
-      setOperating(opRows)
-      setInvesting(invRows)
-      setFinancing(finRows)
+      setOperating(statement.operating.map(toRow))
+      setInvesting(statement.investing.map(toRow))
+      setFinancing(statement.financing.map(toRow))
+      setOpeningCash(statement.openingCash)
+      setClosingCash(statement.closingCash)
+      setReconciled(statement.reconciled)
     } catch (err) { console.error(err) } finally { setLoading(false) }
+  }
+
+  function toRow(r: CashFlowRow): CFRow {
+    return { id: r.accountId, code: r.code, name: r.name, name_ar: r.nameAr, section: r.section, amount: r.amount }
   }
 
   async function showJournalEntries(accountId: string, accountName: string, accountCode: string) {
@@ -563,6 +534,31 @@ useEffect(() => {
                       </p>
                     </div>
                   </div>
+
+                  {/* CASH RECONCILIATION: opening + movement = closing. The
+                      statement is only trustworthy when this ties to the cash
+                      accounts' own ledger movement, which `reconciled` reports. */}
+                  <div className="p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800">
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                      <div>
+                        <p className="text-xs text-slate-500">{isRTL ? 'النقد أول الفترة' : 'Cash at start'}</p>
+                        <p className="text-lg font-black font-mono text-slate-700 dark:text-slate-200">{openingCash.toFixed(3)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">{isRTL ? 'صافي الحركة' : 'Net movement'}</p>
+                        <p className={'text-lg font-black font-mono ' + (netCashFlow >= 0 ? 'text-emerald-600' : 'text-red-600')}>{netCashFlow >= 0 ? '+' : ''}{netCashFlow.toFixed(3)}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">{isRTL ? 'النقد آخر الفترة' : 'Cash at end'}</p>
+                        <p className="text-lg font-black font-mono text-slate-900 dark:text-white">{closingCash.toFixed(3)}</p>
+                      </div>
+                    </div>
+                    <div className={'mt-3 text-center text-xs font-bold rounded-lg py-1 ' + (reconciled ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700')}>
+                      {reconciled
+                        ? (isRTL ? '✔ مطابق لحركة حسابات النقد في دفتر الأستاذ' : '✔ Ties to the cash accounts\u2019 movement in the ledger')
+                        : (isRTL ? '✖ غير مطابق لحركة حسابات النقد — راجع القيود' : '✖ Does not tie to the cash accounts\u2019 movement — review the entries')}
+                    </div>
+                  </div>
                 </div>
               )}
             </CardContent>
@@ -652,6 +648,26 @@ useEffect(() => {
                     <td style={{ padding: '8px 4px', border: '2px solid ' + (netCashFlow >= 0 ? '#065f46' : '#991b1b'), borderTop: '3px double ' + (netCashFlow >= 0 ? '#065f46' : '#991b1b'), color: netCashFlow >= 0 ? '#065f46' : '#991b1b', fontSize: '11pt' }}>NET INCREASE/(DECREASE) IN CASH</td>
                     <td style={{ padding: '8px 4px', border: '2px solid ' + (netCashFlow >= 0 ? '#065f46' : '#991b1b'), borderTop: '3px double ' + (netCashFlow >= 0 ? '#065f46' : '#991b1b'), textAlign: 'right', fontFamily: 'monospace', color: netCashFlow >= 0 ? '#065f46' : '#991b1b', fontSize: '11pt' }}>{netCashFlow.toFixed(3)}</td>
                   </tr>
+
+                  {/* Cash reconciliation rows, so the printed statement shows the
+                      tie-out to the cash accounts, not just the net change. */}
+                  <tr>
+                    <td style={{ padding: '4px 4px', border: '0.5px solid #e2e8f0' }}></td>
+                    <td style={{ padding: '4px 4px', border: '0.5px solid #e2e8f0', color: '#1e293b' }}>Cash and cash equivalents at the beginning of the period</td>
+                    <td style={{ padding: '4px 4px', border: '0.5px solid #e2e8f0', textAlign: 'right', fontFamily: 'monospace' }}>{openingCash.toFixed(3)}</td>
+                  </tr>
+                  <tr style={{ background: '#f1f5f9', fontWeight: 700 }}>
+                    <td style={{ padding: '4px 4px', border: '0.5px solid #cbd5e1' }}></td>
+                    <td style={{ padding: '4px 4px', border: '0.5px solid #cbd5e1', color: '#0f172a' }}>Cash and cash equivalents at the end of the period</td>
+                    <td style={{ padding: '4px 4px', border: '0.5px solid #cbd5e1', textAlign: 'right', fontFamily: 'monospace', color: '#0f172a' }}>{closingCash.toFixed(3)}</td>
+                  </tr>
+                  {!reconciled && (
+                    <tr>
+                      <td colSpan={3} style={{ padding: '4px 4px', color: '#991b1b', fontSize: '8pt' }}>
+                        Warning: the section totals do not tie to the cash accounts&apos; own movement. The ledger may contain unbalanced entries.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
 

@@ -114,9 +114,34 @@ const TABLES = {
   ],
   cars: [
     { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A, purchase_price: 10000, purchase_date: "2025-01-01" },
+    { id: "car2", make: "Nissan", model: "Patrol", year: 2023, plate_number: "67890", status: "rented", category: "rental", tenant_id: TENANT_A, purchase_price: 24000, purchase_date: "2024-06-01" },
   ],
   depreciation_schedules: [
     { id: "ds1", car_id: "car1", method: "straight_line", useful_life_years: 5, salvage_value: 1000, annual_rate: 20, start_date: "2026-12-31", tenant_id: TENANT_A },
+  ],
+  // Purchasing documents, so the Exec 54 purchasing/expense reports render real
+  // rows rather than an empty state. Every bill's taxable base is
+  // `total_amount − vat_amount` (the reports' VAT-inclusive convention).
+  purchase_invoices: [
+    { id: "pi1", invoice_number: "BILL-0001", supplier_id: "s1", bill_date: "2026-09-05", due_date: "2026-10-05", total_amount: 220, vat_amount: 20, paid_amount: 0, status: "pending", tenant_id: TENANT_A, expense_category: "maintenance", car_id: "car1", branch: "Manama" },
+    { id: "pi2", invoice_number: "BILL-0002", supplier_id: "s2", bill_date: "2026-09-18", due_date: "2026-10-18", total_amount: 550, vat_amount: 50, paid_amount: 550, status: "paid", tenant_id: TENANT_A, expense_category: "fuel", car_id: "car2", branch: "Airport" },
+    { id: "pi3", invoice_number: "BILL-0003", supplier_id: "s1", bill_date: "2026-10-02", due_date: "2026-11-02", total_amount: 330, vat_amount: 30, paid_amount: 100, status: "partial", tenant_id: TENANT_A, expense_category: "tyres", car_id: "car1", branch: "Manama" },
+    { id: "pi9", invoice_number: "BILL-9000", supplier_id: "s2", bill_date: "2026-10-04", total_amount: 110, vat_amount: 10, paid_amount: 0, status: "cancelled", tenant_id: TENANT_A, expense_category: "other", branch: "Manama" },
+  ],
+  supplier_payments: [
+    { id: "sp1", payment_number: "SP-0001", supplier_id: "s2", purchase_invoice_id: "pi2", amount: 550, payment_date: "2026-09-20", payment_method: "bank_transfer", status: "completed", tenant_id: TENANT_A },
+    { id: "sp2", payment_number: "SP-0002", supplier_id: "s1", purchase_invoice_id: "pi3", amount: 100, payment_date: "2026-10-10", payment_method: "cash", status: "completed", tenant_id: TENANT_A },
+  ],
+  debit_notes: [
+    { id: "dn1", note_number: "DN-0001", supplier_id: "s1", purchase_invoice_id: "pi1", amount: 55, vat_amount: 5, note_date: "2026-09-25", reason: "Damaged parts returned", status: "active", tenant_id: TENANT_A },
+  ],
+  expenses: [
+    { id: "ex1", expense_date: "2026-09-12", description: "Showroom electricity", amount: 45, vat_amount: 4.5, expense_account_id: "ac7", branch: "Manama", tenant_id: TENANT_A },
+    { id: "ex2", expense_date: "2026-10-03", description: "Vehicle washing", amount: 30, vat_amount: 3, expense_account_id: "ac7", branch: "Airport", car_id: "car2", tenant_id: TENANT_A },
+  ],
+  invoices: [
+    { id: "inv1", invoice_number: "INV-0001", customer_id: "c1", invoice_date: "2026-09-08", total_amount: 330, vat_amount: 30, paid_amount: 330, status: "paid", invoice_type: "rental", car_id: "car1", tenant_id: TENANT_A },
+    { id: "inv2", invoice_number: "INV-0002", customer_id: "c2", invoice_date: "2026-10-06", total_amount: 220, vat_amount: 20, paid_amount: 0, status: "pending", invoice_type: "rental", car_id: "car2", tenant_id: TENANT_A },
   ],
 };
 

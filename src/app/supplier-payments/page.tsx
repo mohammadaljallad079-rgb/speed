@@ -4,8 +4,6 @@ import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, SupplierPayment, Supplier, PurchaseInvoice } from "@/lib/supabase"
-import { nextDocumentNumber } from "@/lib/numbering"
-import { postSupplierPayment } from "@/lib/accounting/payment-posting"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
 import RecordSelect from "@/components/records/RecordSelect"
 import {
@@ -101,56 +99,27 @@ function SupplierPaymentsPageContent() {
     }
 
     setSaving(true)
-    let createdPaymentId: string | null = null
     try {
       const amount = parseFloat(form.amount)
-      const paymentNumber = await nextDocumentNumber(supabase as any, "supplier_payment", "SP")
-      const { data: payData, error: payError } = await supabase.from('supplier_payments').insert([{
-        payment_number: paymentNumber,
-        supplier_id: form.supplier_id,
-        purchase_invoice_id: form.purchase_invoice_id || null,
-        amount,
-        payment_date: form.payment_date,
-        payment_method: form.payment_method,
-        reference_number: form.reference_number || null,
-        notes: form.notes || null,
-        status: 'completed',
-      }]).select().single()
-
-      if (payError) throw payError
-      createdPaymentId = (payData as any)?.id ?? null
-
-      // Post the general-ledger entry: Dr Accounts Payable / Cr Cash-Bank.
-      // A supplier payment must reduce AP and cash, never revenue.
-      const journalNumber = await nextDocumentNumber(supabase as any, "journal_entry", "JV")
-      await postSupplierPayment(supabase as any, {
-        journalNumber,
-        paymentNumber,
-        supplierId: form.supplier_id,
-        amount,
-        paymentDate: form.payment_date,
-        paymentMethod: form.payment_method,
-        description: isRTL ? `سند صرف للمورد ${paymentNumber}` : `Supplier payment ${paymentNumber}`,
+      // The payment row, its journal and the bill's new balance are written by
+      // one server-side operation. Doing it in the browser (as it was before
+      // Execution 54) meant four independent writes with no tenant scope, no
+      // overpayment guard and a destructive delete on reversal.
+      const res = await fetch('/api/supplier-payments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          supplier_id: form.supplier_id,
+          purchase_invoice_id: form.purchase_invoice_id || null,
+          amount,
+          payment_date: form.payment_date,
+          payment_method: form.payment_method,
+          reference_number: form.reference_number || null,
+          notes: form.notes || null,
+        }),
       })
-
-      // Update bill paid_amount if linked - read the CURRENT value from the DB
-      // so two payments in a row cannot clobber each other's balance.
-      if (form.purchase_invoice_id) {
-        const { data: freshBill } = await supabase
-          .from('purchase_invoices')
-          .select('total_amount, paid_amount')
-          .eq('id', form.purchase_invoice_id)
-          .single()
-        const bill = (freshBill as any) || bills.find(b => b.id === form.purchase_invoice_id)
-        if (bill) {
-          const newPaid = (parseFloat(bill.paid_amount as any) || 0) + amount
-          const newStatus = newPaid >= (parseFloat(bill.total_amount as any) || 0) ? 'paid' : 'partial'
-          await supabase.from('purchase_invoices').update({
-            paid_amount: newPaid,
-            status: newStatus,
-          }).eq('id', form.purchase_invoice_id)
-        }
-      }
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not record the payment')
 
       setForm({
         supplier_id: '',
@@ -165,48 +134,23 @@ function SupplierPaymentsPageContent() {
       fetchPayments()
       fetchBills()
     } catch (error: any) {
-      // Compensate: if the payment row was written but the GL entry was not,
-      // remove the row so the payment is never recorded without its journal.
-      if (createdPaymentId) {
-        await supabase.from('supplier_payments').delete().eq('id', createdPaymentId)
-      }
       alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
     }
     setSaving(false)
   }
 
   async function handleDelete(id: string) {
-    if (!confirm(isRTL ? 'هل أنت متأكد من الحذف؟' : 'Are you sure?')) return
     const payment = payments.find(p => p.id === id) as any
+    const label = payment?.payment_number || ''
+    // A posted payment is reversed, not deleted: its journal would be orphaned
+    // and the fact that money moved would disappear from the ledger.
+    if (!confirm(isRTL
+      ? `هل أنت متأكد من عكس الدفعة ${label}؟`
+      : `Reverse payment ${label}? The journal entry is mirrored, not deleted.`)) return
     try {
-      // Remove the payment's journal (lines first, then header) so deleting a
-      // payment cannot leave an orphaned, unexplained GL entry behind.
-      if (payment?.payment_number) {
-        const { data: journals } = await supabase
-          .from('journal_entries')
-          .select('id')
-          .eq('entry_type', 'supplier_payment')
-          .eq('reference_number', payment.payment_number)
-        const ids = (journals || []).map((j: any) => j.id)
-        if (ids.length > 0) {
-          await supabase.from('journal_lines').delete().in('journal_entry_id', ids)
-          await supabase.from('journal_entries').delete().in('id', ids)
-        }
-      }
-      // Restore the linked bill's balance.
-      if (payment?.purchase_invoice_id) {
-        const { data: freshBill } = await supabase
-          .from('purchase_invoices')
-          .select('total_amount, paid_amount')
-          .eq('id', payment.purchase_invoice_id)
-          .single()
-        if (freshBill) {
-          const newPaid = Math.max(0, (parseFloat((freshBill as any).paid_amount) || 0) - (parseFloat(payment.amount) || 0))
-          const newStatus = newPaid <= 0 ? 'pending' : (newPaid >= (parseFloat((freshBill as any).total_amount) || 0) ? 'paid' : 'partial')
-          await supabase.from('purchase_invoices').update({ paid_amount: newPaid, status: newStatus }).eq('id', payment.purchase_invoice_id)
-        }
-      }
-      await supabase.from('supplier_payments').delete().eq('id', id)
+      const res = await fetch(`/api/supplier-payments/${id}/reverse`, { method: 'POST' })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not reverse the payment')
       fetchPayments()
       fetchBills()
     } catch (error: any) {

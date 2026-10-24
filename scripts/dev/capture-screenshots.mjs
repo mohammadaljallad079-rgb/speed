@@ -42,6 +42,21 @@ const SHOTS = [
   { name: "report-financial-index", path: "/reports/financial", auth: true },
   // Stage 3: the depreciation screen, whose Post button now writes a real journal.
   { name: "accounting-depreciation", path: "/accounting/depreciation", auth: true },
+  // Execution 54: the purchasing/expense reports that had no implementation.
+  { name: "report-purchase-register", path: "/reports/purchase-register", auth: true },
+  { name: "report-supplier-ledger", path: "/reports/supplier-ledger", auth: true },
+  { name: "report-supplier-aging", path: "/reports/supplier-aging", auth: true },
+  { name: "report-expenses-by-vehicle", path: "/reports/expenses-by-vehicle", auth: true },
+  { name: "report-expenses-by-branch", path: "/reports/expenses-by-branch", auth: true },
+  { name: "report-vat-purchases", path: "/reports/vat-purchases", auth: true },
+  { name: "report-vehicle-profitability", path: "/reports/vehicle-profitability", auth: true },
+  // Execution 54: the purchasing documents themselves.
+  { name: "purchases-bills", path: "/purchases", auth: true },
+  { name: "purchases-new-bill", path: "/purchases/new", auth: true },
+  { name: "purchases-returns", path: "/purchases/returns", auth: true },
+  { name: "supplier-statements", path: "/supplier-statements", auth: true, select: true },
+  { name: "supplier-payments", path: "/supplier-payments", auth: true },
+  { name: "purchases-dashboard", path: "/purchases/dashboard", auth: true },
 ];
 
 const VIEWPORTS = [
@@ -75,7 +90,7 @@ async function waitForContent(page, label) {
 async function warmUp(page, base) {
   for (const shot of SHOTS) {
     try {
-      await page.goto(`${base}${shot.path}`, { waitUntil: "networkidle", timeout: 60000 });
+      await page.goto(`${base}${shot.path}`, { waitUntil: "domcontentloaded", timeout: 60000 });
       await page.waitForTimeout(300);
     } catch {
       // A warm-up failure is not fatal; the real capture retries.
@@ -120,14 +135,40 @@ async function main() {
       // slow navigation must not fail the whole run.
       for (let attempt = 1; ; attempt++) {
         try {
-          await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle", timeout: 60000 });
+          await page.goto(`${BASE}${shot.path}`, { waitUntil: "domcontentloaded", timeout: 60000 });
           if (shot.click) {
+            // The tab bar is client-rendered after `/api/me` resolves; clicking
+            // before hydration finds nothing and silently captures the default
+            // tab instead. Wait for the control, then for the panel to settle.
             const tab = page.getByRole("button", { name: shot.click, exact: false }).first();
+            await tab.waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
             if (await tab.count()) {
               await tab.click();
-              await page.waitForTimeout(1200);
+              await page.waitForTimeout(1500);
             } else {
-              console.warn(`[capture] tab not found: ${shot.click}`);
+              throw new Error(`[capture] tab not found: ${shot.click}`);
+            }
+          }
+          // Some screens render their content only after a record is chosen
+          // (the supplier statement, for example). Select the first real option
+          // so the shot shows a populated screen rather than an empty state.
+          if (shot.select) {
+            const select = page.locator("select").first();
+            // The control only appears once its option list has loaded, so wait
+            // for it rather than sampling too early and shooting an empty state.
+            await select.waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
+            if (await select.count()) {
+              const values = await select.locator("option").evaluateAll((opts) =>
+                opts.map((o) => o.value).filter((v) => v !== ""),
+              );
+              if (values.length) {
+                await select.selectOption(values[0]);
+                await page.waitForTimeout(2500);
+              } else {
+                throw new Error(`[capture] no options to select for ${label}`);
+              }
+            } else {
+              throw new Error(`[capture] select not found for ${label}`);
             }
           }
           await waitForContent(page, label);

@@ -1469,3 +1469,56 @@ that applies the filters it is given and returns only affected rows.
   dataset; nothing here touches a real Supabase project. Run it via
   `bash scripts/dev/run-dev.sh <port>` (which clears a stale `.next` first - a
   stale cache serves dead chunk URLs and the page never hydrates).
+
+## Execution 54 invariants (purchasing/accounting closure + 9 purchasing reports)
+
+- **Every purchasing mutation is server-authoritative.** One route per document:
+  `POST /api/purchases` (bill), `POST /api/supplier-payments` (+
+  `[id]/reverse`), `POST /api/debit-notes`, and `DELETE /api/purchases`. The
+  screens POST to these routes; they never insert or delete the document row
+  themselves. Before Exec 54 the browser wrote `purchase_invoices`,
+  `debit_notes` and the payment/bill updates directly, with no `tenant_id`, no
+  journal and no duplicate guard — a document could exist with no ledger entry.
+- **A document and its journal are written together, or neither.** Each route
+  compensates by removing what *it* created when posting fails; a route's
+  catch-block must never roll back a journal an idempotent retry found already
+  present. The document number is the idempotency key.
+- **A posted supplier bill is never deleted from the UI.**
+  `src/lib/accounting/invoice-guards.ts` now mirrors the sales guard:
+  `isPurchaseBillPosted` (a `purchase_invoice` journal exists for the bill number)
+  and `hasPurchaseBillDependents` (payments, debit notes or line items point at
+  the bill). `DELETE /api/purchases` loads the row tenant-scoped (a foreign id is
+  a 404), refuses a posted bill and a bill with dependents (403), then audits.
+  An unreadable dependent table counts as zero so the guard never blocks a
+  legitimate delete. `src/app/purchases/page.tsx` surfaces the server's refusal.
+- **Nine purchasing/expense reports live in one pure module.**
+  `src/lib/reporting/purchasing-reports.ts` (`PURCHASING_REPORT_KINDS`:
+  `purchase_register`, `supplier_ledger`, `supplier_aging`,
+  `expenses_by_vehicle`, `expenses_by_branch`, `expenses_by_category`,
+  `vat_purchases`, `monthly_expenses`, `vehicle_profitability`). One route
+  (`GET /api/reports/purchasing?kind=…`, permission `reports.view`) and one screen
+  (`src/components/reports/PurchasingReportPage.tsx`) serve all nine. Add a kind
+  to the list and a builder — never a per-report page or a second engine.
+- **The purchasing tax base is NOT uniform and is encoded once.**
+  `purchase_invoices.total_amount` is VAT-inclusive (taxable = total − vat);
+  `expenses.amount` is stored pre-VAT (taxable = amount). `billTaxableBase` /
+  `billOutstanding` own this; a screen must not re-derive it. Cancelled documents
+  contribute nothing, everywhere.
+- **Purchasing reports are fail-closed.** `src/app/api/reports/purchasing/route.ts`
+  reads unfiltered only for `context.isSuperAdmin`; every other caller is scoped
+  to its tenant (`q.eq("tenant_id", …)`, `q.is("tenant_id", null)` on the
+  single-tenant install). Never reintroduce a `if (!tenant) return query` helper.
+- **Migration 010** (`supabase/migrations/010_purchasing_accounts.sql`) seeds input
+  VAT `24001`, other expenses `51099` and the `debit_note` sequence, idempotently
+  (`where not exists`). Frozen package `supabase/PRODUCTION_ACTIVATION_010.sql`
+  embeds the body byte-identically (SHA-256 in its banner, guarded by
+  `tests/activation-package-integrity.test.ts`); the rollback refuses to orphan a
+  posted line. **Not applied live** — DDL is an operator step.
+- **The screenshot harness must fail, not warn, on a wrong shot.**
+  `scripts/dev/capture-screenshots.mjs` waits for a tab/select control before
+  interacting and throws if it never appears; a byte-identical screenshot fails
+  the run. Earlier it warned and silently captured the default tab six times —
+  a plausible-looking screenshot that proves nothing is worse than no screenshot.
+- Baseline after Exec 54: 1010 tests / 1004 pass / 6 skipped / 0 fail; typecheck
+  0 errors; lint clean; production build green. 56 committed screenshots, all
+  distinct.

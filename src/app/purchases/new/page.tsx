@@ -4,7 +4,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
-import { supabase, Supplier, Car, generateSupplierBillNumber } from "@/lib/supabase"
+import { supabase, Supplier, Car } from "@/lib/supabase"
 import RecordSelect from "@/components/records/RecordSelect"
 import { formatCurrency } from "@/lib/utils"
 import {
@@ -38,7 +38,6 @@ function NewBillPageContent() {
   const [saving, setSaving] = useState(false)
 
   const [form, setForm] = useState({
-    invoice_number: '',
     supplier_id: '',
     bill_date: new Date().toISOString().split('T')[0],
     due_date: '',
@@ -57,7 +56,6 @@ function NewBillPageContent() {
 
   useEffect(() => {
     setMounted(true)
-    setForm(f => ({ ...f, invoice_number: generateSupplierBillNumber() }))
     fetchSuppliers()
     fetchCars()
   }, [])
@@ -112,7 +110,6 @@ function NewBillPageContent() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          invoice_number: form.invoice_number,
           supplier_id: form.supplier_id,
           bill_date: form.bill_date,
           due_date: form.due_date || null,
@@ -159,7 +156,7 @@ function NewBillPageContent() {
                 <ShoppingBag className="w-6 h-6 text-emerald-500" />
                 {isRTL ? 'فاتورة مورد جديدة' : 'New Supplier Bill'}
               </h1>
-              <p className="text-slate-500 text-sm">{form.invoice_number}</p>
+              <p className="text-slate-500 text-sm">{isRTL ? 'يُخصَّص الرقم عند الحفظ' : 'Number is assigned on save'}</p>
             </div>
           </div>
           <Button onClick={handleSubmit} disabled={saving} className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl gap-2">
@@ -192,7 +189,7 @@ function NewBillPageContent() {
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'رقم الفاتورة' : 'Bill Number'}</label>
-                  <Input value={form.invoice_number} readOnly className="h-11 rounded-xl bg-slate-50" />
+                  <Input value={isRTL ? 'يُخصَّص تلقائياً' : 'Assigned automatically'} readOnly className="h-11 rounded-xl bg-slate-50" />
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'تاريخ الفاتورة' : 'Bill Date'} *</label>

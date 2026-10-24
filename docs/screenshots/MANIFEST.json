@@ -16,6 +16,19 @@
     "docs/screenshots/report-cash-flow-desktop.png",
     "docs/screenshots/report-financial-index-desktop.png",
     "docs/screenshots/accounting-depreciation-desktop.png",
+    "docs/screenshots/report-purchase-register-desktop.png",
+    "docs/screenshots/report-supplier-ledger-desktop.png",
+    "docs/screenshots/report-supplier-aging-desktop.png",
+    "docs/screenshots/report-expenses-by-vehicle-desktop.png",
+    "docs/screenshots/report-expenses-by-branch-desktop.png",
+    "docs/screenshots/report-vat-purchases-desktop.png",
+    "docs/screenshots/report-vehicle-profitability-desktop.png",
+    "docs/screenshots/purchases-bills-desktop.png",
+    "docs/screenshots/purchases-new-bill-desktop.png",
+    "docs/screenshots/purchases-returns-desktop.png",
+    "docs/screenshots/supplier-statements-desktop.png",
+    "docs/screenshots/supplier-payments-desktop.png",
+    "docs/screenshots/purchases-dashboard-desktop.png",
     "docs/screenshots/super-admin-login-mobile.png",
     "docs/screenshots/erp-public-mobile.png",
     "docs/screenshots/super-admin-overview-mobile.png",
@@ -30,17 +43,19 @@
     "docs/screenshots/report-balance-sheet-mobile.png",
     "docs/screenshots/report-cash-flow-mobile.png",
     "docs/screenshots/report-financial-index-mobile.png",
-    "docs/screenshots/accounting-depreciation-mobile.png"
-  ],
-  "e2e": {
-    "script": "scripts/dev/e2e-depreciation.mjs",
-    "files": [
-      "docs/screenshots/accounting-depreciation-before-post-desktop.png",
-      "docs/screenshots/accounting-depreciation-manual-desktop.png",
-      "docs/screenshots/accounting-depreciation-after-post-desktop.png",
-      "docs/screenshots/accounting-depreciation-in-profit-loss.png",
-      "docs/screenshots/accounting-depreciation-in-balance-sheet.png",
-      "docs/screenshots/accounting-depreciation-mobile.png"
-    ]
-  }
+    "docs/screenshots/accounting-depreciation-mobile.png",
+    "docs/screenshots/report-purchase-register-mobile.png",
+    "docs/screenshots/report-supplier-ledger-mobile.png",
+    "docs/screenshots/report-supplier-aging-mobile.png",
+    "docs/screenshots/report-expenses-by-vehicle-mobile.png",
+    "docs/screenshots/report-expenses-by-branch-mobile.png",
+    "docs/screenshots/report-vat-purchases-mobile.png",
+    "docs/screenshots/report-vehicle-profitability-mobile.png",
+    "docs/screenshots/purchases-bills-mobile.png",
+    "docs/screenshots/purchases-new-bill-mobile.png",
+    "docs/screenshots/purchases-returns-mobile.png",
+    "docs/screenshots/supplier-statements-mobile.png",
+    "docs/screenshots/supplier-payments-mobile.png",
+    "docs/screenshots/purchases-dashboard-mobile.png"
+  ]
 }

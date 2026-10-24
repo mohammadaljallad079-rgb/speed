@@ -491,6 +491,14 @@ describe("committed screenshots are real captures, not placeholders", () => {
       "report-balance-sheet",
       "report-cash-flow",
       "report-financial-index",
+      // Execution 54: the purchasing/expense reports.
+      "report-purchase-register",
+      "report-supplier-ledger",
+      "report-supplier-aging",
+      "report-expenses-by-vehicle",
+      "report-expenses-by-branch",
+      "report-vat-purchases",
+      "report-vehicle-profitability",
     ]) {
       for (const vp of ["desktop", "mobile"]) {
         const file = path.join(dir, `${name}-${vp}.png`);

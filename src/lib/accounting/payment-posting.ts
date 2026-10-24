@@ -40,7 +40,7 @@ export type SupplierPaymentJournal = {
     total_credit: number;
     is_balanced: true;
     status: "posted";
-    entry_type: "supplier_payment";
+    entry_type: "supplier_payment" | "supplier_payment_reversal";
   };
   lines: SupplierPaymentJournalLine[];
 };
@@ -94,6 +94,47 @@ type Builder = {
   then: PromiseLike<QueryResult>["then"];
 };
 type PostingClient = { from: (table: string) => Builder };
+
+/**
+ * Build the mirror journal that reverses a posted supplier payment:
+ *   Dr Cash / Bank (11001/11002)  amount
+ *   Cr Accounts Payable (21001)   amount
+ *
+ * A posted payment is never deleted — deleting the rows would erase the fact
+ * that money moved. The reversal is its own `entry_type` so both the original
+ * and its undoing stay visible in the ledger. Returns null for a non-positive
+ * amount or a missing account, so a caller can never post an empty reversal.
+ */
+export function buildSupplierPaymentReversalJournal(params: {
+  journalNumber: string;
+  paymentNumber: string;
+  supplierId: string;
+  amount: number;
+  paymentDate: string;
+  description: string;
+  apAccountId: string;
+  cashAccountId: string;
+}): SupplierPaymentJournal | null {
+  const { journalNumber, paymentNumber, supplierId, amount, paymentDate, description, apAccountId, cashAccountId } = params;
+  if (!(amount > 0) || !apAccountId || !cashAccountId) return null;
+  return {
+    header: {
+      journal_number: journalNumber,
+      entry_date: paymentDate,
+      reference_number: paymentNumber,
+      description,
+      total_debit: amount,
+      total_credit: amount,
+      is_balanced: true,
+      status: "posted",
+      entry_type: "supplier_payment_reversal",
+    },
+    lines: [
+      { account_id: cashAccountId, debit: amount, credit: 0, description, supplier_id: supplierId, line_order: 1 },
+      { account_id: apAccountId, debit: 0, credit: amount, description, supplier_id: supplierId, line_order: 2 },
+    ],
+  };
+}
 
 /**
  * Post a supplier payment to the ledger. Resolves AP and cash/bank by their

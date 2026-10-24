@@ -28,6 +28,9 @@ const APPROVED_VEHICLE_FIELDS = [
   "created_at", "daily_rate", "weekly_rate", "monthly_rate", "sale_price",
   "fuel_type", "transmission", "seats", "location", "image_url",
   "gallery_images", "plate_number",
+  // Display fields the public fleet/detail pages render. They describe the car
+  // to a buyer/renter; none of them is commercial or identifying data.
+  "body_type", "condition", "description", "features",
 ];
 
 const FORBIDDEN_VEHICLE_FIELDS = [

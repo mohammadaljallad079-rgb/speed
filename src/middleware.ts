@@ -38,7 +38,6 @@ const PROTECTED_PAGE_PREFIXES = [
   "/purchase-orders",
   "/rentals",
   "/cars",
-  "/fleet",
   "/customers",
   "/suppliers",
   "/supplier-payments",
@@ -64,6 +63,10 @@ const PROTECTED_PAGE_PREFIXES = [
 
 /** True when a page path must have a session (else redirect to /login). */
 export function isProtectedPage(pathname: string): boolean {
+  // `/cars/[id]` is the PUBLIC vehicle detail page an anonymous visitor reaches
+  // from the marketing site; only the ERP fleet register (`/cars`, `/cars/new`)
+  // needs a session. `/fleet` is public marketing too (it renders PublicNavbar).
+  if (pathname.startsWith("/cars/") && pathname !== "/cars/new") return false;
   return PROTECTED_PAGE_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );

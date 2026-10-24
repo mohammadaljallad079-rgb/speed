@@ -15,6 +15,12 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
  * never leave the server even though the caller is anonymous.
  */
 
+/**
+ * The public marketing pages need the catalogue and display fields, so those are
+ * projected too. What must never appear: purchase cost / supplier / date,
+ * VIN / chassis / engine numbers, insurance and registration terms, maintenance
+ * cost and internal notes. Those stay server-side even for an anonymous caller.
+ */
 const PUBLIC_VEHICLE_COLUMNS = [
   "id",
   "make",
@@ -36,6 +42,10 @@ const PUBLIC_VEHICLE_COLUMNS = [
   "image_url",
   "gallery_images",
   "plate_number",
+  "body_type",
+  "condition",
+  "description",
+  "features",
 ].join(", ");
 
 export async function GET(request: NextRequest) {

@@ -3,7 +3,7 @@ import { Suspense } from 'react'
 export const dynamic = "force-dynamic"
 import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
-import { supabase, Car } from '@/lib/supabase'
+import type { Car } from '@/lib/supabase'
 import { useLanguage } from '@/lib/LanguageContext'
 import { formatCurrency } from '@/lib/utils'
 import PublicNavbar from '@/components/PublicNavbar'
@@ -36,8 +36,13 @@ function FleetContent() {
   })
 
   useEffect(() => {
-    supabase.from('cars').select('*').eq('status', 'available').order('created_at', { ascending: false })
-      .then(({ data }) => { setCars(data || []); setLoading(false) })
+    // This page is public marketing (PublicNavbar, no session), so it reads the
+    // sanctioned public feed. A direct `cars` read would be blocked by RLS for
+    // an anonymous visitor and would expose internal columns if it were not.
+    fetch('/api/public/vehicles')
+      .then(res => res.json())
+      .then(json => { setCars(json.data || []); setLoading(false) })
+      .catch(() => setLoading(false))
   }, [])
 
   const makes = useMemo(() => ['all', ...Array.from(new Set(cars.map(c => c.make).filter(Boolean))).sort()], [cars])

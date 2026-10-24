@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ArrowLeft, FileText, User, Car, Calendar, DollarSign, CheckCircle, XCircle, Clock, CreditCard, Save, Loader2, Receipt } from 'lucide-react'
 import Link from 'next/link'
 import { nextDocumentNumber } from '@/lib/numbering'
+import { carStatusForContractChange } from '@/lib/rental/car-status'
 import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
 
 const supabase = createClient(
@@ -60,6 +61,12 @@ function PageContent() {
   async function updateStatus(status: string) {
     setApproving(true)
     await supabase.from('rental_contracts').update({ status }).eq('id', id)
+    // A terminal transition returns the vehicle to the pool; otherwise the
+    // denormalised `cars.status` flag stays `rented` forever (Exec 57).
+    const releaseStatus = carStatusForContractChange(status)
+    if (releaseStatus && contract?.car_id) {
+      await supabase.from('cars').update({ status: releaseStatus }).eq('id', contract.car_id)
+    }
     if (status === 'active') {
       const { data: existingInvoice } = await supabase.from('invoices').select('id').eq('rental_contract_id', id).maybeSingle()
       if (!existingInvoice) {

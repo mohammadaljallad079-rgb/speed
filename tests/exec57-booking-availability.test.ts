@@ -10,6 +10,7 @@ import {
   type BookingDb,
 } from "../src/lib/rental/booking-service.ts";
 import { resolveCustomerTenantId } from "../src/lib/rental/customer-tenant.ts";
+import { carStatusForContractChange } from "../src/lib/rental/car-status.ts";
 
 const ROOT = path.join(import.meta.dirname, "..");
 const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
@@ -206,5 +207,23 @@ describe("the dashboard message distinguishes 'no cars' from 'none free'", () =>
     // otherwise it is shown before any date is picked and misleads the user.
     assert.match(src, /startDate\s*&&\s*endDate[\s\S]{0,400}?Try changing the dates/);
     assert.match(src, /No cars are available right now/);
+  });
+});
+
+describe("a terminal contract transition releases the car", () => {
+  test("completed / cancelled / closed / returned release; live states do not", () => {
+    for (const s of ["completed", "cancelled", "closed", "returned", " Completed "]) {
+      assert.equal(carStatusForContractChange(s), "available", s);
+    }
+    for (const s of ["pending", "active", "reserved", null, undefined, ""]) {
+      assert.equal(carStatusForContractChange(s), null, String(s));
+    }
+  });
+
+  test("the rental screens call the helper instead of leaving the flag stuck", () => {
+    const list = read("src/app/rentals/page.tsx");
+    assert.match(list, /from\(['"]cars['"]\)\.update\(\{\s*status:\s*['"]available['"]\s*\}\)/);
+    const detail = read("src/app/rentals/[id]/page.tsx");
+    assert.match(detail, /carStatusForContractChange/);
   });
 });

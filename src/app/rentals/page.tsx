@@ -193,6 +193,11 @@ function RentalsPageContent() {
 
       if (invoice && (invoice.paid_amount || 0) + amount >= invoice.total_amount) {
         await supabase.from('rental_contracts').update({ status: 'completed' }).eq('id', selectedContract.id)
+        // Release the vehicle: the denormalised flag must not stay `rented` after
+        // the rental is finished (Exec 57).
+        if (selectedContract.car_id) {
+          await supabase.from('cars').update({ status: 'available' }).eq('id', selectedContract.car_id)
+        }
       }
 
       setPaymentModalOpen(false)

@@ -4,9 +4,10 @@
 **Repository:** `github.com/mohammadaljallad079-rgb/speed`
 **Branch:** `feat/final-hardening-round5`
 **Base commit:** `127ead3cfe7294fd16ac52f5275741405c8e3488` (Exec 53, last verified)
-**Commits:** `318e0ae` (purchasing/accounting closure) → `9348ad7` (screenshot fix)
-→ `9925845` (report + AGENTS.md, docs-only)
-**Branch tip:** `9925845d3a87f725b736a9bcaa0ec9353669ce74`
+**Functional commits:** `318e0ae` (purchasing/accounting closure) → `9348ad7`
+(screenshot fix). Documentation commits (this report + AGENTS.md) follow and change
+no code. The exact pushed tip is reported in the delivery summary and is an ancestor
+chain of `9348ad7`.
 **Pushed:** fast-forward to `origin/feat/final-hardening-round5` (no force)
 **Scope:** close the remaining accounting-integrity, purchasing and reporting gaps,
 add the nine missing purchasing/expense reports, and prove every screen in a real

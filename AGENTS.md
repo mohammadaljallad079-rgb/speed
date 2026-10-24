@@ -1338,3 +1338,30 @@ that applies the filters it is given and returns only affected rows.
 - `tests/exec51-role-hardening.test.ts` guards the migration's intent; it is in
   `test:core`. Do not re-introduce an `auth.uid() is null` service check.
 
+
+## Execution 52 invariants (customer booking flow — car must appear)
+
+- **One customer booking path.** `src/lib/rental/booking-service.ts` owns the
+  customer portal's car list and booking creation. The browser never reads `cars`
+  or inserts `rental_contracts`; it calls `GET /api/customer/available-cars` and
+  `POST /api/customer/bookings`. Both are `requireContext(..., { allowRoles:
+  ["client"] })` and take the tenant/customer from the session, never the body.
+- **Root cause fixed:** the portal used the browser client with
+  `.eq('status','available')` and **no tenant filter**, while a customer account
+  had no `tenant_id`. A tenant-less customer therefore saw every company's cars
+  (and, if RLS were enabled, would have seen none). `customer-signup` now stamps
+  the resolved company (unambiguous: the sole car-owning tenant, else the sole
+  `tenants` row) onto the `customers`/`users` rows.
+- **Scoping mirrors the RLS predicate:** tenant-bound callers get
+  `.eq('tenant_id', t)`, tenant-less callers get `.is('tenant_id', null)`. Do not
+  replace this with an unscoped read.
+- **Availability is status + category + window.** Only `status='available'` and
+  `category in ('rental','both')` are rentable (a `sale` car is not). A booking
+  occupies a half-open `[start,end)` interval; an overlapping `pending/active/
+  confirmed/reserved/approved/ongoing/rented` contract hides the car and rejects a
+  duplicate with **409**.
+- **Price is computed server-side** from the car's own rates; a client-supplied
+  amount is never trusted. The booking is stamped with the **car's** tenant (which
+  the scoped read proved is the caller's), so `tenant_id` cannot be smuggled in.
+- `/customer-dashboard` and `/booking` are in `PROTECTED_PAGE_PREFIXES`.
+  `tests/customer-booking-flow.test.ts` (in `test:core`) guards all of the above.

@@ -1,0 +1,329 @@
+import { ApiError, badRequest, invalidReference } from "../auth/errors";
+import { nextDocumentNumber } from "../numbering";
+
+/**
+ * Customer self-service booking core.
+ *
+ * Pure of transport and of the concrete database: it reaches the database only
+ * through the injectable `BookingDb` port, so the availability, tenant-scoping,
+ * pricing and double-booking rules can be exercised against a PostgREST-like
+ * recording stub. Production passes the service-role client.
+ *
+ * Identity and company scope are never read from the request: the route resolves
+ * them from the authenticated session and passes them in here. Every read and
+ * write is scoped by the resolved tenant, mirroring the RLS predicate
+ * (`tenant_id is not distinct from <tenant>`): a tenant-less caller only ever
+ * sees tenant-less rows, a tenant-bound caller only its own.
+ */
+
+type Row = Record<string, unknown>;
+type QueryResult = { data: unknown; error: unknown };
+
+export interface BookingQuery extends PromiseLike<QueryResult> {
+  select(columns?: string): BookingQuery;
+  eq(column: string, value: unknown): BookingQuery;
+  is(column: string, value: null): BookingQuery;
+  in(column: string, values: readonly string[]): BookingQuery;
+  order(column: string, options?: { ascending?: boolean }): BookingQuery;
+  limit(count: number): BookingQuery;
+  maybeSingle(): Promise<QueryResult>;
+  insert(rows: Row | Row[]): BookingQuery;
+  single(): Promise<QueryResult>;
+}
+
+export interface BookingDb {
+  from(table: string): BookingQuery;
+  rpc(fn: string, args: Record<string, unknown>): PromiseLike<QueryResult>;
+}
+
+/** A rental document as presented to the customer portal (safe projection). */
+export type AvailableCar = {
+  id: string;
+  make: string | null;
+  model: string | null;
+  year: number | null;
+  color: string | null;
+  category: string | null;
+  seats: number | null;
+  transmission: string | null;
+  fuel_type: string | null;
+  image_url: string | null;
+  location: string | null;
+  daily_rate: number | null;
+  weekly_rate: number | null;
+  monthly_rate: number | null;
+};
+
+export type RentalType = "daily" | "weekly" | "monthly";
+
+export type BookingScope = {
+  /** Company (tenant) the caller may book in. `null` = the tenant-less install. */
+  tenantId: string | null;
+  /** The caller's own `customers.id` (from the session), never from the body. */
+  customerId: string | null;
+};
+
+export type CreateBookingInput = {
+  carId: string;
+  startDate: string;
+  endDate: string;
+  pickupLocation: string;
+  dropoffLocation: string;
+  notes?: string | null;
+  rentalType?: RentalType;
+};
+
+export type CreatedBooking = {
+  id: string;
+  contractNumber: string;
+  tenantId: string | null;
+};
+
+/**
+ * A car is rentable only when its status is exactly `available` (case/space
+ * tolerant) and it is a rental vehicle. A `sale` car is inventory for sale, not
+ * for rent, so it must never be offered as a booking option.
+ */
+export const RENTABLE_CATEGORIES = ["rental", "both"] as const;
+
+/** Statuses that occupy a car and therefore block an overlapping booking. */
+export const BLOCKING_STATUSES = [
+  "pending",
+  "active",
+  "confirmed",
+  "reserved",
+  "approved",
+  "ongoing",
+  "rented",
+] as const;
+
+const CAR_SELECT =
+  "id,make,model,year,color,category,status,daily_rate,weekly_rate,monthly_rate,seats,transmission,fuel_type,image_url,location,tenant_id";
+
+function text(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function num(value: unknown): number {
+  const n = typeof value === "number" ? value : parseFloat(String(value ?? ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function isCarRentable(car: Row): boolean {
+  const status = text(car.status ?? "available") || "available";
+  if (status !== "available") return false;
+  const category = text(car.category ?? "rental") || "rental";
+  return (RENTABLE_CATEGORIES as readonly string[]).includes(category);
+}
+
+/**
+ * Half-open overlap test: a booking occupies `[start, end)`, so a rental ending
+ * the morning another begins is a turnover, not a conflict. ISO `YYYY-MM-DD`
+ * strings compare correctly as strings.
+ */
+export function periodsOverlap(
+  aStart: string,
+  aEnd: string,
+  bStart: string,
+  bEnd: string,
+): boolean {
+  return aStart < bEnd && bStart < aEnd;
+}
+
+function isIsoDate(value: unknown): value is string {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function assertDateRange(start: unknown, end: unknown): void {
+  if (!isIsoDate(start) || !isIsoDate(end)) throw badRequest("startDate and endDate are required (YYYY-MM-DD)");
+  if (end <= start) throw badRequest("endDate must be after startDate");
+}
+
+function project(car: Row): AvailableCar {
+  return {
+    id: String(car.id),
+    make: (car.make as string) ?? null,
+    model: (car.model as string) ?? null,
+    year: (car.year as number) ?? null,
+    color: (car.color as string) ?? null,
+    category: (car.category as string) ?? null,
+    seats: (car.seats as number) ?? null,
+    transmission: (car.transmission as string) ?? null,
+    fuel_type: (car.fuel_type as string) ?? null,
+    image_url: (car.image_url as string) ?? null,
+    location: (car.location as string) ?? null,
+    daily_rate: (car.daily_rate as number) ?? null,
+    weekly_rate: (car.weekly_rate as number) ?? null,
+    monthly_rate: (car.monthly_rate as number) ?? null,
+  };
+}
+
+/** Scopes a query to the caller's company (or the tenant-less install). */
+function scope(query: BookingQuery, tenantId: string | null): BookingQuery {
+  return tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+}
+
+/** Car ids that already hold a blocking booking overlapping the window. */
+async function busyCarIds(
+  db: BookingDb,
+  start: string,
+  end: string,
+  tenantId: string | null,
+): Promise<Set<string>> {
+  const query = scope(
+    db.from("rental_contracts").select("car_id,start_date,end_date,status"),
+    tenantId,
+  ).in("status", BLOCKING_STATUSES);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const busy = new Set<string>();
+  for (const row of (data ?? []) as Row[]) {
+    if (!row.car_id) continue;
+    if (periodsOverlap(start, end, String(row.start_date), String(row.end_date))) {
+      busy.add(String(row.car_id));
+    }
+  }
+  return busy;
+}
+
+/**
+ * Cars the caller may book: available, rentable, in the caller's company, and
+ * free for the requested window (when one is supplied). The window is optional
+ * so the form can show a company's available cars before dates are chosen.
+ */
+export async function listAvailableCars(
+  db: BookingDb,
+  scopeIn: { tenantId: string | null; start?: string | null; end?: string | null },
+): Promise<AvailableCar[]> {
+  const tenantId = scopeIn.tenantId ?? null;
+
+  const carsQuery = scope(db.from("cars").select(CAR_SELECT), tenantId).eq("status", "available");
+  const { data, error } = await carsQuery.order("created_at", { ascending: false });
+  if (error) throw error;
+
+  let cars = ((data ?? []) as Row[]).filter(isCarRentable);
+
+  const start = scopeIn.start ?? null;
+  const end = scopeIn.end ?? null;
+  if (isIsoDate(start) && isIsoDate(end) && end > start) {
+    const busy = await busyCarIds(db, start, end, tenantId);
+    cars = cars.filter((c) => !busy.has(String(c.id)));
+  }
+
+  return cars.map(project);
+}
+
+/** Price for a window, computed server-side from the car's own rates. */
+export function computePrice(
+  car: Row,
+  start: string,
+  end: string,
+  rentalType: RentalType,
+): { dailyRate: number; totalDays: number; units: number; subtotal: number } {
+  const totalDays = Math.max(1, Math.ceil((Date.parse(end) - Date.parse(start)) / 86_400_000));
+  const daily = num(car.daily_rate);
+  const weekly = num(car.weekly_rate);
+  const monthly = num(car.monthly_rate);
+
+  if (rentalType === "weekly" && weekly > 0) {
+    const units = Math.ceil(totalDays / 7);
+    return { dailyRate: weekly / 7, totalDays, units, subtotal: weekly * units };
+  }
+  if (rentalType === "monthly" && monthly > 0) {
+    const units = Math.ceil(totalDays / 30);
+    return { dailyRate: monthly / 30, totalDays, units, subtotal: monthly * units };
+  }
+  return { dailyRate: daily, totalDays, units: totalDays, subtotal: daily * totalDays };
+}
+
+/**
+ * Creates a booking for the caller's own customer record.
+ *
+ * The company is derived from the *car's* tenant (which the scoped read already
+ * proved is the caller's own), so a caller cannot book into another company by
+ * changing `car_id` or supplying a `tenant_id`. An overlapping blocking booking
+ * for the same car is rejected with 409 before any write.
+ */
+export async function createBooking(
+  db: BookingDb,
+  scopeIn: BookingScope,
+  input: CreateBookingInput,
+): Promise<CreatedBooking> {
+  if (!scopeIn.customerId) throw badRequest("This account is not linked to a customer record");
+  if (!input.carId) throw badRequest("carId is required");
+  assertDateRange(input.startDate, input.endDate);
+
+  const pickup = (input.pickupLocation ?? "").trim();
+  const dropoff = (input.dropoffLocation ?? "").trim();
+  if (!pickup || !dropoff) throw badRequest("pickupLocation and dropoffLocation are required");
+
+  const carQuery = scope(
+    db.from("cars").select("id,category,status,daily_rate,weekly_rate,monthly_rate,tenant_id").eq("id", input.carId),
+    scopeIn.tenantId ?? null,
+  );
+  const { data: carData, error: carError } = await carQuery.maybeSingle();
+  if (carError) throw carError;
+  const car = carData as Row | null;
+  // Not found in the caller's company == unauthorized. 422, never a silent insert.
+  if (!car) throw invalidReference("car_id");
+  if (!isCarRentable(car)) throw badRequest("This car is not available for rent");
+
+  const carTenant = (car.tenant_id as string | null) ?? null;
+
+  const conflictQuery = scope(
+    db.from("rental_contracts").select("id,start_date,end_date,status,car_id").eq("car_id", String(car.id)),
+    carTenant,
+  ).in("status", BLOCKING_STATUSES);
+  const { data: existing, error: conflictError } = await conflictQuery;
+  if (conflictError) throw conflictError;
+  const overlapping = ((existing ?? []) as Row[]).some((r) =>
+    periodsOverlap(input.startDate, input.endDate, String(r.start_date), String(r.end_date)),
+  );
+  if (overlapping) {
+    throw new ApiError(409, "car_unavailable", "This car is already booked for the selected period");
+  }
+
+  const rentalType: RentalType = input.rentalType ?? "daily";
+  const price = computePrice(car, input.startDate, input.endDate, rentalType);
+  const contractNumber = await nextDocumentNumber(db, "rental_contract", "RC");
+
+  const row: Row = {
+    customer_id: scopeIn.customerId,
+    car_id: String(car.id),
+    start_date: input.startDate,
+    end_date: input.endDate,
+    pickup_location: pickup,
+    dropoff_location: dropoff,
+    status: "pending",
+    contract_number: contractNumber,
+    notes: input.notes?.trim() || null,
+    daily_rate: price.dailyRate,
+    total_days: price.totalDays,
+    subtotal: price.subtotal,
+    discount: 0,
+    vat_rate: 0,
+    vat_amount: 0,
+    total_amount: price.subtotal,
+    paid_amount: 0,
+    deposit_amount: 0,
+    rental_type: rentalType,
+  };
+  // The authorized company is the car's tenant, never a value from the body.
+  if (carTenant) row.tenant_id = carTenant;
+
+  const { data: created, error: insertError } = await db
+    .from("rental_contracts")
+    .insert(row)
+    .select("id,contract_number")
+    .single();
+  if (insertError) throw insertError;
+
+  const record = (created ?? {}) as Row;
+  return {
+    id: String(record.id),
+    contractNumber: String(record.contract_number ?? contractNumber),
+    tenantId: carTenant,
+  };
+}

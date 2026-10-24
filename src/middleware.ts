@@ -56,6 +56,7 @@ const PROTECTED_PAGE_PREFIXES = [
   "/erp",
   "/employee-portal",
   "/customer-dashboard",
+  "/booking",
   "/onboarding",
 ];
 

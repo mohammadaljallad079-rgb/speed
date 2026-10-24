@@ -1593,3 +1593,31 @@ that applies the filters it is given and returns only affected rows.
   `feat/final-hardening-round5`. Live confirmed: `/super-admin*` 404, `/fleet`
   307→`/login`, `/login` 200. Publishing is a fast-forward of `main`; deploying
   it is an operator step (no access to the VM from the sandbox).
+
+## Execution 57 invariants (customer booking availability)
+
+- **Availability is derived from contracts, never from `cars.status`.** That
+  column is a denormalised display cache: the application only ever sets it to
+  `rented` and never resets it, so a car that finished a rental stayed `rented`
+  forever and was filtered out of every future booking list. `isCarRentable`
+  now excludes only permanent states (`UNRENTABLE_STATUSES`: maintenance, sold,
+  inactive, out_of_service); `rented` is transient. `listAvailableCars` decides
+  "is this car out" from the open contracts (`BLOCKING_STATUSES`) — with a date
+  window by overlap, with no window by "out today". Never reintroduce
+  `.eq("status", "available")` as an availability filter; the change-vehicle
+  screen had the same defect and is fixed the same way.
+- **A terminal contract transition releases the car.** `carStatusForContractChange`
+  (`src/lib/rental/car-status.ts`, pure) returns `available` for
+  completed/cancelled/closed/returned and `null` for live states. The rental list
+  (payment completes) and the contract detail page apply it, so the display flag
+  cannot drift. Availability still does not depend on it.
+- **The customer tenant follows the cars.** `resolveCustomerTenantId`
+  (`src/lib/rental/customer-tenant.ts`, pure) returns the single tenant that owns
+  the rentable cars, or `null` (the tenant-less scope) when they are split or all
+  tenant-less. A bare `tenants` row is a fallback only when no cars exist.
+  Assigning a tenant that owns none of the cars is exactly what made the portal
+  appear empty; never "fix" a missing assignment by picking the only tenant that
+  exists.
+- `tests/exec57-booking-availability.test.ts` (registered in `test:core`) guards
+  all of the above. Baseline after Exec 57: 1065 tests / 1059 pass / 6 skipped /
+  0 fail; typecheck 0 new errors; lint clean; production build green.

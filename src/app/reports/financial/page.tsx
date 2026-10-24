@@ -6,9 +6,10 @@ import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Scale, TrendingUp, Building2, Banknote, ArrowRight, FileSpreadsheet, BarChart3 } from 'lucide-react'
+import { Scale, TrendingUp, Building2, Banknote, ArrowRight, FileSpreadsheet, BarChart3, BookOpen } from 'lucide-react'
 
 const reports = [
+  { key: 'generalLedger', titleAr: 'دفتر الأستاذ العام', titleEn: 'General Ledger', descAr: 'حركة كل حساب مع الرصيد الجاري', descEn: 'Every account movement with a running balance', icon: BookOpen, href: '/reports/general-ledger', color: 'from-indigo-500 to-indigo-600', bgColor: 'bg-indigo-50', iconColor: 'text-indigo-600' },
   { key: 'trialBalance', titleAr: 'ميزان المراجعة', titleEn: 'Trial Balance', descAr: 'عرض جميع الحسابات مع الأرصدة المدينة والدائنة', descEn: 'View all accounts with debit and credit balances', icon: Scale, href: '/reports/trial-balance', color: 'from-blue-500 to-blue-600', bgColor: 'bg-blue-50', iconColor: 'text-blue-600' },
   { key: 'profitLoss', titleAr: 'قائمة الدخل', titleEn: 'Profit & Loss', descAr: 'الإيرادات والمصروفات وصافي الربح', descEn: 'Revenues, expenses and net profit', icon: TrendingUp, href: '/reports/profit-loss', color: 'from-emerald-500 to-emerald-600', bgColor: 'bg-emerald-50', iconColor: 'text-emerald-600' },
   { key: 'balanceSheet', titleAr: 'الميزانية العمومية', titleEn: 'Balance Sheet', descAr: 'الأصول والخصوم وحقوق الملكية', descEn: 'Assets, liabilities and equity', icon: Building2, href: '/reports/balance-sheet', color: 'from-violet-500 to-violet-600', bgColor: 'bg-violet-50', iconColor: 'text-violet-600' },

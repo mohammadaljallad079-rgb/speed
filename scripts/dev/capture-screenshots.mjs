@@ -14,6 +14,7 @@
 import { chromium } from "playwright";
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 
 const BASE = process.argv[2] ?? "http://localhost:3099";
 const OUT = process.argv[3] ?? "docs/screenshots";
@@ -32,12 +33,53 @@ const SHOTS = [
   { name: "super-admin-ai", path: "/super-admin", auth: true, click: "AI Management" },
   { name: "super-admin-subscriptions", path: "/super-admin", auth: true, click: "Subscriptions" },
   { name: "super-admin-settings", path: "/super-admin", auth: true, click: "Settings" },
+  // Stage 2: the financial statements, rendered from the seeded ledger.
+  { name: "report-general-ledger", path: "/reports/general-ledger", auth: true },
+  { name: "report-trial-balance", path: "/reports/trial-balance", auth: true },
+  { name: "report-profit-loss", path: "/reports/profit-loss", auth: true },
+  { name: "report-balance-sheet", path: "/reports/balance-sheet", auth: true },
+  { name: "report-cash-flow", path: "/reports/cash-flow", auth: true },
+  { name: "report-financial-index", path: "/reports/financial", auth: true },
 ];
 
 const VIEWPORTS = [
   { label: "desktop", width: 1440, height: 1000 },
   { label: "mobile", width: 390, height: 900 },
 ];
+
+/**
+ * Wait until the page has actually painted content.
+ *
+ * A fixed delay is not enough: `next dev` compiles a route on its first request,
+ * so an early screenshot catches a blank frame (which is how two byte-identical
+ * 2.9 KB "screenshots" were produced). Wait for real text, and fail loudly if it
+ * never arrives rather than committing a blank image.
+ */
+async function waitForContent(page, label) {
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const len = await page.evaluate(() => document.body.innerText.trim().length);
+    if (len > 80) {
+      // Let fonts/layout settle before the shot.
+      await page.waitForTimeout(400);
+      return;
+    }
+    await page.waitForTimeout(400);
+  }
+  throw new Error(`[capture] no content rendered for ${label}`);
+}
+
+/** Visit every target once so the dev server has compiled them all. */
+async function warmUp(page, base) {
+  for (const shot of SHOTS) {
+    try {
+      await page.goto(`${base}${shot.path}`, { waitUntil: "networkidle", timeout: 60000 });
+      await page.waitForTimeout(300);
+    } catch {
+      // A warm-up failure is not fatal; the real capture retries.
+    }
+  }
+}
 
 async function main() {
   fs.mkdirSync(OUT, { recursive: true });
@@ -64,24 +106,37 @@ async function main() {
     ]);
     await page.waitForTimeout(2500);
 
+    // Compile every route up front; otherwise the first request for a route
+    // returns a partially-built page and the screenshot catches a blank frame.
+    await warmUp(page, BASE);
+
     for (const shot of SHOTS) {
       const file = path.join(OUT, `${shot.name}-${viewport.label}.png`);
-      if (!shot.auth && shot.path !== "/super-admin") {
-        await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle" });
-        await page.waitForTimeout(1200);
-      } else if (shot.path === "/super-admin" || shot.auth) {
-        await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle" });
-        await page.waitForTimeout(1800);
-      }
-      if (shot.click) {
-        const tab = page.getByRole("button", { name: shot.click, exact: false }).first();
-        if (await tab.count()) {
-          await tab.click();
-          await page.waitForTimeout(1200);
-        } else {
-          console.warn(`[capture] tab not found: ${shot.click}`);
+      const label = `${shot.name}-${viewport.label}`;
+
+      // One retry: the dev server can still be compiling a route, and a single
+      // slow navigation must not fail the whole run.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await page.goto(`${BASE}${shot.path}`, { waitUntil: "networkidle", timeout: 60000 });
+          if (shot.click) {
+            const tab = page.getByRole("button", { name: shot.click, exact: false }).first();
+            if (await tab.count()) {
+              await tab.click();
+              await page.waitForTimeout(1200);
+            } else {
+              console.warn(`[capture] tab not found: ${shot.click}`);
+            }
+          }
+          await waitForContent(page, label);
+          break;
+        } catch (err) {
+          if (attempt >= 3) throw err;
+          console.warn(`[capture] retry ${attempt} for ${label}: ${err.message}`);
+          await page.waitForTimeout(1500);
         }
       }
+
       await page.screenshot({ path: file, fullPage: false });
       captured.push(file);
       console.log(`[capture] ${file}`);
@@ -91,6 +146,18 @@ async function main() {
   }
 
   await browser.close();
+
+  // Two identical images mean a page did not render (or did not change). Fail
+  // rather than commit a blank screenshot that looks like evidence.
+  const hashes = new Map();
+  for (const file of captured) {
+    const hash = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    if (hashes.has(hash)) {
+      throw new Error(`[capture] duplicate screenshot: ${file} == ${hashes.get(hash)}`);
+    }
+    hashes.set(hash, file);
+  }
+
   fs.writeFileSync(path.join(OUT, "MANIFEST.json"), JSON.stringify({ base: BASE, files: captured }, null, 2));
   console.log(`[capture] ${captured.length} screenshots written to ${OUT}`);
 }

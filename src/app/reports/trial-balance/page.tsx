@@ -4,6 +4,7 @@ import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
+import { buildTrialBalance } from '@/lib/reporting/ledger'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -94,10 +95,6 @@ useEffect(() => {
 
   function applyDates() { setFromDate(fromDraft); setToDate(toDraft) }
 
-  function formatNum(n: number | null | undefined): number {
-    return Number(n || 0)
-  }
-
   async function loadData() {
     setLoading(true)
     try {
@@ -115,12 +112,14 @@ useEffect(() => {
 
       if (accErr) throw accErr
 
+      // One read of the period's entries, scoped, then one of all lines. The
+      // opening/period/closing arithmetic is NOT re-derived here: it comes from
+      // `src/lib/reporting/ledger.ts`, the same engine the General Ledger uses,
+      // so the two reports can never disagree about the same ledger.
       const { data: journalEntries, error: jeErr } = await applyReportScope(
         supabase
           .from('journal_entries')
-          .select('id,entry_date')
-          .gte('entry_date', fromDate)
-          .lte('entry_date', toDate),
+          .select('id,entry_date,status'),
         currentScope,
       )
 
@@ -138,82 +137,28 @@ useEffect(() => {
         lines = jlData || []
       }
 
-      const { data: openingEntries, error: oeErr } = await applyReportScope(
-        supabase
-          .from('journal_entries')
-          .select('id,entry_date')
-          .lt('entry_date', fromDate),
-        currentScope,
+      const tb = buildTrialBalance(
+        (accounts || []) as never,
+        (journalEntries || []) as never,
+        lines as never,
+        { from: fromDate, to: toDate },
       )
 
-      if (oeErr) throw oeErr
-
-      const openingEntryIds = (openingEntries || []).map((e: any) => e.id)
-      let openingLines: any[] = []
-      if (openingEntryIds.length > 0) {
-        const { data: olData, error: olErr } = await supabase
-          .from('journal_lines')
-          .select('*')
-          .in('journal_entry_id', openingEntryIds)
-        if (olErr) throw olErr
-        openingLines = olData || []
-      }
-
-      const resultRows: TrialBalanceRow[] = []
-
-      ;(accounts || []).forEach((acc: any) => {
-        const accLines = lines.filter((l: any) => l.account_id === acc.id)
-        const accOpeningLines = openingLines.filter((l: any) => l.account_id === acc.id)
-
-        const movementDebit = accLines.reduce((s: number, e: any) => s + formatNum(e.debit), 0)
-        const movementCredit = accLines.reduce((s: number, e: any) => s + formatNum(e.credit), 0)
-
-        const openingDebit = accOpeningLines.reduce((s: number, e: any) => s + formatNum(e.debit), 0)
-        const openingCredit = accOpeningLines.reduce((s: number, e: any) => s + formatNum(e.credit), 0)
-
-        let closingDebit = 0
-        let closingCredit = 0
-
-        const isDebitNature = ['asset', 'expense'].includes(acc.type)
-        const openingBalance = openingDebit - openingCredit
-        const movementBalance = movementDebit - movementCredit
-
-        if (isDebitNature) {
-          const balance = openingBalance + movementBalance
-          if (balance >= 0) {
-            closingDebit = balance
-            closingCredit = 0
-          } else {
-            closingDebit = 0
-            closingCredit = Math.abs(balance)
-          }
-        } else {
-          const balance = openingCredit - openingDebit + movementCredit - movementDebit
-          if (balance >= 0) {
-            closingCredit = balance
-            closingDebit = 0
-          } else {
-            closingCredit = 0
-            closingDebit = Math.abs(balance)
-          }
-        }
-
-        resultRows.push({
-          id: acc.id,
-          code: acc.code || '',
-          name: acc.name_en || acc.name || '',
-          name_ar: acc.name_ar || acc.name || '',
-          type: acc.type || '',
-          opening_debit: openingDebit,
-          opening_credit: openingCredit,
-          movement_debit: movementDebit,
-          movement_credit: movementCredit,
-          closing_debit: closingDebit,
-          closing_credit: closingCredit
-        })
-      })
-
-      setRows(resultRows)
+      setRows(
+        tb.rows.map((r) => ({
+          id: r.accountId,
+          code: r.code,
+          name: r.name,
+          name_ar: r.nameAr,
+          type: r.type,
+          opening_debit: r.openingDebit,
+          opening_credit: r.openingCredit,
+          movement_debit: r.periodDebit,
+          movement_credit: r.periodCredit,
+          closing_debit: r.closingDebit,
+          closing_credit: r.closingCredit,
+        })),
+      )
     } catch (err) {
       console.error('Trial Balance Error:', err)
     } finally {

@@ -190,6 +190,7 @@ const DEFAULT_ITEMS: SidebarItem[] = [
     children: [
       { id: 'accounts', label_ar: 'شجرة الحسابات', label_en: 'Chart of Accounts', href: '/accounts', is_active: true },
       { id: 'journal', label_ar: 'القيود اليومية', label_en: 'Journal Entries', href: '/accounting/journal-entries', is_active: true },
+      { id: 'general-ledger', label_ar: 'دفتر الأستاذ العام', label_en: 'General Ledger', href: '/reports/general-ledger', is_active: true },
       { id: 'trial-balance', label_ar: 'ميزان المراجعة', label_en: 'Trial Balance', href: '/reports/trial-balance', is_active: true },
       { id: 'balance-sheet', label_ar: 'الميزانية العمومية', label_en: 'Balance Sheet', href: '/reports/balance-sheet', is_active: true },
       { id: 'profit-loss', label_ar: 'قائمة الدخل', label_en: 'Profit & Loss', href: '/reports/profit-loss', is_active: true },

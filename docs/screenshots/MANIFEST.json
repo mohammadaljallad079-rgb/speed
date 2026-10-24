@@ -9,6 +9,12 @@
     "docs/screenshots/super-admin-ai-desktop.png",
     "docs/screenshots/super-admin-subscriptions-desktop.png",
     "docs/screenshots/super-admin-settings-desktop.png",
+    "docs/screenshots/report-general-ledger-desktop.png",
+    "docs/screenshots/report-trial-balance-desktop.png",
+    "docs/screenshots/report-profit-loss-desktop.png",
+    "docs/screenshots/report-balance-sheet-desktop.png",
+    "docs/screenshots/report-cash-flow-desktop.png",
+    "docs/screenshots/report-financial-index-desktop.png",
     "docs/screenshots/super-admin-login-mobile.png",
     "docs/screenshots/erp-public-mobile.png",
     "docs/screenshots/super-admin-overview-mobile.png",
@@ -16,6 +22,12 @@
     "docs/screenshots/super-admin-users-mobile.png",
     "docs/screenshots/super-admin-ai-mobile.png",
     "docs/screenshots/super-admin-subscriptions-mobile.png",
-    "docs/screenshots/super-admin-settings-mobile.png"
+    "docs/screenshots/super-admin-settings-mobile.png",
+    "docs/screenshots/report-general-ledger-mobile.png",
+    "docs/screenshots/report-trial-balance-mobile.png",
+    "docs/screenshots/report-profit-loss-mobile.png",
+    "docs/screenshots/report-balance-sheet-mobile.png",
+    "docs/screenshots/report-cash-flow-mobile.png",
+    "docs/screenshots/report-financial-index-mobile.png"
   ]
 }

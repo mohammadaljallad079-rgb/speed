@@ -85,17 +85,66 @@ const TABLES = {
     { id: "ac3", code: "12001", name: "Accounts Receivable", name_ar: "ذمم مدينة", name_en: "Accounts Receivable", type: "asset", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac4", code: "21001", name: "Accounts Payable", name_ar: "ذمم دائنة", name_en: "Accounts Payable", type: "liability", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac5", code: "41002", name: "Sales Revenue", name_ar: "إيرادات المبيعات", name_en: "Sales Revenue", type: "revenue", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac6", code: "24000", name: "Output VAT", name_ar: "ضريبة المخرجات", name_en: "Output VAT", type: "liability", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac7", code: "51001", name: "Rent Expense", name_ar: "مصروف الإيجار", name_en: "Rent Expense", type: "expense", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac8", code: "31001", name: "Owner Equity", name_ar: "رأس المال", name_en: "Owner Equity", type: "equity", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+  ],
+  // A small, balanced ledger so the financial reports and the General Ledger
+  // render real movements (they read `journal_entries`/`journal_lines` directly).
+  // Debits equal credits: 1,110.000 each.
+  journal_entries: [
+    { id: "je1", journal_number: "JV-0001", entry_date: "2026-04-01", reference_number: "INV-0001", description: "Sale to Ali Hassan", entry_type: "sale_invoice", status: "posted", total_debit: 110, total_credit: 110, is_balanced: true, tenant_id: TENANT_A },
+    { id: "je2", journal_number: "JV-0002", entry_date: "2026-04-05", reference_number: "REC-0001", description: "Collection from Ali Hassan", entry_type: "customer_receipt", status: "posted", total_debit: 110, total_credit: 110, is_balanced: true, tenant_id: TENANT_A },
+    { id: "je3", journal_number: "JV-0003", entry_date: "2026-04-10", reference_number: "EXP-0001", description: "Showroom rent for April", entry_type: "expense", status: "posted", total_debit: 20, total_credit: 20, is_balanced: true, tenant_id: TENANT_A },
+    { id: "je4", journal_number: "JV-0004", entry_date: "2026-04-15", reference_number: "CAP-0001", description: "Owner capital contribution", entry_type: "manual", status: "posted", total_debit: 1000, total_credit: 1000, is_balanced: true, tenant_id: TENANT_A },
+  ],
+  journal_lines: [
+    { id: "jl1", journal_entry_id: "je1", account_id: "ac3", debit: 110, credit: 0, description: "Receivable on INV-0001", line_order: 1 },
+    { id: "jl2", journal_entry_id: "je1", account_id: "ac5", debit: 0, credit: 100, description: "Sales revenue", line_order: 2 },
+    { id: "jl3", journal_entry_id: "je1", account_id: "ac6", debit: 0, credit: 10, description: "Output VAT 10%", line_order: 3 },
+    { id: "jl4", journal_entry_id: "je2", account_id: "ac1", debit: 110, credit: 0, description: "Cash received", line_order: 1 },
+    { id: "jl5", journal_entry_id: "je2", account_id: "ac3", debit: 0, credit: 110, description: "Settle receivable", line_order: 2 },
+    { id: "jl6", journal_entry_id: "je3", account_id: "ac7", debit: 20, credit: 0, description: "April rent", line_order: 1 },
+    { id: "jl7", journal_entry_id: "je3", account_id: "ac2", debit: 0, credit: 20, description: "Paid from bank", line_order: 2 },
+    { id: "jl8", journal_entry_id: "je4", account_id: "ac2", debit: 1000, credit: 0, description: "Capital into bank", line_order: 1 },
+    { id: "jl9", journal_entry_id: "je4", account_id: "ac8", debit: 0, credit: 1000, description: "Owner equity", line_order: 2 },
   ],
   cars: [
     { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A },
   ],
 };
 
-/** Rows a table returns, honouring the simple `eq` filters the pages send. */
+/** Rows a table returns, honouring the simple `eq`/`in` filters the pages send. */
 function selectRows(table, searchParams) {
   let rows = TABLES[table] ?? [];
   for (const [key, value] of searchParams.entries()) {
     if (["select", "order", "limit", "offset", "apikey"].includes(key)) continue;
+    // PostgREST `in.(a,b,c)` — used for `.in("journal_entry_id", ids)`. Without
+    // this a report reads no journal lines and silently shows all-zero balances.
+    if (value.startsWith("in.(")) {
+      const list = value.slice(4, -1).split(",").map((v) => v.replace(/^"|"$/g, ""));
+      rows = rows.filter((r) => list.includes(String(r[key])));
+      continue;
+    }
+    if (value === "is.null") {
+      rows = rows.filter((r) => r[key] == null);
+      continue;
+    }
+    // PostgREST range filters. A report that sends `entry_date=gte.…&lte=…`
+    // would otherwise read zero rows and render an all-zero statement.
+    if (value.startsWith("gte.") || value.startsWith("lte.") || value.startsWith("gt.") || value.startsWith("lt.")) {
+      const op = value.slice(0, value.indexOf("."));
+      const bound = value.slice(op.length + 1);
+      rows = rows.filter((r) => {
+        const v = r[key];
+        if (v == null) return false;
+        if (op === "gte") return String(v) >= bound;
+        if (op === "lte") return String(v) <= bound;
+        if (op === "gt") return String(v) > bound;
+        return String(v) < bound;
+      });
+      continue;
+    }
     const raw = value.startsWith("eq.") ? value.slice(3) : value;
     if (raw === "null") rows = rows.filter((r) => r[key] == null);
     else rows = rows.filter((r) => String(r[key]) === raw);

@@ -247,6 +247,7 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'chart-of-accounts', label_ar: 'شجرة الحسابات', label_en: 'Chart of Accounts', href: '/accounting/chart-of-accounts', is_active: true },
       { id: 'journal-entries', label_ar: 'القيود اليومية', label_en: 'Journal Entries', href: '/accounting/journal-entries', is_active: true },
       { id: 'bank-transfer', label_ar: 'تحويل نقدي', label_en: 'Bank Transfer', href: '/accounting/bank-transfer', is_active: true },
+      { id: 'general-ledger', label_ar: 'دفتر الأستاذ العام', label_en: 'General Ledger', href: '/reports/general-ledger', is_active: true },
       { id: 'trial-balance', label_ar: 'ميزان المراجعة', label_en: 'Trial Balance', href: '/reports/trial-balance', is_active: true },
       { id: 'balance-sheet', label_ar: 'الميزانية العمومية', label_en: 'Balance Sheet', href: '/reports/balance-sheet', is_active: true },
       { id: 'profit-loss', label_ar: 'قائمة الدخل', label_en: 'Profit & Loss', href: '/reports/profit-loss', is_active: true },

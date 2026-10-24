@@ -18,6 +18,7 @@ const PKG_001_003 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_001_002_0
 const PKG_004 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_004.sql");
 const PKG_005_006 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_005_006.sql");
 const PKG_007 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_007.sql");
+const PKG_009 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_009.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -194,3 +195,44 @@ describe("activation package 007", () => {
   });
 });
 
+
+describe("activation package 009", () => {
+  const text = fs.readFileSync(PKG_009, "utf8");
+  const name = "009_depreciation_accounts.sql";
+
+  test(`${name}: embedded body is byte-identical to the migration`, () => {
+    const { body } = embedded(text, `-- BEGIN ${name}`, "-- POST-FLIGHT");
+    assert.equal(body, fs.readFileSync(path.join(MIG, name), "utf8"));
+  });
+
+  test(`${name}: recorded SHA-256 matches the embedded body`, () => {
+    const { hash, body } = embedded(text, `-- BEGIN ${name}`, "-- POST-FLIGHT");
+    assert.ok(hash, "no SHA-256 recorded in the banner");
+    assert.equal(hash, sha(body));
+  });
+
+  test("the migration is embedded exactly once and the flights are present", () => {
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    assert.equal(count(/-- BEGIN 009_depreciation_accounts\.sql/g), 1);
+    assert.match(text, /-- PRE-FLIGHT/);
+    assert.match(text, /-- POST-FLIGHT/);
+    assert.match(text, /END OF PACKAGE/);
+  });
+
+  test("the package contains no destructive or privilege-widening statements", () => {
+    const nonComment = text
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("--"))
+      .join("\n");
+    for (const re of [
+      /\bdrop\s+table\b/i,
+      /\bdrop\s+column\b/i,
+      /\btruncate\b/i,
+      /\bdelete\s+from\b/i,
+      /\bdrop\s+schema\b/i,
+      /\bgrant\s+all\b/i,
+    ]) {
+      assert.doesNotMatch(nonComment, re, `destructive statement: ${re}`);
+    }
+  });
+});

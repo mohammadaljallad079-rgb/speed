@@ -59,5 +59,6 @@ export type AuditAction =
   | "purchase"
   | "sale"
   | "journal_entry"
+  | "depreciation"
   | "permission_change"
   | "settings_change";

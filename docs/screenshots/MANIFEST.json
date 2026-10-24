@@ -15,6 +15,7 @@
     "docs/screenshots/report-balance-sheet-desktop.png",
     "docs/screenshots/report-cash-flow-desktop.png",
     "docs/screenshots/report-financial-index-desktop.png",
+    "docs/screenshots/accounting-depreciation-desktop.png",
     "docs/screenshots/super-admin-login-mobile.png",
     "docs/screenshots/erp-public-mobile.png",
     "docs/screenshots/super-admin-overview-mobile.png",
@@ -28,6 +29,18 @@
     "docs/screenshots/report-profit-loss-mobile.png",
     "docs/screenshots/report-balance-sheet-mobile.png",
     "docs/screenshots/report-cash-flow-mobile.png",
-    "docs/screenshots/report-financial-index-mobile.png"
-  ]
+    "docs/screenshots/report-financial-index-mobile.png",
+    "docs/screenshots/accounting-depreciation-mobile.png"
+  ],
+  "e2e": {
+    "script": "scripts/dev/e2e-depreciation.mjs",
+    "files": [
+      "docs/screenshots/accounting-depreciation-before-post-desktop.png",
+      "docs/screenshots/accounting-depreciation-manual-desktop.png",
+      "docs/screenshots/accounting-depreciation-after-post-desktop.png",
+      "docs/screenshots/accounting-depreciation-in-profit-loss.png",
+      "docs/screenshots/accounting-depreciation-in-balance-sheet.png",
+      "docs/screenshots/accounting-depreciation-mobile.png"
+    ]
+  }
 }

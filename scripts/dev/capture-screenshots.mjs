@@ -40,6 +40,8 @@ const SHOTS = [
   { name: "report-balance-sheet", path: "/reports/balance-sheet", auth: true },
   { name: "report-cash-flow", path: "/reports/cash-flow", auth: true },
   { name: "report-financial-index", path: "/reports/financial", auth: true },
+  // Stage 3: the depreciation screen, whose Post button now writes a real journal.
+  { name: "accounting-depreciation", path: "/accounting/depreciation", auth: true },
 ];
 
 const VIEWPORTS = [

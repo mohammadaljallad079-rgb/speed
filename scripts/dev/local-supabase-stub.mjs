@@ -88,6 +88,9 @@ const TABLES = {
     { id: "ac6", code: "24000", name: "Output VAT", name_ar: "ضريبة المخرجات", name_en: "Output VAT", type: "liability", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac7", code: "51001", name: "Rent Expense", name_ar: "مصروف الإيجار", name_en: "Rent Expense", type: "expense", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac8", code: "31001", name: "Owner Equity", name_ar: "رأس المال", name_en: "Owner Equity", type: "equity", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac9", code: "13001", name: "Vehicle Fleet", name_ar: "أسطول المركبات", name_en: "Vehicle Fleet", type: "asset", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac10", code: "14001", name: "Accumulated Depreciation", name_ar: "مجمع إهلاك الأصول", name_en: "Accumulated Depreciation", type: "asset", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac11", code: "52001", name: "Depreciation Expense", name_ar: "مصروف الإهلاك", name_en: "Depreciation Expense", type: "expense", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
   ],
   // A small, balanced ledger so the financial reports and the General Ledger
   // render real movements (they read `journal_entries`/`journal_lines` directly).
@@ -110,7 +113,10 @@ const TABLES = {
     { id: "jl9", journal_entry_id: "je4", account_id: "ac8", debit: 0, credit: 1000, description: "Owner equity", line_order: 2 },
   ],
   cars: [
-    { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A },
+    { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A, purchase_price: 10000, purchase_date: "2025-01-01" },
+  ],
+  depreciation_schedules: [
+    { id: "ds1", car_id: "car1", method: "straight_line", useful_life_years: 5, salvage_value: 1000, annual_rate: 20, start_date: "2026-12-31", tenant_id: TENANT_A },
   ],
 };
 
@@ -128,6 +134,14 @@ function selectRows(table, searchParams) {
     }
     if (value === "is.null") {
       rows = rows.filter((r) => r[key] == null);
+      continue;
+    }
+    // PostgREST `like.` — the depreciation route finds posted charges for an
+    // asset with `.like("reference_number", "DEP-<car>-%" )`.
+    if (value.startsWith("like.")) {
+      const pattern = value.slice(5);
+      const re = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*") + "$");
+      rows = rows.filter((r) => r[key] != null && re.test(String(r[key])));
       continue;
     }
     // PostgREST range filters. A report that sends `entry_date=gte.…&lte=…`
@@ -198,7 +212,7 @@ function send(res, status, body, headers = {}) {
   res.end(payload);
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
   const path = url.pathname;
 
@@ -219,7 +233,27 @@ const server = http.createServer((req, res) => {
 
   const rest = /^\/rest\/v1\/([A-Za-z_]+)$/.exec(path);
   if (rest) {
-    const rows = selectRows(rest[1], url.searchParams);
+    const table = rest[1];
+    if (req.method === "POST") {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const rows = Array.isArray(body) ? body : [body];
+      TABLES[table] = TABLES[table] ?? [];
+      const created = rows.map((r, i) => {
+        const row = { id: `${table.slice(0, 2)}-new-${TABLES[table].length + i + 1}`, ...r };
+        TABLES[table].push(row);
+        return row;
+      });
+      const wantsObject = String(req.headers.accept ?? "").includes("pgrst.object");
+      return send(res, 201, wantsObject ? created[0] : created);
+    }
+    let rows = selectRows(table, url.searchParams);
+    // PostgREST embed, e.g. `select=*,car:cars(...)`. The depreciation screen
+    // reads the vehicle through this relation.
+    if (/car:cars\(/.test(url.searchParams.get("select") ?? "") && table === "depreciation_schedules") {
+      rows = rows.map((r) => ({ ...r, car: (TABLES.cars ?? []).find((c) => c.id === r.car_id) ?? null }));
+    }
     // `maybeSingle()`/`single()` ask for a bare object via the Accept header.
     const wantsObject = String(req.headers.accept ?? "").includes("pgrst.object");
     if (wantsObject) {

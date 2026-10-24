@@ -1402,3 +1402,70 @@ that applies the filters it is given and returns only affected rows.
   per-tenant isolation of the overview, and the "no direct browser DB access"
   rule. `tests/exec31-receipt-and-rental-posting.test.ts` was moved into
   `test:core` so every suite runs under `npm test`.
+
+## Execution 53 invariants (shared ledger engine + depreciation posting)
+
+### Stage 2 - shared ledger engine and statements
+
+- **One ledger read model.** `src/lib/reporting/ledger.ts` (`buildLedger`,
+  `summarizeAccounts`, `accountBalances`) is the single place that turns
+  `journal_entries` + `journal_lines` + `accounts` into balances. The General
+  Ledger, Trial Balance, P&L, Balance Sheet and Cash Flow screens consume it; do
+  not re-derive balances per page (that is how the four statements drifted apart).
+- **A contra-asset is still an asset.** `Accumulated Depreciation` (14001) has
+  `type='asset'`, so the balance-sheet section total is **cost less accumulated**
+  only if the section sums signed balances (debit - credit). A section that sums
+  `abs(balance)` shows accumulated depreciation as an increase in assets. Section
+  totals are `SectionTotal { debit, credit, balance }` - assert on `.balance`, not
+  on a bare number.
+
+### Stage 3 - depreciation posting (`src/lib/accounting/depreciation-posting.ts`)
+
+- **A schedule is a calculation; posting is a ledger event.** The depreciation
+  screen computed a schedule in the browser and wrote nothing, so the expense was
+  never in the P&L and the contra-asset never on the balance sheet. Posting is now
+  the single path `POST /api/depreciation/post` -> `postDepreciation`:
+  `Dr Depreciation expense (52001) / Cr Accumulated depreciation (14001)`.
+- **The server computes the charge, never the browser.** The route recomputes the
+  amount from the schedule (method, cost, salvage, life) and the accumulated
+  depreciation read from the **ledger**, clamped so accumulated never exceeds the
+  depreciable base. A client-supplied amount is ignored.
+- **Idempotent by `(entry_type='depreciation', reference_number)`.** The reference
+  is `DEP-<car_id>-<period_end>`; re-posting returns the existing journal
+  (`created:false`). Migration 009 adds a supporting lookup index; the partial
+  unique index pattern used by 005 covers the sale/payment types.
+- **An idempotent re-post reports no second charge.** When `created:false`, the
+  route returns `accumulated_after`/`book_value_after` unchanged - reporting
+  `accumulated + amount` would imply a charge that never happened.
+- **Both lookups are tenant-scoped, and a super admin is the only caller not
+  scoped** (`if (!context.isSuperAdmin)`), matching `scopeToCompany`. The
+  accumulated-depreciation query is scoped too: reading another tenant's
+  depreciation for the same asset id would suppress this tenant's charge.
+- **Accounts are seeded by migration 009** (`14001` asset-contra, `52001`
+  expense), idempotently (`where not exists`). The rollback drops only the index
+  and **never deletes a seeded account** (a posted journal may reference it).
+- **`supabase/PRODUCTION_ACTIVATION_009.sql` is generated, never hand-edited** -
+  `node scripts/generate-activation-bundle.mjs` embeds migration 009 verbatim and
+  records its SHA-256. `tests/activation-package-integrity.test.ts` recomputes it.
+  Migration 008 has no package (pre-existing gap, not introduced here).
+
+### Proving it (do not claim DDL or UI works from parsing)
+
+- **Migration 009 is verified by EXECUTION** on real PostgreSQL: the PGlite test
+  in `tests/exec53-stage3-depreciation.test.ts` applies it, re-applies it
+  (idempotent), and rolls it back against a schema mirroring the live tables.
+  `scripts/dev/verify-migration.mjs` (`npm run verify:migration`) is the same
+  proof as a standalone harness.
+- **The posting flow is verified in a REAL browser.** `npm run shots:e2e`
+  (`scripts/dev/e2e-depreciation.mjs`) signs in through the real login form,
+  clicks Post on the depreciation screen, and asserts the journal exists,
+  balances, references the asset, is not duplicated on re-post, and **appears on
+  the P&L and the balance sheet**. Screenshots are written to `docs/screenshots/`.
+- **Bilingual digits break naive assertions.** The Arabic locale renders
+  Arabic-Indic digits (`١٬٨٠٠٫٠٠٠`); normalize `[\u0660-\u0669]`/`[\u06f0-\u06f9]`
+  and the Arabic separators before matching a figure, or a correct number reads as
+  absent.
+- **Local-only tooling.** `scripts/dev/local-supabase-stub.mjs` serves the fixed
+  dataset; nothing here touches a real Supabase project. Run it via
+  `bash scripts/dev/run-dev.sh <port>` (which clears a stale `.next` first - a
+  stale cache serves dead chunk URLs and the page never hydrates).

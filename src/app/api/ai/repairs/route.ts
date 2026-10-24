@@ -4,8 +4,16 @@ import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import type { ReportingDb } from "@/lib/reporting/data";
 import { loadTemplates, saveTemplate, type SettingsDb } from "@/lib/reporting/templates";
-import { allowedRepairActions, getRepairAction, selectRepairActions } from "@/lib/ai/repair-catalog";
+import type { TemplateDb } from "@/lib/templates/document-template-store";
+import {
+  allowedRepairActions,
+  getRepairAction,
+  isDocumentTemplateRequest,
+  selectDocumentTemplateActions,
+  selectRepairActions,
+} from "@/lib/ai/repair-catalog";
 import { createResilientRepairStore, createSupabaseRepairStore, type SupabaseClientLike } from "@/lib/ai/repair-store";
+import { DOCUMENT_KINDS, DOCUMENT_LABELS } from "@/lib/templates/document-templates";
 import {
   createMemoryIdempotency,
   executeRepair,
@@ -44,6 +52,7 @@ function buildDeps(context: { tenantId: string | null }): RepairDeps {
     tenantId: context.tenantId,
     loadTemplates: (tenantId) => loadTemplates(supabaseAdmin as unknown as SettingsDb, tenantId),
     saveTemplate: (tenantId, template) => saveTemplate(supabaseAdmin as unknown as SettingsDb, tenantId, template),
+    templates: supabaseAdmin as unknown as TemplateDb,
   };
 }
 
@@ -57,6 +66,7 @@ export async function POST(request: Request) {
     if (op === "catalog") {
       return NextResponse.json({
         success: true,
+        documentKinds: DOCUMENT_KINDS.map((k) => ({ kind: k, ...DOCUMENT_LABELS[k] })),
         actions: allowedRepairActions(context).map((a) => ({
           id: a.id,
           titleAr: a.titleAr,
@@ -74,7 +84,11 @@ export async function POST(request: Request) {
 
     if (op === "propose") {
       const prompt = String(body.prompt ?? "").slice(0, 4000);
-      const candidates = selectRepairActions(context, prompt);
+      // A document-design request routes to the document-template actions;
+      // everything else routes to the report/repair actions. Deterministic.
+      const candidates = isDocumentTemplateRequest(prompt)
+        ? selectDocumentTemplateActions(context, prompt)
+        : selectRepairActions(context, prompt);
       const chosenId = body.action ? String(body.action) : candidates[0]?.action;
       if (!chosenId) {
         return NextResponse.json(
@@ -85,7 +99,7 @@ export async function POST(request: Request) {
       const proposal = await proposeRepair(
         context,
         chosenId,
-        { prompt, name: body.name, from: body.from, to: body.to },
+        { prompt, name: body.name, from: body.from, to: body.to, documentKind: body.documentKind },
         buildDeps(context),
       );
       await logAudit(context, {

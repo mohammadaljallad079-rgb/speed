@@ -3,6 +3,7 @@ import type { PermissionAction } from "@/lib/auth/permissions";
 import { can } from "@/lib/auth/policy";
 import { classifyRepairRequest, type RepairClassification } from "./policy";
 import { isReportKind } from "@/lib/reporting/definitions";
+import { isDocumentKind, DOCUMENT_KINDS, type DocumentKind } from "@/lib/templates/document-templates";
 import type { ReportKind } from "@/lib/reporting/types";
 
 /**
@@ -30,7 +31,10 @@ export type RepairActionId =
   | "report_validation"
   | "dashboard_revenue_reconciliation"
   | "date_filter_diagnostic"
-  | "save_report_format_template";
+  | "save_report_format_template"
+  | "document_template_preview"
+  | "save_document_template"
+  | "restore_document_template";
 
 export interface RepairActionSpec {
   id: RepairActionId;
@@ -115,6 +119,45 @@ export const REPAIR_ACTIONS: RepairActionSpec[] = [
     inputSchema: { ar: "اسم القالب، نوع التقرير، الطلب النصي، فترة اختيارية", en: "template name, report kind, text request, optional period" },
     descriptionAr: "يحفظ قالب تنسيق قابلًا لإعادة الاستخدام في مخزن الإعدادات (tenant-scoped). لا يغيّر أي بيانات محاسبية.",
     descriptionEn: "Saves a reusable format template in the tenant-scoped settings store. Changes no accounting data.",
+  },
+  {
+    id: "document_template_preview",
+    titleAr: "معاينة تعديل قالب مستند",
+    titleEn: "Document template preview",
+    modules: ["settings", "documents", "templates"],
+    effect: "read",
+    permission: { module: "settings", action: "view" },
+    risk: "low",
+    requiresApproval: false,
+    inputSchema: { ar: "نوع المستند، الطلب النصي", en: "document kind + text request" },
+    descriptionAr: "يبني تعديل قالب المستند (شعار، حقول، ألوان، اتجاه) من الطلب ويعرض القبل/بعد دون حفظ.",
+    descriptionEn: "Builds a document-template change (logo, fields, colours, direction) from the request and shows before/after without saving.",
+  },
+  {
+    id: "save_document_template",
+    titleAr: "حفظ قالب مستند",
+    titleEn: "Save document template",
+    modules: ["settings", "documents", "templates"],
+    effect: "settings",
+    permission: { module: "settings", action: "edit" },
+    risk: "medium",
+    requiresApproval: true,
+    inputSchema: { ar: "نوع المستند، الطلب النصي، اسم اختياري", en: "document kind, text request, optional name" },
+    descriptionAr: "يحفظ قالب المستند المخصص للشركة (tenant-scoped) بعد الموافقة، ويحتفظ بنسخة سابقة للاستعادة.",
+    descriptionEn: "Persists the company-specific document template (tenant-scoped) after approval, keeping a prior version for restore.",
+  },
+  {
+    id: "restore_document_template",
+    titleAr: "استعادة إصدار سابق من قالب المستند",
+    titleEn: "Restore a previous document template",
+    modules: ["settings", "documents", "templates"],
+    effect: "settings",
+    permission: { module: "settings", action: "edit" },
+    risk: "medium",
+    requiresApproval: true,
+    inputSchema: { ar: "نوع المستند", en: "document kind" },
+    descriptionAr: "يعيد الإصدار السابق من قالب المستند كإصدار جديد (سجل الإصدارات).",
+    descriptionEn: "Restores the previous version of a document template as a new version (version history).",
   },
 ];
 
@@ -229,6 +272,55 @@ export function selectRepairActions(context: AuthContext, prompt: string): Repai
   return candidates;
 }
 
+/**
+ * Candidate actions for a *document template* request (invoice/contract/...).
+ * Deterministic: a prompt that names a document and a design change routes here,
+ * and only the actions the caller may run are returned. A save is offered only
+ * when the request actually asks to save/apply.
+ */
+export function selectDocumentTemplateActions(context: AuthContext, prompt: string): RepairCandidate[] {
+  const out: RepairCandidate[] = [];
+  if (canRunRepairAction(context, "document_template_preview")) {
+    out.push({
+      action: "document_template_preview",
+      kind: "sales_report",
+      reasonAr: "معاينة قالب المستند تعرض القبل/بعد دون حفظ.",
+      reasonEn: "A document-template preview shows before/after without saving.",
+    });
+  }
+  const wantsSave = /(احفظ|حفظ|طبّق|طبق|اعتمد|apply|save|persist)/i.test(prompt);
+  if (wantsSave && canRunRepairAction(context, "save_document_template")) {
+    out.push({
+      action: "save_document_template",
+      kind: "sales_report",
+      reasonAr: "حفظ قالب المستند يتطلب موافقة صريحة.",
+      reasonEn: "Saving a document template requires an explicit approval.",
+    });
+  }
+  if (canRunRepairAction(context, "restore_document_template")) {
+    out.push({
+      action: "restore_document_template",
+      kind: "sales_report",
+      reasonAr: "استعادة الإصدار السابق من قالب المستند.",
+      reasonEn: "Restore the previous version of the document template.",
+    });
+  }
+  return out;
+}
+
+/**
+ * True when a prompt is about a printable document template rather than a
+ * report. Used by the route to choose between the report and document candidate
+ * sets. Deterministic keyword matching only.
+ */
+export function isDocumentTemplateRequest(prompt: string): boolean {
+  const docWord = /(invoice|contract|receipt|quotation|voucher|statement|bill|debit\s*note|purchase\s*order|requisition)/i.test(prompt) ||
+    /فاتورة|عقد|سند|عرض\s*سعر|كشف|إشعار|اشعار|أمر\s*شراء|طلب\s*شراء|مستند/.test(prompt);
+  const designWord = /(logo|design|template|layout|header|footer|branding|colour|color|font|signature|stamp)/i.test(prompt) ||
+    /شعار|تصميم|قالب|تنسيق|ترويسة|تذييل|لون|خط|توقيع|ختم/.test(prompt);
+  return docWord && designWord;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Input validation and plan fingerprint                                       */
 /* -------------------------------------------------------------------------- */
@@ -240,6 +332,8 @@ const MAX_RANGE = 20;
 export interface RepairPlan {
   action: RepairActionId;
   kind?: ReportKind;
+  /** Set only for the document-template actions. */
+  documentKind?: DocumentKind;
   /** Whitelisted, canonical parameters only. */
   params: {
     prompt?: string;
@@ -256,6 +350,8 @@ export interface RepairInput {
   name?: unknown;
   from?: unknown;
   to?: unknown;
+  /** Document kind for the document-template actions. */
+  documentKind?: unknown;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -285,6 +381,45 @@ export function validateRepairInput(action: string, input: RepairInput): Validat
   const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, MAX_PROMPT) : "";
   const from = cleanRange(input.from);
   const to = cleanRange(input.to);
+
+  // Document-template actions: the kind is a DocumentKind, never a ReportKind.
+  const isDocAction =
+    spec.id === "document_template_preview" ||
+    spec.id === "save_document_template" ||
+    spec.id === "restore_document_template";
+
+  if (isDocAction) {
+    const rawDocKind = typeof input.documentKind === "string" ? input.documentKind.trim() : "";
+    if (!isDocumentKind(rawDocKind)) {
+      return {
+        ok: false,
+        error: {
+          code: "bad_request",
+          ar: `نوع المستند مطلوب (${DOCUMENT_KINDS.join(", ")}).`,
+          en: `A supported document kind is required (${DOCUMENT_KINDS.join(", ")}).`,
+        },
+      };
+    }
+    const docParams: RepairPlan["params"] = { from: null, to: null };
+    if (prompt) docParams.prompt = prompt;
+    if (spec.id === "save_document_template") {
+      const name = typeof input.name === "string" ? input.name.trim().slice(0, MAX_NAME) : "";
+      if (name) docParams.name = name;
+      if (!prompt) {
+        return { ok: false, error: { code: "bad_request", ar: "الطلب النصي مطلوب للحفظ.", en: "A text request is required to save." } };
+      }
+    }
+    return {
+      ok: true,
+      plan: {
+        action: spec.id,
+        documentKind: rawDocKind,
+        params: docParams,
+        effect: spec.effect,
+        requiresApproval: spec.requiresApproval,
+      },
+    };
+  }
 
   const needsPrompt = spec.id === "report_format_preview" || spec.id === "save_report_format_template";
 
@@ -351,6 +486,7 @@ export function planFingerprint(plan: RepairPlan): string {
   return stableFingerprint({
     action: plan.action,
     kind: plan.kind ?? null,
+    documentKind: plan.documentKind ?? null,
     params: plan.params,
   });
 }

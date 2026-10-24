@@ -9,6 +9,21 @@ import type { FormatTemplate } from "@/lib/reporting/plan";
 import { summarizeRevenue, type RevenueInvoice, type RevenueReturn } from "@/lib/reporting/revenue";
 import { validateReport, type ValidationColumn } from "@/lib/reporting/validation";
 import { classifyRepairRequest, type RepairClassification } from "./policy";
+import {
+  applyTemplateRequest,
+  diffTemplates,
+  DOCUMENT_LABELS,
+  isDocumentKind,
+  type DocumentKind,
+  type DocumentTemplate,
+} from "@/lib/templates/document-templates";
+import {
+  getDocumentTemplate,
+  saveDocumentTemplate,
+  restoreDocumentTemplate,
+  loadDocumentTemplates,
+  type TemplateDb,
+} from "@/lib/templates/document-template-store";
 import type { RepairStore } from "./repair-store";
 import {
   getRepairAction,
@@ -49,6 +64,8 @@ export interface RepairDeps {
   saveTemplate: (tenantId: string | null, template: FormatTemplate) => Promise<unknown>;
   /** Clock, so expiry is deterministic in tests. */
   now?: () => number;
+  /** Document-template store (injected; production passes supabaseAdmin). */
+  templates?: TemplateDb;
 }
 
 export type RepairProposalStatus =
@@ -75,6 +92,8 @@ export interface RepairProposal {
   proposalId: string;
   action: RepairActionId;
   kind: ReportKind | null;
+  /** Set only for the document-template actions. */
+  documentKind?: DocumentKind | null;
   params: RepairPlan["params"];
   effect: RepairEffect;
   requiresApproval: boolean;
@@ -298,6 +317,57 @@ function planToTemplate(kind: ReportKind, name: string, prompt: string): FormatT
   };
 }
 
+/**
+ * Document-template preview (read-only). Builds the proposed template and the
+ * before/after diff without persisting anything. The request is parsed
+ * deterministically (`applyTemplateRequest`) - the model never supplies a
+ * template.
+ */
+async function documentTemplatePreview(plan: RepairPlan, deps: RepairDeps): Promise<RepairPreview> {
+  const kind = (plan.documentKind ?? "sales_invoice") as DocumentKind;
+  const label = DOCUMENT_LABELS[kind];
+  const db = deps.templates;
+  if (!db) {
+    return {
+      action: plan.action,
+      kind: null,
+      before: {},
+      after: {},
+      diff: [],
+      dataSource: "document-template-store (unavailable)",
+      rowCount: 0,
+      issues: [{ noteAr: "مخزن قوالب المستندات غير مهيّأ.", noteEn: "The document-template store is not configured." }],
+    };
+  }
+  const before = await getDocumentTemplate(db, deps.tenantId, kind);
+  const { template: after, changes, unapplied } = applyTemplateRequest(before, plan.params.prompt ?? "");
+  const diff = diffTemplates(before, after);
+  return {
+    action: plan.action,
+    kind: null,
+    before: {
+      documentKind: kind,
+      template: before,
+    },
+    after: {
+      documentKind: kind,
+      template: after,
+      changeCount: changes.length,
+    },
+    diff: diff.map((d) => `${d.label}: ${d.before} -> ${d.after}`),
+    dataSource: `settings:document_templates (${label.en})`,
+    rowCount: changes.length,
+    issues: [
+      ...(changes.length === 0
+        ? [{ noteAr: "لم يتم التعرف على أي تغيير قابل للتطبيق في الطلب.", noteEn: "No applicable change was recognised in the request." }]
+        : []),
+      ...(unapplied.length
+        ? [{ noteAr: `طلبات غير قابلة للتطبيق تلقائيًا: ${unapplied.join(", ")}.`, noteEn: `Requests that need a manual file/value: ${unapplied.join(", ")}.` }]
+        : []),
+    ],
+  };
+}
+
 async function buildPreviewFor(
   action: RepairActionId,
   plan: RepairPlan,
@@ -305,6 +375,10 @@ async function buildPreviewFor(
 ): Promise<RepairPreview> {
   const kind = plan.kind ?? "sales_report";
   const ctx: AssistantContext = { db: deps.db, tenantId: deps.tenantId, companyName: deps.companyName ?? null };
+
+  if (action === "document_template_preview" || action === "save_document_template" || action === "restore_document_template") {
+    return documentTemplatePreview(plan, deps);
+  }
 
   if (action === "dashboard_revenue_reconciliation") {
     return revenueReconciliation(plan, deps);
@@ -443,8 +517,14 @@ export async function proposeRepair(
 
   // Evidence gate: when the request carries nothing deterministic to check, do
   // not run a diagnostic that would guess — return a "requires verification"
-  // diagnosis with the sources a human should consult.
-  if (diagnosis.requiresVerification) {
+  // diagnosis with the sources a human should consult. A document-template
+  // request already names its document and its change, so the gate does not
+  // apply: the preview is deterministic regardless of the diagnosis.
+  const isDocAction =
+    spec.id === "document_template_preview" ||
+    spec.id === "save_document_template" ||
+    spec.id === "restore_document_template";
+  if (diagnosis.requiresVerification && !isDocAction) {
     return {
       ...base,
       kind: plan.kind ?? null,
@@ -468,6 +548,7 @@ export async function proposeRepair(
   return {
     ...base,
     kind: plan.kind ?? null,
+    documentKind: plan.documentKind ?? null,
     params: plan.params,
     status: spec.effect === "read" ? "ready" : "needs_approval",
     preview,
@@ -632,6 +713,79 @@ export async function executeRepair(
       action: proposal.action,
       changed: fresh.after,
       verification: { ok: true, detailAr: "نتيجة القراءة/التحقق جاهزة.", detailEn: "Read/validation result is ready.", dataSource: fresh.dataSource },
+      idempotencyKey,
+      reference,
+    };
+  }
+
+  // Write (document templates): apply the deterministic change, persist it, then
+  // re-read the store to verify. Never trusts the model for the template body.
+  if (proposal.action === "save_document_template" || proposal.action === "restore_document_template") {
+    const db = deps.templates;
+    const docKind = proposal.documentKind ?? undefined;
+    if (!db || !docKind || !isDocumentKind(docKind)) {
+      await finalizeClaim("failed", false, [], "invalid document template input", null);
+      return fail("failed", "bad_request", "مدخلات قالب المستند غير صالحة.", "Invalid document-template input.");
+    }
+
+    let result;
+    try {
+      if (proposal.action === "restore_document_template") {
+        result = await restoreDocumentTemplate(db, deps.tenantId, docKind);
+      } else {
+        const before = await getDocumentTemplate(db, deps.tenantId, docKind);
+        const applied = applyTemplateRequest(before, proposal.params.prompt ?? "");
+        if (applied.changes.length === 0) {
+          await finalizeClaim("failed", false, [], "no applicable change", null);
+          return fail("failed", "no_change", "لم يُعرّف أي تغيير قابل للتطبيق.", "No applicable change was recognised.");
+        }
+        const desired: DocumentTemplate = {
+          ...applied.template,
+          name: proposal.params.name || applied.template.name,
+        };
+        result = await saveDocumentTemplate(db, deps.tenantId, desired);
+      }
+    } catch (error) {
+      await finalizeClaim("failed", false, [], `template save failed: ${(error as Error).message}`, null);
+      return fail("failed", "save_failed", "فشل حفظ قالب المستند.", "Failed to save the document template.");
+    }
+
+    if (!result.ok || !result.template) {
+      await finalizeClaim("failed", false, [], `template save rejected: ${result.error}`, null);
+      return fail("failed", "save_failed", "فشل حفظ قالب المستند.", "Failed to save the document template.", {
+        ok: false,
+        detailAr: `فشل الحفظ (${result.error ?? "unknown"}).`,
+        detailEn: `Save failed (${result.error ?? "unknown"}).`,
+      });
+    }
+
+    // Post-execution verification: re-read the store and confirm the version moved.
+    let verified = false;
+    try {
+      const stored = await getDocumentTemplate(db, deps.tenantId, docKind);
+      verified = stored.version >= result.template.version && stored.updatedAt === result.template.updatedAt;
+    } catch (error) {
+      await finalizeClaim("unresolved", null, ["document_templates"], `verify read failed: ${(error as Error).message}`, reference);
+      return fail("unresolved", "unresolved", "تم الحفظ لكن تعذّر التحقق؛ يتطلب مراجعة.", "Saved but verification failed; review required.");
+    }
+    options.idempotency?.mark(idempotencyKey, reference);
+    if (!verified) {
+      await finalizeClaim("failed", false, [], "template version did not change", reference);
+      return fail("failed", "verification_failed", "لم يتم التحقق من حفظ القالب.", "The template save could not be verified.");
+    }
+    await finalizeClaim("succeeded", true, ["document_templates"], `settings:document_templates:${docKind}`, reference);
+    return {
+      ok: true,
+      status: "verified",
+      proposalId: proposal.proposalId,
+      action: proposal.action,
+      changed: { documentKind: docKind, version: result.template.version },
+      verification: {
+        ok: true,
+        detailAr: "تم حفظ قالب المستند والتحقق منه.",
+        detailEn: "Document template saved and verified.",
+        dataSource: `settings:document_templates:${docKind}`,
+      },
       idempotencyKey,
       reference,
     };

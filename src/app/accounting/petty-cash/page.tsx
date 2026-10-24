@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { ArrowLeft, Save, Loader2, Wallet, Plus, Minus, History, X, DollarSign, FileText } from 'lucide-react'
+import RecordSelect from '@/components/records/RecordSelect'
 
 interface PettyCashTransaction {
   id: string
@@ -34,6 +35,8 @@ function PettyCashContent() {
   const [modalType, setModalType] = useState<'fund' | 'expense'>('fund')
   const [amount, setAmount] = useState('')
   const [description, setDescription] = useState('')
+  /** The expense account an expense is charged to (chart-of-accounts selector). */
+  const [expenseAccountId, setExpenseAccountId] = useState('')
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -69,6 +72,11 @@ function PettyCashContent() {
       return
     }
 
+    if (modalType === 'expense' && !expenseAccountId) {
+      alert(isRTL ? 'اختر حساب المصروف' : 'Select the expense account')
+      return
+    }
+
     setSaving(true)
     try {
       const res = await fetch('/api/accounting/petty-cash', {
@@ -79,6 +87,10 @@ function PettyCashContent() {
           amount: numAmount,
           description: description || null,
           transaction_date: new Date().toISOString().split('T')[0],
+          // A petty-cash expense must hit a real expense account (Dr expense /
+          // Cr petty cash). Without it the API keeps the legacy cash leg, which
+          // never touches an expense account at all.
+          expense_account_id: modalType === 'expense' ? expenseAccountId : undefined,
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -88,6 +100,7 @@ function PettyCashContent() {
       setModalOpen(false)
       setAmount('')
       setDescription('')
+      setExpenseAccountId('')
       fetchData()
     } catch (error: any) {
       console.error('Error:', error)
@@ -100,6 +113,7 @@ function PettyCashContent() {
     setModalType(type)
     setAmount('')
     setDescription('')
+    setExpenseAccountId('')
     setModalOpen(true)
   }
 
@@ -209,12 +223,27 @@ function PettyCashContent() {
                 <Label>{isRTL ? 'الوصف' : 'Description'}</Label>
                 <Input type="text" value={description} onChange={e => setDescription(e.target.value)} placeholder={modalType === 'fund' ? (isRTL ? 'سبب التمويل...' : 'Funding reason...') : (isRTL ? 'نوع المصروف...' : 'Expense type...')} className="h-10 rounded-lg" />
               </div>
+              {modalType === 'expense' && (
+                <div className="space-y-2">
+                  <Label>{isRTL ? 'حساب المصروف *' : 'Expense Account *'}</Label>
+                  {/* Chart-of-accounts selector: the expense is charged to a real
+                      ledger account, not to a free-text category. */}
+                  <RecordSelect
+                    kind="account"
+                    value={expenseAccountId}
+                    onChange={(id) => setExpenseAccountId(id)}
+                    createMode="inline"
+                    filter={(row) => row.is_active !== false && row.type !== 'asset' && row.type !== 'liability'}
+                    placeholder={isRTL ? 'اختر حساب المصروف...' : 'Select expense account...'}
+                  />
+                </div>
+              )}
             </div>
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setModalOpen(false)} className="rounded-lg">
                 <X className="w-4 h-4 mr-1" /> {isRTL ? 'إلغاء' : 'Cancel'}
               </Button>
-              <Button onClick={handleSubmit} disabled={saving || !amount || parseFloat(amount || '0') <= 0} className={`rounded-lg gap-1 text-white ${modalType === 'fund' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-500 hover:bg-red-600'}`}>
+              <Button onClick={handleSubmit} disabled={saving || !amount || parseFloat(amount || '0') <= 0 || (modalType === 'expense' && !expenseAccountId)} className={`rounded-lg gap-1 text-white ${modalType === 'fund' ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-red-500 hover:bg-red-600'}`}>
                 {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                 {isRTL ? 'حفظ' : 'Save'}
               </Button>

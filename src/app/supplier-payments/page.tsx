@@ -7,6 +7,7 @@ import { supabase, SupplierPayment, Supplier, PurchaseInvoice } from "@/lib/supa
 import { nextDocumentNumber } from "@/lib/numbering"
 import { postSupplierPayment } from "@/lib/accounting/payment-posting"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
+import RecordSelect from "@/components/records/RecordSelect"
 import {
   Wallet, Plus, Search, ArrowLeft, Save, Trash2, Eye,
   TrendingDown, CreditCard, Calendar, MoreVertical, FileText
@@ -263,16 +264,13 @@ function SupplierPaymentsPageContent() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
-                <select
+                <RecordSelect
+                  kind="supplier"
                   value={form.supplier_id}
-                  onChange={(e) => setForm({ ...form, supplier_id: e.target.value, purchase_invoice_id: '' })}
-                  className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-                >
-                  <option value="">{isRTL ? 'اختر المورد...' : 'Select supplier...'}</option>
-                  {suppliers.map(s => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
+                  onChange={(id) => setForm({ ...form, supplier_id: id, purchase_invoice_id: '' })}
+                  createMode="inline"
+                  placeholder={isRTL ? 'اختر المورد...' : 'Select supplier...'}
+                />
               </div>
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'الفاتورة (اختياري)' : 'Bill (Optional)'}</label>

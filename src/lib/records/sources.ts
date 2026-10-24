@@ -2,20 +2,21 @@
  * Record-field integration rules (pure, infrastructure-free).
  *
  * Every transaction form that references an existing record — a customer on a
- * sales invoice, a supplier on a purchase, a bank on a payment, an account on a
- * journal line — must select that record from its OWN module and must be able to
- * create one inline without leaving the form. This module holds the decision
- * rules behind the reusable `<RecordSelect />`, so the mapping between a field
- * and the module that owns it is declared in exactly one place and can be unit
- * tested without a browser.
+ * sales invoice, a supplier on a purchase, a bank account on a transfer, a ledger
+ * account on a journal line — must select that record from its OWN module and
+ * must be able to create one inline without leaving the form. This module holds
+ * the decision rules behind the reusable `<RecordSelect />`, so the mapping
+ * between a field and the module that owns it is declared in exactly one place
+ * and can be unit tested without a browser.
  *
  * The invariant this file protects: a customer is never selected from the
- * supplier list, a bank is never selected from the chart of accounts, and an
+ * supplier list, a supplier is never selected from the customer list, every
+ * record kind maps to a table that really exists in the live schema, and an
  * inline creation always writes to the module that owns the record.
  */
 
 /** The record types a transaction form may reference. */
-export type RecordKind = "customer" | "supplier" | "bank" | "account" | "car";
+export type RecordKind = "customer" | "supplier" | "account" | "car";
 
 export type RecordSource = {
   kind: RecordKind;
@@ -58,15 +59,13 @@ export const RECORD_SOURCES: Record<RecordKind, RecordSource> = {
     ar: "المورد",
     en: "Supplier",
   },
-  bank: {
-    kind: "bank",
-    table: "banks",
-    listColumns: "id, name, account_number",
-    labelColumn: "name",
-    createRoute: "/accounting/bank-transfer",
-    ar: "البنك",
-    en: "Bank",
-  },
+  /**
+   * There is deliberately no `bank` source. SPEED ERP has no `banks` table
+   * (verified against the live schema and the migration harness table list); a
+   * bank is a ledger account, so a bank field selects from the chart of accounts
+   * (`kind: "account"`) filtered to the bank accounts. A `banks` relation would
+   * fail the whole PostgREST request and silently empty the dropdown.
+   */
   account: {
     kind: "account",
     table: "accounts",

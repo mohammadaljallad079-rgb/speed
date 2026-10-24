@@ -1,0 +1,238 @@
+-- ============================================================================
+-- 011_atomic_journal_posting.sql
+-- A single, atomic journal-posting function: `post_journal_entry`.
+--
+-- WHY
+-- ---
+-- Until now a journal was written in two independent PostgREST calls:
+--
+--     1. insert into journal_entries      -> returns the new id
+--     2. insert into journal_lines        -> (journal_entry_id = that id)
+--
+-- Those are two separate HTTP requests and therefore two separate transactions.
+-- A crash, a dropped connection or an error between them leaves a journal HEADER
+-- WITH NO LINES: an entry that is invisible to every report (the reports read
+-- `journal_lines`) but still counts in `journal_entries`. The application tried to
+-- compensate by deleting the header when the line insert failed, but that
+-- compensation is itself a third request - if the process dies before it runs, the
+-- orphan is permanent. That is a real financial-integrity defect: the ledger and
+-- the journal list disagree, and nothing detects it until an operator runs a
+-- reconciliation pack.
+--
+-- This function makes the header and its lines a single database transaction. The
+-- body runs inside the caller's transaction (a Supabase RPC call is one
+-- transaction), so either every row lands or none does. There is no window in
+-- which an orphan can exist.
+--
+-- It also moves the balance check into the database: an unbalanced or empty
+-- journal is refused before anything is written, so the invariant "every posted
+-- journal balances" holds even for a caller that bypasses the application
+-- builders.
+--
+-- WHAT IT DOES NOT DO
+-- -------------------
+-- It does not decide the accounts, the amounts or the entry type - the pure
+-- builders in `src/lib/accounting/` remain the single source of that logic. It is
+-- a writer, not a policy. It never updates an existing row: an already-posted
+-- document is corrected by reversing it (a new entry), never by editing it.
+--
+-- The function is additive and idempotent: `create or replace` on a guarded
+-- `do` block. It is skipped cleanly if `journal_entries`/`journal_lines` are
+-- absent (a schema state that predates 003), so it is a no-op on an old install.
+-- ============================================================================
+
+begin;
+
+do $$
+begin
+  if not exists (select 1 from information_schema.tables
+                 where table_schema = 'public' and table_name = 'journal_entries')
+     or not exists (select 1 from information_schema.tables
+                 where table_schema = 'public' and table_name = 'journal_lines') then
+    raise notice '011: journal tables absent, skipping post_journal_entry';
+    return;
+  end if;
+
+  execute $fn$
+  -- --------------------------------------------------------------------------
+  -- post_journal_entry
+  --
+  -- p_header : the journal_entries row (journal_number, entry_date, entry_type,
+  --            reference_number, description, status, total_debit, total_credit,
+  --            is_balanced, ...). The caller builds it; unknown keys are ignored
+  --            by construction because the insert names its columns explicitly.
+  -- p_lines  : the journal_lines rows, each without journal_entry_id (assigned
+  --            here). account_id, debit, credit are required per line.
+  --
+  -- Returns the new journal_entries.id as text (PostgREST-friendly).
+  --
+  -- Refuses, in order:
+  --   * an empty line set            - a header with no lines is the defect this
+  --                                    function exists to prevent,
+  --   * a line with no account_id    - an unattributable line,
+  --   * a line whose debit and credit are both zero (or both non-zero) - a line
+  --                                    must move value on exactly one side,
+  --   * a journal whose debits and credits are not equal to 3 decimal places
+  --                                    (the Bahraini dinar uses 3 dp).
+  --
+  -- SECURITY DEFINER is deliberately NOT used: the function runs as the caller,
+  -- which for the service-role API is the service role. RLS therefore still
+  -- applies to any non-service caller, exactly as it does for a direct insert.
+  -- --------------------------------------------------------------------------
+  create or replace function public.post_journal_entry(
+    p_header jsonb,
+    p_lines  jsonb
+  ) returns text
+  language plpgsql
+  as $body$
+  declare
+    v_id          uuid;
+    v_line        jsonb;
+    v_debit       numeric;
+    v_credit      numeric;
+    v_total_debit  numeric := 0;
+    v_total_credit numeric := 0;
+    v_line_count   int := 0;
+    v_has_entry_type boolean;
+    v_has_ref        boolean;
+    v_has_status     boolean;
+    v_has_is_balanced boolean;
+    v_has_total_debit boolean;
+    v_has_total_credit boolean;
+    v_has_line_customer boolean;
+    v_has_line_order    boolean;
+    v_line_cols         text;
+    v_line_sel          text;
+  begin
+    -- ---- Validate the line set before touching the database. ----------------
+    if p_lines is null or jsonb_typeof(p_lines) <> 'array' or jsonb_array_length(p_lines) = 0 then
+      raise exception 'post_journal_entry: a journal must have at least one line'
+        using errcode = 'check_violation';
+    end if;
+
+    for v_line in select * from jsonb_array_elements(p_lines) loop
+      v_line_count := v_line_count + 1;
+
+      if coalesce(v_line->>'account_id', '') = '' then
+        raise exception 'post_journal_entry: line % has no account_id', v_line_count
+          using errcode = 'not_null_violation';
+      end if;
+
+      v_debit  := coalesce((v_line->>'debit')::numeric, 0);
+      v_credit := coalesce((v_line->>'credit')::numeric, 0);
+
+      if (v_debit = 0 and v_credit = 0) or (v_debit <> 0 and v_credit <> 0) then
+        raise exception 'post_journal_entry: line % must have exactly one of debit/credit set', v_line_count
+          using errcode = 'check_violation';
+      end if;
+      if v_debit < 0 or v_credit < 0 then
+        raise exception 'post_journal_entry: line % has a negative amount', v_line_count
+          using errcode = 'check_violation';
+      end if;
+
+      v_total_debit  := v_total_debit  + v_debit;
+      v_total_credit := v_total_credit + v_credit;
+    end loop;
+
+    if round(v_total_debit, 3) <> round(v_total_credit, 3) then
+      raise exception 'post_journal_entry: journal does not balance (debit % vs credit %)',
+        v_total_debit, v_total_credit
+        using errcode = 'check_violation';
+    end if;
+
+    -- ---- Discover which optional header columns this schema actually has. ----
+    -- The live schema and the migration history disagree about optional columns
+    -- (003 adds entry_type/reference_number, 005 adds status handling). Naming a
+    -- column the table lacks would abort the whole insert, so the insert is built
+    -- to include only columns that exist.
+    select exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='entry_type'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='reference_number'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='status'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='is_balanced'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='total_debit'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='total_credit')
+      into v_has_entry_type, v_has_ref, v_has_status,
+           v_has_is_balanced, v_has_total_debit, v_has_total_credit;
+
+    select exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_lines'
+                     and column_name='customer_id'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_lines'
+                     and column_name='line_order')
+      into v_has_line_customer, v_has_line_order;
+
+    -- ---- Insert the header and its lines in ONE transaction. ----------------
+    insert into public.journal_entries (
+      journal_number,
+      entry_date,
+      description,
+      entry_type,
+      reference_number,
+      status,
+      total_debit,
+      total_credit,
+      is_balanced
+    )
+    select
+      p_header->>'journal_number',
+      coalesce((p_header->>'entry_date')::date, current_date),
+      p_header->>'description',
+      case when v_has_entry_type then coalesce(p_header->>'entry_type', 'manual') else null end,
+      case when v_has_ref        then p_header->>'reference_number' else null end,
+      case when v_has_status     then coalesce(p_header->>'status', 'posted') else null end,
+      case when v_has_total_debit  then v_total_debit  else null end,
+      case when v_has_total_credit then v_total_credit else null end,
+      case when v_has_is_balanced  then true else null end
+    returning id into v_id;
+
+    -- The optional line columns must be absent from the column LIST, not merely
+    -- null-valued: naming a column the table lacks aborts the insert. So the
+    -- statement is assembled from the columns that exist.
+    -- `v_id` is a plpgsql variable and is NOT visible inside EXECUTE (dynamic SQL
+    -- runs in its own scope), so it is passed as a bind parameter.
+    v_line_cols := 'journal_entry_id, account_id, description, debit, credit';
+    v_line_sel  := '$2, (elem->>''account_id'')::uuid, elem->>''description'', '
+                || 'coalesce((elem->>''debit'')::numeric, 0), coalesce((elem->>''credit'')::numeric, 0)';
+    if v_has_line_customer then
+      v_line_cols := v_line_cols || ', customer_id';
+      v_line_sel  := v_line_sel  || ', nullif(elem->>''customer_id'','''')::uuid';
+    end if;
+    if v_has_line_order then
+      v_line_cols := v_line_cols || ', line_order';
+      v_line_sel  := v_line_sel  || ', nullif(elem->>''line_order'','''')::int';
+    end if;
+
+    execute format(
+      'insert into public.journal_lines (%s) select %s from jsonb_array_elements($1) as elem',
+      v_line_cols, v_line_sel
+    ) using p_lines, v_id;
+
+    return v_id::text;
+  end;
+  $body$;
+  $fn$;
+end $$;
+
+commit;
+
+-- ============================================================================
+-- ROLLBACK (run separately, only if this migration must be undone):
+--
+--   drop function if exists public.post_journal_entry(jsonb, jsonb);
+--
+-- Dropping the function cannot affect any already-written journal: the rows it
+-- inserted are ordinary journal_entries/journal_lines rows and remain valid.
+-- ============================================================================

@@ -179,7 +179,7 @@ function NewInvoiceContent() {
                   kind="customer"
                   value={form.customer_id}
                   onChange={(id) => set("customer_id", id)}
-                  createMode="link"
+                  createMode="inline"
                   placeholder={isRTL ? "-- اختر العميل --" : "-- Select Customer --"}
                 />
               </div>

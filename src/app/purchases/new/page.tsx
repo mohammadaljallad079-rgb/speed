@@ -32,8 +32,6 @@ function NewBillPageContent() {
   const { t, isRTL } = useLanguage()
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [cars, setCars] = useState<Car[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
 
@@ -56,19 +54,7 @@ function NewBillPageContent() {
 
   useEffect(() => {
     setMounted(true)
-    fetchSuppliers()
-    fetchCars()
   }, [])
-
-  async function fetchSuppliers() {
-    const { data } = await supabase.from('suppliers').select('*').order('name')
-    if (data) setSuppliers(data)
-  }
-
-  async function fetchCars() {
-    const { data } = await supabase.from('cars').select('id, make, model, plate_number').order('plate_number')
-    if (data) setCars(data as Car[])
-  }
 
   const totalAmount = items.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0)
   const totalVat = items.reduce((sum, item) => sum + (item.quantity * item.unit_price * item.vat_rate / 100), 0)
@@ -221,16 +207,13 @@ function NewBillPageContent() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المركبة' : 'Vehicle'}</label>
-                  <select
+                  <RecordSelect
+                    kind="car"
                     value={form.car_id}
-                    onChange={(e) => setForm({ ...form, car_id: e.target.value })}
-                    className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-                  >
-                    <option value="">{isRTL ? 'اختر المركبة...' : 'Select vehicle...'}</option>
-                    {cars.map(c => (
-                      <option key={c.id} value={c.id}>{c.make} {c.model} ({c.plate_number})</option>
-                    ))}
-                  </select>
+                    onChange={(id) => setForm({ ...form, car_id: id })}
+                    createMode="inline"
+                    placeholder={isRTL ? 'اختر المركبة...' : 'Select vehicle...'}
+                  />
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'فئة المصروف' : 'Expense Category'}</label>

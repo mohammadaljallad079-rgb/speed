@@ -1,3 +1,5 @@
+import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+
 /**
  * Depreciation posting service.
  *
@@ -225,21 +227,8 @@ export async function postDepreciation(
     throw new Error("Cannot post depreciation that does not balance (check the amount and accounts).");
   }
 
-  const { data: header, error: headerErr } = await client
-    .from("journal_entries")
-    .insert(journal.header)
-    .select("id")
-    .single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    // No half-posted entry survives: remove the orphan header.
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
+  // Shared atomic writer (migration 011): header + lines in one transaction, so
+  // a failed line write cannot leave an orphan header behind.
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
   return { journalId, created: true };
 }

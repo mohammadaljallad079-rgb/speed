@@ -1,3 +1,5 @@
+import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+
 /**
  * Unified sales posting service.
  *
@@ -269,27 +271,13 @@ export async function findPostedJournal(
 }
 
 /**
- * Write a built journal (header + lines) atomically-enough: if the line insert
- * fails, the orphan header is removed so no unbalanced entry survives. Throws on
- * any failure so the caller can compensate.
+ * The journal writer is shared with every other posting path
+ * (`manual-posting.ts:writeJournal`), so a sale, a receipt and a manual journal
+ * all take the same atomic route (migration 011's `post_journal_entry`). A
+ * private second writer here is exactly the drift this consolidation removes.
  */
-async function writeJournal(client: PostingClient, journal: SaleJournal): Promise<string> {
-  const { data: header, error: headerErr } = await client
-    .from("journal_entries")
-    .insert(journal.header)
-    .select("id")
-    .single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
-  return journalId;
-}
+const writeJournal = (client: PostingClient, journal: SaleJournal) =>
+  writeSharedJournal(client as unknown as SharedPostingClient, journal);
 
 /**
  * Post a sale invoice. Idempotent by reference: if a posted `sale_invoice`

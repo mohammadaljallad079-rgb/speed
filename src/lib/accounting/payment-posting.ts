@@ -1,3 +1,5 @@
+import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+
 /**
  * Supplier-payment posting.
  *
@@ -179,18 +181,8 @@ export async function postSupplierPayment(
   });
   if (!journal) throw new Error("Cannot post a supplier payment without a positive amount and resolvable accounts.");
 
-  const { data: header, error: headerErr } = await client.from("journal_entries").insert(journal.header).select("id").single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    // Best-effort removal of the orphan header so a failed line write does not
-    // leave an unbalanced entry behind.
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
+  // Shared atomic writer (migration 011): header + lines in one transaction, so
+  // a failed line write cannot leave an orphan header behind.
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
   return { journalId };
 }

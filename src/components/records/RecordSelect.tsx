@@ -28,8 +28,11 @@ import QuickCreateModal from "./QuickCreateModal"
  * only `value` changes here.
  *
  * `createMode`:
- *   - `"inline"`  → show the (+) button and a quick-create modal (supplier, account)
- *   - `"link"`    → show a link to the module's full create page (customer)
+ *   - `"inline"`  → show the (+) button and the in-page quick-create modal. This is
+ *                   the default for every record kind: customer, supplier,
+ *                   account and vehicle all create inline through the shared
+ *                   schema, so the user never leaves the transaction.
+ *   - `"link"`    → show a link to the module's full create page (escape hatch)
  *   - `"none"`    → no create affordance (a read-only reference field)
  */
 
@@ -170,7 +173,7 @@ export default function RecordSelect({
             )}
           </div>
 
-          {createMode === "inline" && (kind === "supplier" || kind === "account") && (
+          {createMode === "inline" && (
             <Button
               type="button"
               variant="outline"

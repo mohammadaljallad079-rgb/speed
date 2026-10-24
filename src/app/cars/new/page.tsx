@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import DashboardLayout from '@/components/DashboardLayout'
+import RecordSelect from '@/components/records/RecordSelect'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -521,10 +522,13 @@ function NewCarForm() {
                 </div>
                 <div className="space-y-1">
                   <Label className={labelClass}>{isRTL ? 'المورّد' : 'Supplier'}</Label>
-                  <select className={selectClass} value={form.supplier_id} onChange={e => set('supplier_id', e.target.value)}>
-                    <option value="">{isRTL ? 'بدون' : 'None'}</option>
-                    {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
+                  <RecordSelect
+                    kind="supplier"
+                    value={form.supplier_id}
+                    onChange={(id) => set('supplier_id', id)}
+                    createMode="inline"
+                    placeholder={isRTL ? 'بدون' : 'None'}
+                  />
                 </div>
                 <div className="space-y-1">
                   <Label className={labelClass}>{isRTL ? 'تكاليف الشراء الإضافية (د.ب)' : 'Extra Purchase Costs (BHD)'}</Label>

@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import RecordSelect from "@/components/records/RecordSelect"
 
 const STATUS_OPTIONS = [
   { key: 'draft', labelAr: 'مسودة', labelEn: 'Draft', color: 'bg-slate-100 text-slate-700' },
@@ -304,10 +305,13 @@ function PurchaseOrdersPageContent() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
-                <select value={form.supplier_id} onChange={(e) => setForm({ ...form, supplier_id: e.target.value })} className="h-11 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 w-full px-3 text-sm">
-                  <option value="">{isRTL ? '— اختر —' : '— Select —'}</option>
-                  {suppliers.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                </select>
+                <RecordSelect
+                  kind="supplier"
+                  value={form.supplier_id}
+                  onChange={(id) => setForm({ ...form, supplier_id: id })}
+                  createMode="inline"
+                  placeholder={isRTL ? '— اختر —' : '— Select —'}
+                />
               </div>
               <div>
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'تاريخ التسليم المتوقع' : 'Expected Date'}</label>

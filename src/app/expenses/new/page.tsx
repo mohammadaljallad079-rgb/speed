@@ -15,6 +15,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import RecordSelect from "@/components/records/RecordSelect"
 
 const VAT_RATES = [
   { value: 0, label: "Not Registered in VAT" },
@@ -422,14 +423,13 @@ function NewExpensePageContent() {
               <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
                 <Building2 className="w-3 h-3" /> Supplier *
               </label>
-              <select
+              <RecordSelect
+                kind="supplier"
                 value={supplierId}
-                onChange={(e) => setSupplierId(e.target.value)}
-                className="w-full h-10 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="">Select Supplier...</option>
-                {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
+                onChange={(id) => setSupplierId(id)}
+                createMode="inline"
+                placeholder="Select Supplier..."
+              />
             </div>
             <div ref={accountDropdownRef} className="relative">
               <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">

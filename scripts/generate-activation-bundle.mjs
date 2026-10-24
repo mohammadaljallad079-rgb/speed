@@ -504,3 +504,83 @@ select 'purchasing document sequences' as item,
 fs.writeFileSync(OUT_010, header010, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_010)}`);
 console.log(`  010 sha256 ${h010}`);
+
+// ---------------------------------------------------------------------------
+// 011 — atomic journal posting (post_journal_entry). Appended after 010 so the
+// existing outputs stay byte-identical.
+// ---------------------------------------------------------------------------
+const b011 = read("011_atomic_journal_posting.sql");
+const h011 = sha(b011);
+const OUT_011 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_011.sql");
+
+const header011 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (011)
+-- ============================================================================
+-- Purpose : install the atomic journal-posting function \`post_journal_entry\`,
+--           so a journal header and its lines are written in ONE transaction.
+--           Before this, they were two separate PostgREST calls and a crash
+--           between them left a header with no lines - invisible to every report
+--           but counted in journal_entries.
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : after PRODUCTION_ACTIVATION_001_002_003.sql, then _004, _005_006,
+--           _007, _008, _009 and _010. 011 only needs public.journal_entries and
+--           public.journal_lines (created/updated by 003); it is a clean no-op
+--           if they are absent.
+--
+-- SAFETY  : additive and idempotent (\`create or replace function\`). No DROP
+--           TABLE, no DROP COLUMN, no TRUNCATE, no DELETE, no row rewrite.
+--           Safe to re-run.
+--
+-- WARNING : RUN THIS ONLY AGAINST THE CORRECT PROJECT.
+--           Confirm the project ref shown in the SQL Editor is
+--           chlkmdobhvfnldqkgdji (SPEED ERP production) before executing.
+--
+-- The migration body below is reproduced verbatim from
+-- supabase/migrations/011_atomic_journal_posting.sql (SHA-256 recorded at its
+-- header), so what runs here is exactly what was reviewed and locally verified.
+-- ============================================================================
+
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — visibility only; never aborts the script)
+-- ============================================================================
+select current_database() as database, current_user as executor_role, now() as at_utc;
+
+select 'table public.journal_entries' as item, (to_regclass('public.journal_entries') is not null) as present
+union all select 'table public.journal_lines', (to_regclass('public.journal_lines') is not null)
+union all select 'function post_journal_entry already present',
+       exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                where n.nspname = 'public' and p.proname = 'post_journal_entry')
+order by present, item;
+
+-- ============================================================================
+-- BEGIN 011_atomic_journal_posting.sql
+-- SHA-256 (body): ${h011}
+-- ============================================================================
+
+${b011}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'function post_journal_entry present' as item,
+       exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                where n.nspname = 'public' and p.proname = 'post_journal_entry') as ok;
+
+select 'no orphan journal header exists' as item,
+       not exists (select 1 from public.journal_entries e
+                    where not exists (select 1 from public.journal_lines l
+                                       where l.journal_entry_id = e.id)) as ok;
+
+-- ============================================================================
+-- END OF PACKAGE (011)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_011, header011, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_011)}`);
+console.log(`  011 sha256 ${h011}`);

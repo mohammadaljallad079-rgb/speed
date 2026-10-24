@@ -509,18 +509,23 @@ function NewRentalForm() {
                   kind="customer"
                   value={contract.customer_id}
                   onChange={(id) => handleCustomerChange(id)}
-                  createMode="link"
+                  createMode="inline"
                   placeholder={isRTL ? "اختر العميل..." : "Select customer..."}
                 />
               </div>
               <div className="space-y-1">
                 <Label className={labelClass}>{isRTL ? "السيارة" : "Car"}</Label>
-                <select className={selectClass} value={contract.car_id} onChange={e => { handleCarChange(e.target.value); const c = cars.find(x => x.id === e.target.value); if (c) setPlateSearch(c.plate_number || '') }} required>
-                  <option value="">{isRTL ? "اختر السيارة..." : "Select car..."}</option>
-                  {cars.map(c => (
-                    <option key={c.id} value={c.id}>{carLabel(c)}</option>
-                  ))}
-                </select>
+                <RecordSelect
+                  kind="car"
+                  value={contract.car_id}
+                  onChange={(id) => {
+                    handleCarChange(id)
+                    const c = cars.find(x => x.id === id)
+                    if (c) setPlateSearch(c.plate_number || '')
+                  }}
+                  createMode="inline"
+                  placeholder={isRTL ? "اختر السيارة..." : "Select car..."}
+                />
               </div>
               <div className="space-y-1">
                 <Label className={labelClass}>{isRTL ? "نوع العقد" : "Contract Type"}</Label>

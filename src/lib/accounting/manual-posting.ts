@@ -28,9 +28,34 @@ import {
   buildDepositRefundJournal,
   buildPayrollJournal,
   buildPettyCashJournal,
-  isJournalBalanced,
-  type ManualJournal,
 } from "./manual-postings";
+
+/**
+ * Any journal a builder produces: a header plus lines. The sales and receipt
+ * builders add columns (customer_id, line_order, reference_number); the atomic
+ * writer forwards whatever it is given, so it does not need to know them.
+ */
+export type PostableJournal = {
+  header: {
+    journal_number: string;
+    entry_date: string;
+    description: string;
+    total_debit: number;
+    total_credit: number;
+  } & Record<string, unknown>;
+  lines: Array<{ account_id: string; debit: number; credit: number } & Record<string, unknown>>;
+};
+
+/** Balance check for the generic shape (see isJournalBalanced for ManualJournal). */
+export function isPostableJournalBalanced(journal: PostableJournal): boolean {
+  const debit = journal.lines.reduce((s, l) => s + l.debit, 0);
+  const credit = journal.lines.reduce((s, l) => s + l.credit, 0);
+  return (
+    Math.abs(debit - credit) < 0.001 &&
+    Math.abs(journal.header.total_debit - debit) < 0.001 &&
+    Math.abs(journal.header.total_credit - credit) < 0.001
+  );
+}
 
 /** System account codes used by the manual screens. */
 export const MANUAL_ACCOUNT_CODES = {
@@ -44,6 +69,16 @@ export const MANUAL_ACCOUNT_CODES = {
 } as const;
 
 type QueryResult = { data: unknown; error: unknown };
+
+/**
+ * Optional atomic-posting RPC. When the client exposes it AND the database has
+ * migration 011 applied, the header and its lines are written in one
+ * transaction. A client without `rpc` (a unit-test stub) or a database without
+ * the function simply takes the two-request path, which is still correct - just
+ * not atomic. Nothing is decided by the presence of `rpc` alone.
+ */
+type RpcResult = { data: unknown; error: unknown };
+type RpcCapable = { rpc?: (fn: string, args?: Record<string, unknown>) => PromiseLike<RpcResult> };
 type Builder = {
   select: (cols?: string) => Builder;
   eq: (col: string, val: unknown) => Builder;
@@ -57,7 +92,7 @@ type Builder = {
   single: () => PromiseLike<QueryResult>;
   then: PromiseLike<QueryResult>["then"];
 };
-export type PostingClient = { from: (table: string) => Builder };
+export type PostingClient = { from: (table: string) => Builder } & RpcCapable;
 
 const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 
@@ -92,12 +127,50 @@ export async function resolveAccountIds(
 }
 
 /**
- * Write a built journal. If the line insert fails the orphan header is removed,
- * so a failed posting never leaves an unbalanced entry behind. Throws on failure
- * so the caller can compensate the document row it created.
+ * Is the atomic RPC callable? Only a "the function does not exist" style error
+ * (PostgREST reports a missing RPC as 404 / PGRST202, and a stale PostgREST cache
+ * the same way) justifies falling back. Any other error - a refused unbalanced
+ * journal, a permission denial, a real database failure - is a genuine failure
+ * and must propagate, never be masked by a second, non-atomic attempt.
  */
-export async function writeJournal(client: PostingClient, journal: ManualJournal): Promise<string> {
-  if (!isJournalBalanced(journal)) throw new Error("Refusing to post an unbalanced journal.");
+function isRpcUnavailable(error: unknown): boolean {
+  const e = error as { code?: string; status?: number; message?: string } | null;
+  if (!e) return false;
+  if (e.code === "PGRST202" || e.code === "404") return true;
+  if (e.status === 404) return true;
+  const m = String(e.message ?? "").toLowerCase();
+  return m.includes("could not find the function") || m.includes("does not exist");
+}
+
+/**
+ * Write a built journal.
+ *
+ * Preferred path: `post_journal_entry` (migration 011), which writes the header
+ * and its lines in ONE database transaction. That closes the orphan-header
+ * window: there is no moment at which a journal exists without its lines.
+ *
+ * Fallback path (RPC not deployed yet): the two-request write with compensation.
+ * A failed line insert removes the orphan header. This is correct but not atomic
+ * - a process death between the two requests would leave the header behind - so
+ * it is a fallback, not the design.
+ *
+ * Throws on failure so the caller can compensate the document row it created.
+ */
+export async function writeJournal(client: PostingClient, journal: PostableJournal): Promise<string> {
+  if (!isPostableJournalBalanced(journal)) throw new Error("Refusing to post an unbalanced journal.");
+
+  if (typeof client.rpc === "function") {
+    const { data, error } = await client.rpc("post_journal_entry", {
+      p_header: journal.header,
+      p_lines: journal.lines,
+    });
+    if (!error && typeof data === "string" && data) return data;
+    if (!isRpcUnavailable(error)) {
+      throw new Error("Could not post the journal atomically: " + msg(error));
+    }
+    // else: fall through to the two-request path below.
+  }
+
   const { data: header, error: headerErr } = await client
     .from("journal_entries")
     .insert(journal.header)

@@ -287,7 +287,7 @@ function NewPaymentPageContent() {
                       kind="customer"
                       value={form.customer_id}
                       onChange={(id) => handleCustomerChange(id)}
-                      createMode="link"
+                      createMode="inline"
                       placeholder={isRTL ? 'اختر العميل' : 'Select customer'}
                     />
                   </div>

@@ -54,6 +54,11 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
       this.inVals = v;
       return this;
     }
+    is(_c: string, _v: any) {
+      // Tenant scoping: `tenant_id is null` for the single-tenant install.
+      this.filters.push([_c, null]);
+      return this;
+    }
     limit(_n: number) {
       return this;
     }
@@ -69,7 +74,12 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") return { data: (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
-        const rows = (tables[this.table] ?? []).filter((r) => this.filters.every(([c, v]) => r[c] === v));
+        // `is(col, null)` must match a column that is absent from the seed row as
+        // well as one explicitly set to null - a fixture omits `tenant_id`, and a
+        // strict `===` would treat that as a different value and hide the row.
+        const rows = (tables[this.table] ?? []).filter((r) =>
+          this.filters.every(([c, v]) => (v === null ? r[c] == null : r[c] === v)),
+        );
         return { data: rows, error: null };
       }
       if (this.op === "insert") {
@@ -124,9 +134,41 @@ describe("Priority 2 - posted invoice guard", () => {
     assert.equal(await isSaleInvoicePosted(client as never, "SI-1"), false);
   });
 
-  test("fails closed to not-posted on an empty number", async () => {
+  // A document with no number has an unknowable posting state, so the advisory
+  // boolean must report "posted" - the reading that refuses an edit/delete.
+  // Reporting "not posted" here would let an unnumbered-but-posted invoice be
+  // destroyed. The authoritative delete decision reports `unverified` instead.
+  test("an empty number is not treated as proof of not-posted", async () => {
     const { client } = makeStub({ tables: { journal_entries: [{ id: "x", entry_type: "sale_invoice", reference_number: "SI-1" }] } });
-    assert.equal(await isSaleInvoicePosted(client as never, ""), false);
+    assert.equal(await isSaleInvoicePosted(client as never, ""), true);
+
+    const { decideInvoiceDeletion } = await import("../src/lib/accounting/invoice-guards.ts");
+    const decision = await decideInvoiceDeletion(client as never, {
+      id: "inv-1",
+      invoiceNumber: "",
+      tenantId: null,
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, "unverified");
+  });
+
+  test("a database error refuses the delete instead of permitting it", async () => {
+    const { decideInvoiceDeletion } = await import("../src/lib/accounting/invoice-guards.ts");
+    const failing = {
+      from: () => {
+        const b: any = { select: () => b, eq: () => b, is: () => b, limit: () => b };
+        b.maybeSingle = async () => ({ data: null, error: { message: "permission denied for table journal_entries" } });
+        return b;
+      },
+    };
+    const decision = await decideInvoiceDeletion(failing as never, {
+      id: "inv-1",
+      invoiceNumber: "SI-1",
+      tenantId: null,
+    });
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.code, "unverified");
+    assert.match(decision.message, /permission denied/);
   });
 
   test("invoice edit page blocks edit and delete when posted", () => {

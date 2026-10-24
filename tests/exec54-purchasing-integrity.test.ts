@@ -603,8 +603,8 @@ describe("supplier bill deletion", () => {
     const src = read("src/app/api/purchases/route.ts");
     assert.match(src, /export async function DELETE\(request: Request\)/);
     assert.match(src, /requireContext\(request, \{ module: "purchases", action: "delete" \}\)/);
-    assert.match(src, /isPurchaseBillPosted\(supabaseAdmin as never/);
-    assert.match(src, /hasPurchaseBillDependents\(supabaseAdmin as never/);
+    // One fail-closed decision authority, not two independent fail-open checks.
+    assert.match(src, /decidePurchaseBillDeletion\(supabaseAdmin as never/);
     // Tenant-scoped lookup, so a foreign id is a 404 rather than a delete.
     assert.match(src, /query = context\.tenantId \? query\.eq\("tenant_id", context\.tenantId\) : query\.is\("tenant_id", null\)/);
     assert.match(src, /logAudit\(context/);
@@ -614,19 +614,24 @@ describe("supplier bill deletion", () => {
     const { isPurchaseBillPosted, hasPurchaseBillDependents } = await import(
       "../src/lib/accounting/invoice-guards.ts"
     );
+    // The lookup is tenant-scoped, so the stub has to provide `.is` as well as
+    // `.eq` - the single-tenant install scopes with `tenant_id is null`.
+    const chain = (terminal: () => Promise<unknown>): unknown => {
+      const b: Record<string, unknown> = {};
+      b.select = () => b;
+      b.eq = () => b;
+      b.is = () => b;
+      b.limit = () => b;
+      b.maybeSingle = terminal;
+      return b;
+    };
     const journalClient = {
-      from: () => ({
-        select: () => ({
-          eq: () => ({
-            eq: () => ({
-              limit: () => ({ maybeSingle: async () => ({ data: { id: "j1" }, error: null }) }),
-            }),
-          }),
-        }),
-      }),
+      from: () => chain(async () => ({ data: { id: "j1" }, error: null })),
     };
     assert.equal(await isPurchaseBillPosted(journalClient as never, "BILL-0001"), true);
-    assert.equal(await isPurchaseBillPosted(journalClient as never, ""), false);
+    // A bill with no number is an unverifiable posting state, so the advisory
+    // boolean reports it as posted (the safe reading).
+    assert.equal(await isPurchaseBillPosted(journalClient as never, ""), true);
 
     const countClient = {
       from: (table: string) => ({
@@ -639,7 +644,7 @@ describe("supplier bill deletion", () => {
       }),
     };
     assert.equal(await hasPurchaseBillDependents(countClient as never, "pi1"), true);
-    assert.equal(await hasPurchaseBillDependents(countClient as never, ""), false);
+    assert.equal(await hasPurchaseBillDependents(countClient as never, ""), true);
   });
 });
 

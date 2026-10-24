@@ -8,14 +8,12 @@ import {
   PURCHASE_ACCOUNT_CODES,
 } from "@/lib/accounting/purchase-posting";
 import { writeJournal } from "@/lib/accounting/manual-posting";
-import {
-  hasPurchaseBillDependents,
-  isPurchaseBillPosted,
-} from "@/lib/accounting/invoice-guards";
+import { decidePurchaseBillDeletion } from "@/lib/accounting/invoice-guards";
 import {
   assertDateInOpenFinancialYear,
   assertReferences,
   assertWritableTenant,
+  conflict,
   forbidden,
   getActiveFinancialYear,
   logAudit,
@@ -263,11 +261,18 @@ export async function DELETE(request: Request) {
     if (!bill) throw notFound("Supplier bill not found");
 
     const invoiceNumber = String((bill as { invoice_number?: string }).invoice_number ?? "");
-    if (await isPurchaseBillPosted(supabaseAdmin as never, invoiceNumber)) {
-      throw forbidden("A posted supplier bill cannot be deleted; reverse it instead.");
-    }
-    if (await hasPurchaseBillDependents(supabaseAdmin as never, id)) {
-      throw forbidden("This bill has payments, debit notes or line items attached and cannot be deleted.");
+
+    // One authority decides, and it fails closed: an unverifiable posting state or
+    // an unreadable dependents count refuses the delete rather than assuming the
+    // bill is clean. A guard whose error path permits is not a guard.
+    const decision = await decidePurchaseBillDeletion(supabaseAdmin as never, {
+      id,
+      invoiceNumber,
+      tenantId: context.tenantId ?? null,
+    });
+    if (!decision.allowed) {
+      if (decision.code === "unverified") throw conflict(decision.message, "unverified");
+      throw forbidden(decision.message);
     }
 
     const { error: delErr } = await supabaseAdmin.from("purchase_invoices").delete().eq("id", id);

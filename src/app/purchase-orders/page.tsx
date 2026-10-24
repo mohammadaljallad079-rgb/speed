@@ -304,9 +304,10 @@ function PurchaseOrdersPageContent() {
             <h3 className="font-bold text-slate-900 dark:text-white">{isRTL ? 'أمر شراء جديد' : 'New Purchase Order'}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
                 <RecordSelect
                   kind="supplier"
+                  label={isRTL ? 'المورد' : 'Supplier'}
+                  required
                   value={form.supplier_id}
                   onChange={(id) => setForm({ ...form, supplier_id: id })}
                   createMode="inline"

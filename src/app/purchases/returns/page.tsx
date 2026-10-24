@@ -183,9 +183,10 @@ function DebitNotesPageContent() {
             <h3 className="font-bold text-slate-900 dark:text-white">{isRTL ? 'إشعار مدين جديد' : 'New Debit Note'}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
                 <RecordSelect
                   kind="supplier"
+                  label={isRTL ? 'المورد' : 'Supplier'}
+                  required
                   value={form.supplier_id}
                   onChange={(id) => setForm({ ...form, supplier_id: id, purchase_invoice_id: '' })}
                   createMode="inline"
@@ -214,9 +215,9 @@ function DebitNotesPageContent() {
                 <Input type="number" step="0.001" value={form.vat_amount} onChange={(e) => setForm({ ...form, vat_amount: e.target.value })} className="h-11 rounded-xl" placeholder="0.000" />
               </div>
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'حساب المصروف' : 'Expense account'}</label>
                 <RecordSelect
                   kind="account"
+                  label={isRTL ? 'حساب المصروف' : 'Expense account'}
                   value={form.expense_account_id}
                   onChange={(v) => setForm({ ...form, expense_account_id: v })}
                   filter={isSelectableAccount}

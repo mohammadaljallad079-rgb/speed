@@ -42,6 +42,14 @@ type Props = {
   kind: RecordKind
   value: string
   onChange: (id: string, row: RecordRow | null) => void
+  /**
+   * Field label rendered on the control's own row, with the (+) create button
+   * beside it. Supplying it is preferred over an external `<label>`: the (+)
+   * must be visible next to the label, not hidden inside the dropdown.
+   */
+  label?: string
+  /** Appends the required marker to `label`. */
+  required?: boolean
   /** Restrict which rows appear (e.g. only active accounts). */
   filter?: (row: RecordRow) => boolean
   /** Extra query constraints applied to the module read. */
@@ -57,6 +65,8 @@ export default function RecordSelect({
   kind,
   value,
   onChange,
+  label,
+  required,
   filter,
   eq,
   createMode = "inline",
@@ -67,6 +77,7 @@ export default function RecordSelect({
 }: Props) {
   const { isRTL } = useLanguage()
   const source = RECORD_SOURCES[kind]
+  const labelId = id ? `${id}-label` : undefined
 
   const [open, setOpen] = useState(false)
   const [rows, setRows] = useState<RecordRow[]>([])
@@ -112,92 +123,118 @@ export default function RecordSelect({
   }
 
   return (
-    <div ref={rootRef} className={`relative ${className ?? ""}`}>
-      <button
-        id={id}
-        type="button"
-        disabled={disabled}
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-start text-sm disabled:opacity-60"
-      >
+    <div className={`${className ?? ""}`}>
+      {/* The label owns the (+) affordance: the requirement is a button the
+          user can see WITHOUT opening the dropdown, beside the field name. */}
+      {label && (
+        <div className="mb-1 flex items-center gap-1.5">
+          <span id={labelId} className="text-xs font-semibold text-slate-500">
+            {label}
+            {required && <span className="text-rose-500"> *</span>}
+          </span>
+          {createMode !== "none" && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => (createMode === "link" ? window.open(source.createRoute, "_blank", "noopener") : setShowCreate(true))}
+              title={isRTL ? `إضافة ${source.ar} جديد` : `New ${source.en}`}
+              aria-label={isRTL ? `إضافة ${source.ar} جديد` : `New ${source.en}`}
+              className="flex h-5 w-5 items-center justify-center rounded-full bg-cyan-600 text-white transition-colors hover:bg-cyan-700 disabled:opacity-50"
+            >
+              <Plus className="h-3 w-3" />
+            </button>
+          )}
+        </div>
+      )}
+
+      <div ref={rootRef} className="relative">
+        <button
+          id={id}
+          type="button"
+          disabled={disabled}
+          aria-labelledby={labelId}
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-start text-sm disabled:opacity-60"
+        >
         <span className={selected ? "text-slate-800" : "text-slate-400"}>
           {selected ? recordLabel(source, selected) : placeholder ?? (isRTL ? `اختر ${source.ar}` : `Select ${source.en}`)}
         </span>
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-slate-400" />
-      </button>
+        </button>
 
-      {open && (
-        <div className="absolute z-50 mt-1 w-full rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
-          <div className="relative">
-            <Search className="absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ltr:left-3 rtl:right-3" />
-            <Input
-              autoFocus
-              value={term}
-              onChange={(e) => setTerm(e.target.value)}
-              placeholder={isRTL ? "بحث..." : "Search..."}
-              className="ltr:pl-9 rtl:pr-9"
-            />
-          </div>
+        {open && (
+          <div className="absolute z-50 mt-1 w-full rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+            <div className="relative">
+              <Search className="absolute top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400 ltr:left-3 rtl:right-3" />
+              <Input
+                autoFocus
+                value={term}
+                onChange={(e) => setTerm(e.target.value)}
+                placeholder={isRTL ? "بحث..." : "Search..."}
+                className="ltr:pl-9 rtl:pr-9"
+              />
+            </div>
 
-          <div className="mt-2 max-h-56 overflow-y-auto">
-            {loading ? (
-              <div className="flex justify-center py-4">
-                <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
-              </div>
-            ) : filtered.length === 0 ? (
-              <p className="px-2 py-3 text-center text-sm text-slate-400">
-                {isRTL ? "لا نتائج." : "No results."}
-              </p>
-            ) : (
-              filtered.map((r) => {
-                const rid = String(r.id)
-                const sub = recordSublabel(r)
-                return (
-                  <button
-                    key={rid}
-                    type="button"
-                    onClick={() => {
-                      onChange(rid, r)
-                      setOpen(false)
-                    }}
-                    className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-start text-sm hover:bg-slate-50"
-                  >
-                    <span className="min-w-0">
-                      <span className="block truncate text-slate-800">{recordLabel(source, r)}</span>
-                      {sub && <span className="block truncate text-xs text-slate-400">{sub}</span>}
-                    </span>
-                    {rid === value && <Check className="h-4 w-4 text-cyan-600" />}
-                  </button>
-                )
-              })
+            <div className="mt-2 max-h-56 overflow-y-auto">
+              {loading ? (
+                <div className="flex justify-center py-4">
+                  <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+                </div>
+              ) : filtered.length === 0 ? (
+                <p className="px-2 py-3 text-center text-sm text-slate-400">
+                  {isRTL ? "لا نتائج." : "No results."}
+                </p>
+              ) : (
+                filtered.map((r) => {
+                  const rid = String(r.id)
+                  const sub = recordSublabel(r)
+                  return (
+                    <button
+                      key={rid}
+                      type="button"
+                      onClick={() => {
+                        onChange(rid, r)
+                        setOpen(false)
+                      }}
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-2 text-start text-sm hover:bg-slate-50"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-slate-800">{recordLabel(source, r)}</span>
+                        {sub && <span className="block truncate text-xs text-slate-400">{sub}</span>}
+                      </span>
+                      {rid === value && <Check className="h-4 w-4 text-cyan-600" />}
+                    </button>
+                  )
+                })
+              )}
+            </div>
+
+            {createMode === "inline" && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowCreate(true)}
+                className="mt-2 w-full justify-center gap-2 text-xs"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {isRTL ? `إضافة ${source.ar} جديد` : `New ${source.en}`}
+              </Button>
+            )}
+
+            {createMode === "link" && (
+              <a
+                href={source.createRoute}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {isRTL ? `إضافة ${source.ar} (يفتح نموذج الوحدة)` : `New ${source.en} (opens module form)`}
+              </a>
             )}
           </div>
-
-          {createMode === "inline" && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setShowCreate(true)}
-              className="mt-2 w-full justify-center gap-2 text-xs"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {isRTL ? `إضافة ${source.ar} جديد` : `New ${source.en}`}
-            </Button>
-          )}
-
-          {createMode === "link" && (
-            <a
-              href={source.createRoute}
-              target="_blank"
-              rel="noreferrer"
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {isRTL ? `إضافة ${source.ar} (يفتح نموذج الوحدة)` : `New ${source.en} (opens module form)`}
-            </a>
-          )}
-        </div>
-      )}
+        )}
+      </div>
 
       {showCreate && (
         <QuickCreateModal kind={kind} onClose={() => setShowCreate(false)} onCreated={(r) => void handleCreated(r)} />

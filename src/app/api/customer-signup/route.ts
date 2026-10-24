@@ -1,29 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { resolveCustomerTenantId } from "@/lib/rental/customer-tenant";
+import { isCarRentable } from "@/lib/rental/booking-service";
 
 /**
  * The company a self-registered customer belongs to.
  *
- * There is one SPEED company in this install, but the resolver stays
- * conservative: it only assigns a tenant when the choice is unambiguous — the
- * company that owns rentable cars, or the single company row. Otherwise it
- * returns null and the account stays unassigned (the tenant-less path), rather
- * than guessing and mis-scoping a customer into another company.
+ * The customer portal scopes cars by the caller's tenant, so this choice must
+ * follow the cars: assigning a tenant that owns none of them is exactly what
+ * makes the booking list appear empty. The decision is made by the pure
+ * `resolveCustomerTenantId`, which reads the cars that are actually rentable and
+ * only falls back to a `tenants` row when there are no cars at all.
  */
 async function resolveDefaultTenantId(): Promise<string | null> {
   const { data: carRows } = await supabaseAdmin
     .from("cars")
-    .select("tenant_id")
-    .eq("status", "available");
-  const carTenants = [
-    ...new Set(((carRows ?? []) as Array<{ tenant_id: string | null }>).map((r) => r.tenant_id).filter(Boolean)),
-  ] as string[];
-  if (carTenants.length === 1) return carTenants[0];
+    .select("tenant_id, status, category");
+  const rentableCars = ((carRows ?? []) as Array<{ tenant_id: string | null; status?: string | null; category?: string | null }>).filter(
+    isCarRentable,
+  );
+  if (rentableCars.length > 0) return resolveCustomerTenantId(rentableCars, []);
 
   const { data: tenantRows } = await supabaseAdmin.from("tenants").select("id");
-  const ids = ((tenantRows ?? []) as Array<{ id: string }>).map((r) => r.id);
-  return ids.length === 1 ? ids[0] : null;
+  return resolveCustomerTenantId([], (tenantRows ?? []) as Array<{ id: string }>);
 }
 
 export async function POST(request: NextRequest) {

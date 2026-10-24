@@ -521,9 +521,9 @@ function NewCarForm() {
                   <Input className={inputClass} value={form.purchase_source} onChange={e => set('purchase_source', e.target.value)} />
                 </div>
                 <div className="space-y-1">
-                  <Label className={labelClass}>{isRTL ? 'المورّد' : 'Supplier'}</Label>
                   <RecordSelect
                     kind="supplier"
+                    label={isRTL ? 'المورّد' : 'Supplier'}
                     value={form.supplier_id}
                     onChange={(id) => set('supplier_id', id)}
                     createMode="inline"

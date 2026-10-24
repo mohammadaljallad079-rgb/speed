@@ -225,11 +225,13 @@ function PettyCashContent() {
               </div>
               {modalType === 'expense' && (
                 <div className="space-y-2">
-                  <Label>{isRTL ? 'حساب المصروف *' : 'Expense Account *'}</Label>
                   {/* Chart-of-accounts selector: the expense is charged to a real
-                      ledger account, not to a free-text category. */}
+                      ledger account, not to a free-text category. The (+) beside
+                      the label creates one inline. */}
                   <RecordSelect
                     kind="account"
+                    label={isRTL ? 'حساب المصروف' : 'Expense Account'}
+                    required
                     value={expenseAccountId}
                     onChange={(id) => setExpenseAccountId(id)}
                     createMode="inline"

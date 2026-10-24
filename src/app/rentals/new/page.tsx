@@ -502,11 +502,11 @@ function NewRentalForm() {
           <Card className="rounded-xl shadow-sm border-slate-200 dark:border-slate-700 overflow-hidden">
             <CardContent className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="space-y-1">
-                <Label className={labelClass}>{isRTL ? "العميل" : "Customer"}</Label>
                 {/* Searchable picker from the Customers module; the full
                     two-tab customer form opens as a link. */}
                 <RecordSelect
                   kind="customer"
+                  label={isRTL ? "العميل" : "Customer"}
                   value={contract.customer_id}
                   onChange={(id) => handleCustomerChange(id)}
                   createMode="inline"
@@ -514,9 +514,9 @@ function NewRentalForm() {
                 />
               </div>
               <div className="space-y-1">
-                <Label className={labelClass}>{isRTL ? "السيارة" : "Car"}</Label>
                 <RecordSelect
                   kind="car"
+                  label={isRTL ? "السيارة" : "Car"}
                   value={contract.car_id}
                   onChange={(id) => {
                     handleCarChange(id)

@@ -520,7 +520,11 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
                     ) : loadingCars ? (
                       <div className="h-12 rounded-xl border border-gray-200 px-4 flex items-center text-gray-400 text-sm font-semibold">{isRTL ? 'جاري تحميل السيارات...' : 'Loading cars...'}</div>
                     ) : cars.length === 0 ? (
-                      <div className="h-12 rounded-xl border border-amber-200 bg-amber-50 px-4 flex items-center text-amber-700 text-sm font-semibold">{isRTL ? 'لا توجد سيارات متاحة للفترة المحددة. جرّب تغيير التواريخ.' : 'No cars available for the selected period. Try changing the dates.'}</div>
+                      <div className="h-12 rounded-xl border border-amber-200 bg-amber-50 px-4 flex items-center text-amber-700 text-sm font-semibold">
+                        {startDate && endDate
+                          ? (isRTL ? 'لا توجد سيارات متاحة للفترة المحددة. جرّب تغيير التواريخ.' : 'No cars available for the selected period. Try changing the dates.')
+                          : (isRTL ? 'لا توجد سيارات متاحة حالياً. تواصل مع الشركة.' : 'No cars are available right now. Please contact the company.')}
+                      </div>
                     ) : (
                       <select value={selectedCar} onChange={e => setSelectedCar(e.target.value)} className="w-full h-12 rounded-xl border border-gray-200 px-4 text-gray-700 bg-white text-sm font-semibold focus:border-red-400 focus:ring-1 focus:ring-red-400 outline-none">
                         <option value="">{isRTL ? 'اختر من السيارات المتاحة' : 'Select available car'}</option>

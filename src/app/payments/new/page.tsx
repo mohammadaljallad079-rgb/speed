@@ -282,9 +282,10 @@ function NewPaymentPageContent() {
                 </div>
                 <div className="space-y-3">
                   <div>
-                    <Label className="text-xs text-slate-500 mb-1 block">{isRTL ? 'العميل' : 'Customer'} *</Label>
                     <RecordSelect
                       kind="customer"
+                      label={isRTL ? 'العميل' : 'Customer'}
+                      required
                       value={form.customer_id}
                       onChange={(id) => handleCustomerChange(id)}
                       createMode="inline"

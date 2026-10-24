@@ -27,12 +27,12 @@ const SUPER_ADMIN_PASSWORD = "local-dev-password";
 const SHOTS = [
   { name: "super-admin-login", path: "/super-admin-login", auth: false },
   { name: "erp-public", path: "/erp", auth: false },
-  { name: "super-admin-overview", path: "/super-admin", auth: true },
-  { name: "super-admin-companies", path: "/super-admin", auth: true, click: "Companies" },
-  { name: "super-admin-users", path: "/super-admin", auth: true, click: "Users" },
-  { name: "super-admin-ai", path: "/super-admin", auth: true, click: "AI Management" },
-  { name: "super-admin-subscriptions", path: "/super-admin", auth: true, click: "Subscriptions" },
-  { name: "super-admin-settings", path: "/super-admin", auth: true, click: "Settings" },
+  { name: "super-admin-overview", path: "/super-admin", auth: true, expect: "TOTAL COMPANIES" },
+  { name: "super-admin-companies", path: "/super-admin", auth: true, click: "Companies", expect: "Action" },
+  { name: "super-admin-users", path: "/super-admin", auth: true, click: "Users", expect: "PICK A COMPANY" },
+  { name: "super-admin-ai", path: "/super-admin", auth: true, click: "AI Management", expect: "REPAIR EXECUTIONS" },
+  { name: "super-admin-subscriptions", path: "/super-admin", auth: true, click: "Subscriptions", expect: "not implemented" },
+  { name: "super-admin-settings", path: "/super-admin", auth: true, click: "Settings", expect: "GLOBAL SETTINGS" },
   // Stage 2: the financial statements, rendered from the seeded ledger.
   { name: "report-general-ledger", path: "/reports/general-ledger", auth: true },
   { name: "report-trial-balance", path: "/reports/trial-balance", auth: true },
@@ -72,18 +72,31 @@ const VIEWPORTS = [
  * 2.9 KB "screenshots" were produced). Wait for real text, and fail loudly if it
  * never arrives rather than committing a blank image.
  */
-async function waitForContent(page, label) {
+async function pageHasText(page, needle) {
+  const text = await page.evaluate(() => document.body.innerText);
+  return text.toLowerCase().includes(needle.toLowerCase());
+}
+
+async function waitForContent(page, label, expect) {
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline) {
-    const len = await page.evaluate(() => document.body.innerText.trim().length);
-    if (len > 80) {
+    const text = await page.evaluate(() => document.body.innerText);
+    // A length check alone is not enough: the shell (header + tab bar) already
+    // exceeds any threshold, so a screenshot taken before a tab panel switched
+    // still "has content" and gets committed under the wrong name. When the
+    // shot declares a marker, the panel that owns it must actually be on screen.
+    if (text.trim().length > 80 && (!expect || text.toLowerCase().includes(expect.toLowerCase()))) {
       // Let fonts/layout settle before the shot.
       await page.waitForTimeout(400);
       return;
     }
     await page.waitForTimeout(400);
   }
-  throw new Error(`[capture] no content rendered for ${label}`);
+  throw new Error(
+    expect
+      ? `[capture] ${label}: expected text "${expect}" never rendered`
+      : `[capture] no content rendered for ${label}`,
+  );
 }
 
 /** Visit every target once so the dev server has compiled them all. */
@@ -137,16 +150,23 @@ async function main() {
         try {
           await page.goto(`${BASE}${shot.path}`, { waitUntil: "domcontentloaded", timeout: 60000 });
           if (shot.click) {
-            // The tab bar is client-rendered after `/api/me` resolves; clicking
-            // before hydration finds nothing and silently captures the default
-            // tab instead. Wait for the control, then for the panel to settle.
+            // The tab bar is client-rendered after `/api/me` resolves. A click
+            // that lands before hydration is silently dropped by React, so the
+            // shot would be captured under the wrong tab. Click, then verify the
+            // panel actually switched - retrying - before accepting the frame.
             const tab = page.getByRole("button", { name: shot.click, exact: false }).first();
-            await tab.waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
-            if (await tab.count()) {
+            let activated = false;
+            for (let i = 0; i < 8 && !activated; i++) {
+              await tab.waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
+              if (!(await tab.count())) {
+                throw new Error(`[capture] tab not found: ${shot.click}`);
+              }
               await tab.click();
-              await page.waitForTimeout(1500);
-            } else {
-              throw new Error(`[capture] tab not found: ${shot.click}`);
+              await page.waitForTimeout(1200);
+              activated = !shot.expect || (await pageHasText(page, shot.expect));
+            }
+            if (!activated) {
+              throw new Error(`[capture] ${label}: clicking "${shot.click}" never revealed "${shot.expect}"`);
             }
           }
           // Some screens render their content only after a record is chosen
@@ -171,7 +191,7 @@ async function main() {
               throw new Error(`[capture] select not found for ${label}`);
             }
           }
-          await waitForContent(page, label);
+          await waitForContent(page, label, shot.expect);
           break;
         } catch (err) {
           if (attempt >= 3) throw err;

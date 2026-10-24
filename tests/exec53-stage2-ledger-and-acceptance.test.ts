@@ -527,7 +527,20 @@ describe("the capture script refuses to commit a blank frame", () => {
 
   test("it waits for rendered content instead of a fixed delay", () => {
     assert.match(script, /async function waitForContent/);
-    assert.match(script, /innerText\.trim\(\)\.length/);
+    assert.match(script, /text\.trim\(\)\.length/);
+  });
+
+  // A length threshold alone is satisfied by the shell (header + tab bar), so a
+  // screenshot taken before a tab panel switched was committed under the wrong
+  // name. Every shot must be able to declare a marker only its own panel renders.
+  test("a shot can assert a marker that only its own panel renders", () => {
+    assert.match(script, /expect: "/);
+    assert.match(script, /expected text "\$\{expect\}" never rendered/);
+  });
+
+  test("a tab click is retried until the panel actually switches", () => {
+    assert.match(script, /async function pageHasText/);
+    assert.match(script, /never revealed/);
   });
 
   test("it fails on duplicate screenshots", () => {

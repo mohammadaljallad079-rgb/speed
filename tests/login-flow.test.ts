@@ -15,7 +15,7 @@ import {
   projectRefFromUrl,
   supabaseConfigConsistent,
 } from "../src/lib/supabase-config.ts";
-import { isProtectedPage, isPublicApiPath, middleware } from "../src/middleware.ts";
+import { isProtectedPage, isPublicApiPath, middleware, isSuperAdminPage } from "../src/middleware.ts";
 
 /**
  * Login + authentication flow regression guard.
@@ -190,6 +190,23 @@ describe("page-level gate redirects anonymous callers", () => {
   test("the global operator console is protected but its sign-in door is public", () => {
     assert.equal(isProtectedPage("/super-admin"), true, "/super-admin must be protected");
     assert.equal(isProtectedPage("/super-admin-login"), false, "/super-admin-login must stay public");
+  });
+
+  test("the operator console redirects to its own sign-in, not the ERP login", () => {
+    // Sending an operator to /login makes them sign in as a company identity,
+    // which then cannot open the console - the operator sees a redirect loop
+    // rather than the door they need.
+    for (const p of ["/super-admin", "/super-admin/users", "/super-admin/tenants/1"]) {
+      assert.equal(isSuperAdminPage(p), true, `${p} must use the operator sign-in`);
+    }
+    for (const p of ["/dashboard", "/login", "/super-admin-login", "/super-administer"]) {
+      assert.equal(isSuperAdminPage(p), false, `${p} must use the ERP login`);
+    }
+  });
+
+  test("the middleware sends an anonymous operator to /super-admin-login", () => {
+    const src = read("src/middleware.ts");
+    assert.match(src, /isSuperAdminPage\(pathname\) \? "\/super-admin-login" : "\/login"/);
   });
 
   test("a prefix does not swallow an unrelated page", () => {

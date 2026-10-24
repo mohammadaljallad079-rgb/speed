@@ -69,6 +69,15 @@ export function isProtectedPage(pathname: string): boolean {
   );
 }
 
+/**
+ * The global operator console. It has its own sign-in page, so an anonymous
+ * visitor is sent there rather than to the ERP login: the ERP login signs a user
+ * in as a company identity, which then cannot open the console.
+ */
+export function isSuperAdminPage(pathname: string): boolean {
+  return pathname === "/super-admin" || pathname.startsWith("/super-admin/");
+}
+
 /** True when an `/api/*` path is intentionally public. */
 export function isPublicApiPath(pathname: string): boolean {
   return PUBLIC_API_PREFIXES.some((prefix) => pathname.startsWith(prefix));
@@ -127,7 +136,10 @@ export async function middleware(request: NextRequest) {
 
   if (isProtectedPage(pathname) && !user) {
     const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = "/login";
+    // The global operator console has its own door. Sending an operator to the
+    // ERP login would have them sign in as a company user and then be bounced,
+    // so `/super-admin` (and its children) redirect to `/super-admin-login`.
+    loginUrl.pathname = isSuperAdminPage(pathname) ? "/super-admin-login" : "/login";
     loginUrl.search = "";
     return NextResponse.redirect(loginUrl);
   }

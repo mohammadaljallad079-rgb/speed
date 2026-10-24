@@ -300,6 +300,7 @@ const DEFAULT_ITEMS: SidebarItemData[] = [
       { id: 'sidebar', label_ar: 'القائمة الجانبية', label_en: 'Sidebar', href: '/settings/sidebar', is_active: true },
       { id: 'branches', label_ar: 'الفروع', label_en: 'Branches', href: '/settings/branches', is_active: true },
       { id: 'users', label_ar: 'المستخدمين', label_en: 'Users', href: '/settings/users', is_active: true },
+      { id: 'ai-control', label_ar: 'التحكم بالذكاء الاصطناعي', label_en: 'AI Control', href: '/settings/ai-control', is_active: true },
       { id: 'tax-settings', label_ar: 'إعدادات الضريبة', label_en: 'Tax Settings', href: '/settings/tax-rates', is_active: true },
     ],
   },

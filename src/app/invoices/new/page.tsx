@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/LanguageContext"
+import RecordSelect from "@/components/records/RecordSelect"
 import { ArrowLeft, Save, FileText, User, DollarSign, CreditCard, Percent, Hash } from "lucide-react"
 import Link from "next/link"
 
@@ -23,12 +24,8 @@ function NewInvoiceContent() {
   const { isRTL } = useLanguage()
   const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [customers, setCustomers] = useState<any[]>([])
   const [contracts, setContracts] = useState<any[]>([])
   const [filteredContracts, setFilteredContracts] = useState<any[]>([])
-  const [showAddCustomer, setShowAddCustomer] = useState(false)
-  const [newCustomer, setNewCustomer] = useState({ full_name: "", phone: "", email: "" })
-  const [savingCustomer, setSavingCustomer] = useState(false)
   const [taxSettings, setTaxSettings] = useState<TaxSetting[]>([])
   const [discountType, setDiscountType] = useState<"fixed" | "percentage">("fixed")
   const [discountValue, setDiscountValue] = useState("")
@@ -60,8 +57,6 @@ function NewInvoiceContent() {
       .then(({ data, error }) => {
         if (!error && data) setForm(prev => (prev.invoice_number ? prev : { ...prev, invoice_number: data }))
       })
-    supabase.from("customers").select("id,full_name,phone").order("full_name")
-      .then(({ data }) => setCustomers(data || []))
     supabase.from("rental_contracts").select("id,contract_number,car_id,customer_id,start_date,end_date,daily_rate,total_amount,cars(make,model,plate_number)")
       .then(({ data }) => setContracts(data || []))
     supabase.from("tax_settings").select("*").eq("is_active", true).order("created_at")
@@ -156,23 +151,6 @@ function NewInvoiceContent() {
     }
   }
 
-  async function handleAddCustomer() {
-    if (!newCustomer.full_name) return
-    setSavingCustomer(true)
-    const { data, error } = await supabase.from("customers").insert([{
-      full_name: newCustomer.full_name,
-      phone: newCustomer.phone || null,
-      email: newCustomer.email || null,
-    }]).select().single()
-    setSavingCustomer(false)
-    if (!error && data) {
-      setCustomers(prev => [...prev, data].sort((a, b) => (a.full_name||"").localeCompare(b.full_name||"")))
-      set("customer_id", data.id)
-      setShowAddCustomer(false)
-      setNewCustomer({ full_name: "", phone: "", email: "" })
-    }
-  }
-
   return (
     <DashboardLayout>
       <div className="max-w-4xl mx-auto p-6 space-y-6">
@@ -193,17 +171,17 @@ function NewInvoiceContent() {
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs text-slate-500 font-semibold">{isRTL ? "العميل" : "Customer"} *</label>
-                  <button type="button" onClick={() => setShowAddCustomer(true)} className="text-xs text-red-500 font-bold hover:underline">
-                    + {isRTL ? "عميل جديد" : "New Customer"}
-                  </button>
-                </div>
-                <select value={form.customer_id} onChange={e => set("customer_id", e.target.value)}
-                  className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-sm">
-                  <option value="">{isRTL ? "-- اختر العميل --" : "-- Select Customer --"}</option>
-                  {customers.map((c: any) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-                </select>
+                <label className="text-xs text-slate-500 font-semibold">{isRTL ? "العميل" : "Customer"} *</label>
+                {/* Searchable picker from the Customers module; the full
+                    two-tab customer form opens as a link so the canonical form
+                    is reused rather than duplicated. */}
+                <RecordSelect
+                  kind="customer"
+                  value={form.customer_id}
+                  onChange={(id) => set("customer_id", id)}
+                  createMode="link"
+                  placeholder={isRTL ? "-- اختر العميل --" : "-- Select Customer --"}
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-xs text-slate-500 font-semibold">{isRTL ? "عقد الإيجار (اختياري)" : "Rental Contract (optional)"}</label>
@@ -416,43 +394,6 @@ function NewInvoiceContent() {
           </button>
         </form>
 
-        {showAddCustomer && (
-          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
-              <h3 className="text-lg font-bold text-slate-900 mb-4">{isRTL ? "إضافة عميل جديد" : "Add New Customer"}</h3>
-              <div className="space-y-3">
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">{isRTL ? "الاسم الكامل" : "Full Name"} *</label>
-                  <input value={newCustomer.full_name} onChange={e => setNewCustomer(p => ({...p, full_name: e.target.value}))}
-                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-                    placeholder={isRTL ? "أدخل الاسم" : "Enter name"} />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">{isRTL ? "رقم الهاتف" : "Phone"}</label>
-                  <input value={newCustomer.phone} onChange={e => setNewCustomer(p => ({...p, phone: e.target.value}))}
-                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-                    placeholder="+973 XXXX XXXX" dir="ltr" />
-                </div>
-                <div>
-                  <label className="text-xs text-slate-500 mb-1 block">{isRTL ? "البريد الإلكتروني" : "Email"}</label>
-                  <input type="email" value={newCustomer.email} onChange={e => setNewCustomer(p => ({...p, email: e.target.value}))}
-                    className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-sm"
-                    placeholder="email@example.com" dir="ltr" />
-                </div>
-              </div>
-              <div className="flex gap-3 mt-5">
-                <button onClick={handleAddCustomer} disabled={savingCustomer || !newCustomer.full_name}
-                  className="flex-1 h-10 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-sm disabled:opacity-50">
-                  {savingCustomer ? "..." : (isRTL ? "حفظ العميل" : "Save Customer")}
-                </button>
-                <button onClick={() => setShowAddCustomer(false)}
-                  className="flex-1 h-10 border border-slate-200 rounded-xl text-sm hover:bg-slate-50">
-                  {isRTL ? "إلغاء" : "Cancel"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </DashboardLayout>
   )

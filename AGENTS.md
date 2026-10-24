@@ -1365,3 +1365,40 @@ that applies the filters it is given and returns only affected rows.
   the scoped read proved is the caller's), so `tenant_id` cannot be smuggled in.
 - `/customer-dashboard` and `/booking` are in `PROTECTED_PAGE_PREFIXES`.
   `tests/customer-booking-flow.test.ts` (in `test:core`) guards all of the above.
+
+## Execution 41 invariants (routes, global Super Admin console, AI, formats)
+
+- **`/erp` is a public marketing page, not a gated ERP route.** It was wrongly in
+  `PROTECTED_PAGE_PREFIXES`, so anonymous visitors got a 307 to `/login`.
+  `tests/login-flow.test.ts` now asserts `/erp` stays public and that
+  `/super-admin` is protected while `/super-admin-login` stays public.
+- **Two sign-in doors, one authorization source.** `/login` is for company
+  administrators/staff (and routes customers to `/customer-dashboard`); a genuine
+  `super_admin` is routed to `/super-admin`. `/super-admin-login` is the operator
+  door. Both decide the role from **`/api/me`** (server-resolved), never from an
+  email, `user_metadata` or a browser-fetched role. `isSuperAdmin` is the only
+  signal that admits a caller to the global console.
+- **The global console reads through guarded routes only.** `src/app/super-admin/`
+  calls `/api/super-admin/{overview,ai,tenants/[id],users/[id]}`, each of which
+  requires `requireSuperAdmin`. The page never queries an ERP table with the
+  browser client (the browser client is used only to sign out).
+- **The console can never mint a `super_admin`.** `assertRoleChangeAllowed`
+  rejects it; only `admin`/`staff`/`client` are assignable from the console.
+  Migration 004/008 enforce the same in the database.
+- **`/settings/ai-control` is linked from the sidebar** (`DashboardLayout`), so the
+  existing AI Control surface is reachable, not orphaned. The company-facing
+  `AiAssistantPanel` on `/dashboard` reuses the shared `repair-client` and the
+  existing `/api/ai/*` endpoints - no second AI pipeline.
+- **One format helper set.** `src/lib/utils.ts` owns `formatCurrency`,
+  `formatNumber`, `formatDate` and `formatDateTime`. `formatDate`/`formatDateTime`
+  default to `ar-BH` (Western digits, `d MMM y`) instead of `ar-SA`, whose default
+  calendar is Hijri. Ad-hoc `new Date().toLocaleString()` in print headers was
+  replaced with `formatDateTime` so the same screen prints identically everywhere.
+- **`RecordSelect` / `QuickCreateModal` / `sources.ts`** are the single reusable
+  record picker. `sales/new`, `purchases/new`, `invoices/new` and `rentals/new`
+  use it; the inline ad-hoc customer/supplier modals were removed. A field's
+  options come from the module that owns the record (`RECORD_SOURCES`).
+- **`tests/exec41-super-admin-console.test.ts`** guards the console policy, the
+  per-tenant isolation of the overview, and the "no direct browser DB access"
+  rule. `tests/exec31-receipt-and-rental-posting.test.ts` was moved into
+  `test:core` so every suite runs under `npm test`.

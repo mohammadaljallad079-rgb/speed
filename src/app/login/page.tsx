@@ -79,13 +79,19 @@ function LoginPageContent() {
       return;
     }
 
-    // Customers belong in the customer portal; administrators and staff in the ERP.
+    // Customers belong in the customer portal; the global operator in the
+    // global console; administrators and staff in the ERP.
     if (me?.role === "client") {
       router.replace("/customer-dashboard");
       return;
     }
 
-    if (me?.role !== "admin" && me?.role !== "super_admin" && me?.role !== "staff") {
+    if (me?.isSuperAdmin === true) {
+      router.replace("/super-admin");
+      return;
+    }
+
+    if (me?.role !== "admin" && me?.role !== "staff") {
       await supabase.auth.signOut();
       setError(unauthorizedRoleMessage(isRTL));
       setLoading(false);
@@ -171,6 +177,11 @@ function LoginPageContent() {
                 {isRTL ? "ليس لديك حساب؟ " : "Don't have an account? "}
                 <Link href="/signup" className="font-bold text-red-600 hover:underline">
                   {isRTL ? "ابدأ مجانًا" : "Start Free"}
+                </Link>
+              </p>
+              <p>
+                <Link href="/super-admin-login" className="text-xs font-semibold text-gray-400 hover:text-gray-700">
+                  {isRTL ? "دخول مدير النظام العام" : "Global admin sign-in"}
                 </Link>
               </p>
             </div>

@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Save, FileText, User, DollarSign, CreditCard, Percent, Hash } from "lucide-react"
 import Link from "next/link"
+import RecordSelect from "@/components/records/RecordSelect"
 
 type TaxSetting = {
   id: string
@@ -23,7 +24,6 @@ function NewSaleContent() {
   const { isRTL } = useLanguage()
   const router = useRouter()
   const [loading, setLoading] = useState(false)
-  const [customers, setCustomers] = useState<any[]>([])
   const [taxSettings, setTaxSettings] = useState<TaxSetting[]>([])
   const [discountType, setDiscountType] = useState<"fixed" | "percentage">("fixed")
   const [discountValue, setDiscountValue] = useState("")
@@ -54,8 +54,6 @@ function NewSaleContent() {
   }, [])
 
   useEffect(() => {
-    supabase.from("customers").select("id,full_name,phone").order("full_name")
-      .then(({ data }) => setCustomers(data || []))
     supabase.from("tax_settings").select("*").eq("is_active", true).order("created_at")
       .then(({ data }) => setTaxSettings(data || []))
   }, [])
@@ -142,11 +140,16 @@ function NewSaleContent() {
             </h2>
             <div className="space-y-1">
               <label className="text-xs text-slate-500 font-semibold">{isRTL ? "العميل" : "Customer"} *</label>
-              <select value={form.customer_id} onChange={e => set("customer_id", e.target.value)}
-                className="w-full h-10 px-3 rounded-xl border border-slate-200 bg-slate-50 text-sm">
-                <option value="">{isRTL ? "-- اختر العميل --" : "-- Select Customer --"}</option>
-                {customers.map((c: any) => <option key={c.id} value={c.id}>{c.full_name || c.name}</option>)}
-              </select>
+              {/* Searchable picker from the Customers module. The full customer
+                  form is a two-tab flow, so it opens as a link rather than an
+                  invented mini-form. */}
+              <RecordSelect
+                kind="customer"
+                value={form.customer_id}
+                onChange={(id) => set("customer_id", id)}
+                createMode="link"
+                placeholder={isRTL ? "-- اختر العميل --" : "-- Select Customer --"}
+              />
             </div>
           </div>
 

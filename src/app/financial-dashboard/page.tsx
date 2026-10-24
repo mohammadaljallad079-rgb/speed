@@ -9,6 +9,7 @@ import ReportFormatAssistant from '@/components/reporting/ReportFormatAssistant'
 import DynamicReportBuilder from '@/components/reporting/DynamicReportBuilder'
 import AssistantPanel from '@/components/ai/AssistantPanel'
 import { useLanguage } from '@/lib/LanguageContext'
+import { formatDate } from '@/lib/utils'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -644,7 +645,7 @@ function FinancialDashboardContent() {
                           <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${rec.priority === 'critical' ? 'bg-red-200 text-red-700' : 'bg-amber-200 text-amber-700'}`}>
                             {rec.priority.toUpperCase()}
                           </span>
-                          <span className="text-xs text-slate-400">{new Date(rec.created_at).toLocaleDateString()}</span>
+                          <span className="text-xs text-slate-400">{formatDate(rec.created_at, isRTL ? "ar-BH" : "en-GB")}</span>
                         </div>
                         <p className="font-bold text-slate-900">{rec.title}</p>
                         <p className="text-sm text-slate-600 mt-1">{rec.description}</p>

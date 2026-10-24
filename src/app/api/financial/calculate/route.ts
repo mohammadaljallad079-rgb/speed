@@ -1,11 +1,7 @@
-import { createClient } from '@supabase/supabase-js'
 import { NextResponse } from 'next/server'
 import { assertBranchAccess, logAudit, requireContext, scopeToCompany, toErrorResponse, type AuthContext } from '@/lib/auth'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+import { supabaseAdmin as supabase } from '@/lib/supabase-admin'
 
 // Financial Ratios Calculations - Using REAL project tables
 async function calculateRatios(periodStart: string, periodEnd: string, context: AuthContext) {

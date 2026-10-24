@@ -158,6 +158,12 @@ export default function ErpPage() {
               >
                 {isRTL ? "تسجيل الدخول" : "Login"}
               </Link>
+              <Link
+                href="/customer-login"
+                className="inline-flex items-center rounded-xl border border-white/20 px-7 py-3.5 text-base font-bold text-white transition hover:bg-white/10"
+              >
+                {isRTL ? "دخول العملاء" : "Customer Login"}
+              </Link>
             </div>
             <p className="mt-4 text-sm text-slate-400">
               {isRTL ? "لا حاجة لبطاقة دفع." : "No payment method required."}

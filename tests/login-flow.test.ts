@@ -78,10 +78,13 @@ describe("login page resolves authorization server-side", () => {
     assert.doesNotMatch(page, /\.from\(['"]users['"]\)/);
   });
 
-  test("allows admin, super_admin and staff; routes clients to the portal", () => {
+  test("allows admin and staff; routes super admins and clients to their consoles", () => {
     assert.match(page, /me\?\.role !== "admin"/);
-    assert.match(page, /me\?\.role !== "super_admin"/);
     assert.match(page, /me\?\.role !== "staff"/);
+    // The global operator is decided server-side (isSuperAdmin), never by the
+    // client role list, and is sent to the global console rather than the ERP.
+    assert.match(page, /me\?\.isSuperAdmin === true/);
+    assert.match(page, /router\.replace\("\/super-admin"\)/);
     assert.match(page, /\/customer-dashboard/);
     assert.match(page, /router\.replace\("\/dashboard"\)/);
   });
@@ -179,9 +182,14 @@ describe("page-level gate redirects anonymous callers", () => {
   });
 
   test("marketing and auth pages stay public", () => {
-    for (const p of ["/", "/login", "/pricing", "/features", "/signup", "/customer-login"]) {
+    for (const p of ["/", "/login", "/pricing", "/features", "/signup", "/customer-login", "/erp"]) {
       assert.equal(isProtectedPage(p), false, `${p} must stay public`);
     }
+  });
+
+  test("the global operator console is protected but its sign-in door is public", () => {
+    assert.equal(isProtectedPage("/super-admin"), true, "/super-admin must be protected");
+    assert.equal(isProtectedPage("/super-admin-login"), false, "/super-admin-login must stay public");
   });
 
   test("a prefix does not swallow an unrelated page", () => {

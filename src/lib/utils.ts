@@ -17,10 +17,10 @@ export function formatCurrency(amount: number | null | undefined, currency = 'BH
 
 export function formatNumber(num: number | null | undefined): string {
   if (num == null || !Number.isFinite(num)) return '—'
-  return new Intl.NumberFormat('ar-SA').format(num)
+  return new Intl.NumberFormat('ar-BH').format(num)
 }
 
-export function formatDate(date: string | Date | null | undefined, locale = 'ar-SA'): string {
+export function formatDate(date: string | Date | null | undefined, locale = 'ar-BH'): string {
   if (date == null || date === '') return '—'
   const parsed = new Date(date)
   if (Number.isNaN(parsed.getTime())) return '—'
@@ -28,6 +28,25 @@ export function formatDate(date: string | Date | null | undefined, locale = 'ar-
     year: 'numeric',
     month: 'short',
     day: 'numeric'
+  }).format(parsed)
+}
+
+/**
+ * Canonical date + time, for print headers and audit rows. Previously these were
+ * built ad hoc with `new Date().toLocaleString()`, whose output depends on the
+ * server/browser default locale — so the same screen printed differently on
+ * different machines. This fixes the locale explicitly, like `formatDate`.
+ */
+export function formatDateTime(date: string | Date | null | undefined, locale = 'ar-BH'): string {
+  if (date == null || date === '') return '—'
+  const parsed = new Date(date)
+  if (Number.isNaN(parsed.getTime())) return '—'
+  return new Intl.DateTimeFormat(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
   }).format(parsed)
 }
 

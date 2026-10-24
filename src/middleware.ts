@@ -53,11 +53,13 @@ const PROTECTED_PAGE_PREFIXES = [
   "/bookings",
   "/hr",
   "/settings",
-  "/erp",
   "/employee-portal",
   "/customer-dashboard",
   "/booking",
   "/onboarding",
+  // Global operator console. `/super-admin-login` is deliberately NOT here -
+  // it is the public door an unauthenticated operator must be able to reach.
+  "/super-admin",
 ];
 
 /** True when a page path must have a session (else redirect to /login). */

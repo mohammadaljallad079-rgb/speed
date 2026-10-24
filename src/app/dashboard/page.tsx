@@ -3,8 +3,9 @@ import { Suspense, useState, useEffect } from 'react'
 export const dynamic = "force-dynamic"
 import { supabase } from '@/lib/supabase'
 import { summarizeRevenue } from '@/lib/reporting/revenue'
-import { formatCurrency } from '@/lib/utils'
+import { formatCurrency, formatDate } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
+import AiAssistantPanel from '@/components/ai/AiAssistantPanel'
 import { useLanguage } from '@/lib/LanguageContext'
 import {
   Car, DollarSign, TrendingUp, Users, MoreHorizontal,
@@ -346,7 +347,7 @@ function DashboardContent() {
                 <h3 className="text-base font-black mb-4">{isRTL?"توفر السيارات":"Car Availability"}</h3>
                 <div className="space-y-3">
                   <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"نوع السيارة":"Car Type"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">SUV</div></div>
-                  <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"التاريخ":"Date"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">{new Date().toLocaleDateString()}</div></div>
+                  <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"التاريخ":"Date"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">{formatDate(new Date(), isRTL ? "ar-BH" : "en-GB")}</div></div>
                   <div><label className="text-xs text-slate-400 block mb-1">{isRTL?"الوقت":"Time"}</label><div className="bg-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-300">10:00 AM</div></div>
                   <Link href="/cars?status=available" className="block w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-xl text-sm text-center transition-colors">{isRTL?"تحقق":"Check"}</Link>
                 </div>
@@ -380,6 +381,11 @@ function DashboardContent() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* AI Assistant — company-facing, permission-gated by the AI APIs. */}
+      <div className="mt-6 px-6 pb-6">
+        <AiAssistantPanel screen="dashboard" />
       </div>
     </DashboardLayout>
   )

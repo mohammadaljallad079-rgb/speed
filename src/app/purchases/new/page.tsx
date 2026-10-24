@@ -5,6 +5,7 @@ import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, Supplier, Car, generateSupplierBillNumber } from "@/lib/supabase"
+import RecordSelect from "@/components/records/RecordSelect"
 import { formatCurrency } from "@/lib/utils"
 import {
   ShoppingBag, Save, ArrowLeft, Plus, Trash2, Car as CarIcon, User, FileText
@@ -179,16 +180,15 @@ function NewBillPageContent() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
-                  <select
+                  {/* Searchable picker from the Suppliers module with an inline
+                      (+) that reuses the module's own create form. */}
+                  <RecordSelect
+                    kind="supplier"
                     value={form.supplier_id}
-                    onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
-                    className="w-full h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-                  >
-                    <option value="">{isRTL ? 'اختر المورد...' : 'Select supplier...'}</option>
-                    {suppliers.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
+                    onChange={(id) => setForm({ ...form, supplier_id: id })}
+                    createMode="inline"
+                    placeholder={isRTL ? 'اختر المورد...' : 'Select supplier...'}
+                  />
                 </div>
                 <div>
                   <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'رقم الفاتورة' : 'Bill Number'}</label>

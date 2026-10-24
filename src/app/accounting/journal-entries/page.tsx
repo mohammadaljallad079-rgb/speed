@@ -4,7 +4,7 @@ import { Suspense, useState, useEffect, useRef } from "react"
 import { createPortal } from "react-dom"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
-import { formatCurrency } from "@/lib/utils"
+import { formatCurrency, formatDateTime } from "@/lib/utils"
 import {
   Receipt, Save, ArrowLeft, Plus, Trash2, Calculator, CheckCircle, AlertCircle,
   Printer, RotateCcw, Copy, ChevronDown, Search, X, Eye, Edit3, ShieldCheck,
@@ -220,7 +220,7 @@ function printJournal(entry: { journal_number: string; entry_date: string; refer
         <div class="sig-line">Entered By${entry.entered_by ? `<br/>${entry.entered_by}` : ""}</div>
         <div class="sig-line">Approved By${entry.approved_by ? `<br/>${entry.approved_by}` : ""}</div>
       </div>
-      <div class="footer"><p>Printed ${new Date().toLocaleString()}</p></div>
+      <div class="footer"><p>Printed ${formatDateTime(new Date())}</p></div>
     </body></html>
   `
   printWindow.document.write(html)

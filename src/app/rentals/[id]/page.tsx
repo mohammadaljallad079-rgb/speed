@@ -61,6 +61,16 @@ function PageContent() {
   async function updateStatus(status: string) {
     setApproving(true)
     await supabase.from('rental_contracts').update({ status }).eq('id', id)
+    // Emit the matching operational notification (best-effort; the server rebuilds
+    // the content from the contract row, tenant-scoped).
+    const notifyEvent = status === 'active' ? 'booking_confirmed' : status === 'cancelled' ? 'booking_cancelled' : null
+    if (notifyEvent) {
+      fetch('/api/notifications?op=emit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: notifyEvent, contractId: id }),
+      }).catch((e) => console.error('Notification emit failed:', e))
+    }
     // A terminal transition returns the vehicle to the pool; otherwise the
     // denormalised `cars.status` flag stays `rented` forever (Exec 57).
     const releaseStatus = carStatusForContractChange(status)

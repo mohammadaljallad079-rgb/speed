@@ -584,3 +584,85 @@ select 'no orphan journal header exists' as item,
 fs.writeFileSync(OUT_011, header011, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_011)}`);
 console.log(`  011 sha256 ${h011}`);
+
+// ---------------------------------------------------------------------------
+// 012 — notifications store. Appended after 011 so the existing outputs stay
+// byte-identical.
+// ---------------------------------------------------------------------------
+const b012 = read("012_notifications.sql");
+const h012 = sha(b012);
+const OUT_012 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_012.sql");
+
+const header012 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (012)
+-- ============================================================================
+-- Purpose : create the operational notification store \`public.notifications\`
+--           and its tenant-scoped RLS policies, so bookings, contract expiries
+--           and vehicle-document expiries produce a durable, deduped record the
+--           user can see (the bell in the app header).
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : after 001 -> 011 (PRODUCTION_ACTIVATION_001_002_003.sql, _004,
+--           _005_006, _007, _008, _009, _010, _011). 012 only needs \`tenants\` and the 002 predicates
+--           \`can_read_tenant\`/\`can_write_tenant\`; it is a clean no-op if either
+--           is absent.
+--
+-- SAFETY  : additive and idempotent (\`create table if not exists\`,
+--           \`create index if not exists\`, \`drop policy if exists\` then create).
+--           No DROP TABLE, no DROP COLUMN, no TRUNCATE, no DELETE, no row
+--           rewrite of any existing table. Safe to re-run.
+--
+-- WARNING : RUN THIS ONLY AGAINST THE CORRECT PROJECT.
+--           Confirm the project ref shown in the SQL Editor is
+--           chlkmdobhvfnldqkgdji (SPEED ERP production) before executing.
+--
+-- The migration body below is reproduced verbatim from
+-- supabase/migrations/012_notifications.sql (SHA-256 recorded at its header),
+-- so what runs here is exactly what was reviewed and locally verified.
+-- ============================================================================
+
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — visibility only; never aborts the script)
+-- ============================================================================
+select current_database() as database, current_user as executor_role, now() as at_utc;
+
+select 'table public.tenants' as item, (to_regclass('public.tenants') is not null) as present
+union all select 'function can_read_tenant', exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                where n.nspname = 'public' and p.proname = 'can_read_tenant')
+union all select 'table public.notifications already present', (to_regclass('public.notifications') is not null)
+order by present, item;
+
+-- ============================================================================
+-- BEGIN 012_notifications.sql
+-- SHA-256 (body): ${h012}
+-- ============================================================================
+
+${b012}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'table public.notifications present' as item,
+       (to_regclass('public.notifications') is not null) as ok
+union all select 'RLS enabled on notifications',
+       coalesce((select relrowsecurity from pg_class where oid = to_regclass('public.notifications')), false)
+union all select 'tenant dedupe index present',
+       exists (select 1 from pg_class where relname = 'notifications_tenant_dedupe_uidx')
+union all select 'null-tenant dedupe index present',
+       exists (select 1 from pg_class where relname = 'notifications_null_tenant_dedupe_uidx')
+union all select 'anon holds no privilege',
+       not has_table_privilege('anon', 'public.notifications', 'select')
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (012)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_012, header012, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_012)}`);
+console.log(`  012 sha256 ${h012}`);

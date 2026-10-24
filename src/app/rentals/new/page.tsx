@@ -463,6 +463,15 @@ function NewRentalForm() {
         alert((isRTL ? "تم إنشاء العقد لكن فشل توليد الفاتورة: " : "Contract created but invoice generation failed: ") + (invoiceErr?.message || ""))
       }
 
+      // Emit the real-time booking notification. The server rebuilds the content
+      // from the contract row (tenant-scoped), so a failure here never blocks the
+      // booking; it is best-effort and reported to the console only.
+      fetch("/api/notifications?op=emit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "booking_new", contractId: newContract.id }),
+      }).catch((e) => console.error("Notification emit failed:", e))
+
       router.push("/rentals")
     } catch (error: any) {
       console.error("Failed to create contract:", error)

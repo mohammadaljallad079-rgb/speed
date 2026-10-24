@@ -22,6 +22,7 @@ const PKG_008 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_008.sql");
 const PKG_009 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_009.sql");
 const PKG_010 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_010.sql");
 const PKG_011 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_011.sql");
+const PKG_012 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_012.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -383,5 +384,56 @@ describe("activation package 011 (atomic journal posting)", () => {
     const rb = fs.readFileSync(path.join(MIG, "011_atomic_journal_posting_rollback.sql"), "utf8");
     assert.match(rb, /drop function if exists public\.post_journal_entry/);
     assert.doesNotMatch(rb, /drop table/i);
+  });
+});
+
+describe("activation package 012 (notifications store)", () => {
+  const text = fs.readFileSync(PKG_012, "utf8");
+
+  test("the embedded body is byte-identical to the migration and the banner hash matches", () => {
+    const { hash, body } = embedded(text, "-- BEGIN 012_notifications.sql", "-- POST-FLIGHT");
+    assert.ok(hash, "no SHA-256 recorded in the banner");
+    assert.equal(hash, sha(body));
+    assert.equal(body, fs.readFileSync(path.join(MIG, "012_notifications.sql"), "utf8"));
+  });
+
+  test("the migration is embedded exactly once and the flights are present", () => {
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    assert.equal(count(/-- BEGIN 012_notifications\.sql/g), 1);
+    assert.match(text, /-- PRE-FLIGHT/);
+    assert.match(text, /-- POST-FLIGHT/);
+    assert.match(text, /END OF PACKAGE/);
+  });
+
+  test("the package contains no destructive or privilege-widening statements", () => {
+    const nonComment = text
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("--"))
+      .join("\n");
+    for (const re of [
+      /\bdrop\s+table\b/i,
+      /\bdrop\s+column\b/i,
+      /\btruncate\b/i,
+      /\bdelete\s+from\b/i,
+      /\bdrop\s+schema\b/i,
+      /\bgrant\s+all\b/i,
+      /security\s+definer/i,
+    ]) {
+      assert.doesNotMatch(nonComment, re, `destructive or unsafe statement: ${re}`);
+    }
+  });
+
+  test("the package documents the apply order and the correct project", () => {
+    assert.match(text, /PRODUCTION_ACTIVATION_001_002_003\.sql/);
+    assert.match(text, /_011/);
+    assert.match(text, /chlkmdobhvfnldqkgdji/);
+    assert.match(text, /notifications/);
+    assert.match(text, /can_read_tenant/);
+  });
+
+  test("a rollback file exists and drops only the notifications table", () => {
+    const rb = fs.readFileSync(path.join(MIG, "012_notifications_rollback.sql"), "utf8");
+    assert.match(rb, /drop table if exists public\.notifications/);
+    assert.doesNotMatch(rb, /drop table if exists public\.(?!notifications)/);
   });
 });

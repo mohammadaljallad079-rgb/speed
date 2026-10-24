@@ -49,7 +49,19 @@ const FORBIDDEN_PROFILE_FIELDS = [
   "ai_settings", "api_key", "apiKey", "service_role", "secret", "token", "tenant_id",
 ];
 
-const hasLiveDb = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+// A real project is only reachable with real credentials. A build/test harness
+// that supplies placeholder values (to satisfy `supabaseUrl is required`) must
+// not un-skip these live assertions - they would fail with a 500 and look like a
+// code defect. Supabase keys are JWTs, so require the three-part shape.
+function looksLikeRealSupabaseKey(value: string | undefined): boolean {
+  return Boolean(value && value.split(".").length === 3 && !value.startsWith("placeholder"));
+}
+
+const hasLiveDb = Boolean(
+  process.env.NEXT_PUBLIC_SUPABASE_URL &&
+    !process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder") &&
+    looksLikeRealSupabaseKey(process.env.SUPABASE_SERVICE_ROLE_KEY),
+);
 
 function assertNoSecret(value: unknown, label: string) {
   const text = JSON.stringify(value ?? null);

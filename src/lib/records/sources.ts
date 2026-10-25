@@ -30,6 +30,13 @@ export type RecordSource = {
   createRoute: string;
   ar: string;
   en: string;
+  /**
+   * Optional richer label for a kind whose identity is more than one column.
+   * A vehicle is recognised as "Toyota Corolla (12345)", not by its plate
+   * alone; without this the picker shows a bare number and the user cannot
+   * tell two cars apart. Falls back to `labelColumn` when it returns empty.
+   */
+  describe?: (row: Record<string, unknown>) => string;
 };
 
 /**
@@ -83,6 +90,12 @@ export const RECORD_SOURCES: Record<RecordKind, RecordSource> = {
     createRoute: "/cars/new",
     ar: "المركبة",
     en: "Vehicle",
+    describe: (row) => {
+      const name = [row.make, row.model].filter((v): v is string => typeof v === "string" && v.trim() !== "").join(" ").trim();
+      const plate = typeof row.plate_number === "string" ? row.plate_number.trim() : "";
+      if (name && plate) return `${name} (${plate})`;
+      return name || plate;
+    },
   },
 };
 
@@ -97,6 +110,8 @@ export function isSelectableAccount(account: { is_active?: boolean | null }): bo
 
 /** The label to show for a record row, falling back across the known columns. */
 export function recordLabel(source: RecordSource, row: Record<string, unknown>): string {
+  const described = source.describe?.(row);
+  if (described) return described;
   const primary = row[source.labelColumn];
   if (typeof primary === "string" && primary.trim()) return primary;
   for (const key of ["name", "full_name", "name_ar", "name_en", "plate_number"]) {

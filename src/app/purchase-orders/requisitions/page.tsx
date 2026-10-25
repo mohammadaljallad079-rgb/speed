@@ -8,11 +8,12 @@ import { nextDocumentNumber } from "@/lib/numbering"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import {
   FilePlus, Plus, Search, Save, Trash2, CheckCircle, XCircle, ArrowRight,
-  ClipboardList, Filter, X, Truck, ChevronDown, Building2, Car, CreditCard, User, StickyNote
+  ClipboardList, Filter, X, Truck, ChevronDown, Building2, CreditCard, User, StickyNote
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
+import RecordSelect from "@/components/records/RecordSelect"
 
 const STATUS_OPTIONS = [
   { key: 'draft', labelAr: 'مسودة', labelEn: 'Draft', color: 'bg-slate-100 text-slate-700' },
@@ -37,9 +38,7 @@ type ReqRow = PurchaseRequisition & {
   rejection_reason?: string | null
   converted_to_po_id?: string | null
 }
-type VehicleItem = { id: string; make: string; model: string; plate_number: string }
 type ExpenseAccount = { id: string; code: string; name: string }
-type SupplierItem = { id: string; name: string }
 type BranchItem = { id: string; name: string }
 
 function SelectField({ label, icon: Icon, value, onChange, options, placeholder, required }: any) {
@@ -82,9 +81,7 @@ function PurchaseRequisitionsPageContent() {
   const { t, isRTL } = useLanguage()
   const [mounted, setMounted] = useState(false)
   const [reqs, setReqs] = useState<ReqRow[]>([])
-  const [vehicles, setVehicles] = useState<VehicleItem[]>([])
   const [expenseAccounts, setExpenseAccounts] = useState<ExpenseAccount[]>([])
-  const [suppliers, setSuppliers] = useState<SupplierItem[]>([])
   const [branches, setBranches] = useState<BranchItem[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -148,15 +145,11 @@ function PurchaseRequisitionsPageContent() {
 
   async function fetchOptions() {
     const results = await Promise.allSettled([
-      supabase.from('cars').select('id, make, model, plate_number').order('make'),
       supabase.from('expense_accounts').select('id, code, name').order('code'),
-      supabase.from('suppliers').select('id, name').order('name'),
       supabase.from('branches').select('id, name').order('name'),
     ])
-    const [carsRes, accRes, supRes, branchRes] = results
-    if (carsRes.status === 'fulfilled' && carsRes.value.data) setVehicles(carsRes.value.data as any)
+    const [accRes, branchRes] = results
     if (accRes.status === 'fulfilled' && accRes.value.data) setExpenseAccounts(accRes.value.data as any)
-    if (supRes.status === 'fulfilled' && supRes.value.data) setSuppliers(supRes.value.data as any)
     if (branchRes.status === 'fulfilled' && branchRes.value.data) setBranches(branchRes.value.data as any)
   }
 
@@ -383,16 +376,19 @@ function PurchaseRequisitionsPageContent() {
 
               {/* Row 2 */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <SelectField
-                  label={isRTL ? 'السيارة' : 'Vehicle'}
-                  icon={Car}
-                  value={form.car_id}
-                  onChange={(e: any) => setForm({ ...form, car_id: e.target.value })}
-                  placeholder={isRTL ? '— بدون —' : '— None —'}
-                  options={vehicles.map(v => (
-                    <option key={v.id} value={v.id}>{v.make} {v.model} — {v.plate_number}</option>
-                  ))}
-                />
+                {/* The vehicle is a record reference, so it is picked from the
+                    vehicle module and can be created inline like every other
+                    reference field on this form. */}
+                <div>
+                  <RecordSelect
+                    kind="car"
+                    label={isRTL ? 'السيارة' : 'Vehicle'}
+                    value={form.car_id}
+                    onChange={(id) => setForm({ ...form, car_id: id })}
+                    createMode="inline"
+                    placeholder={isRTL ? '— بدون —' : '— None —'}
+                  />
+                </div>
                 <SelectField
                   label={isRTL ? 'حساب المصروف' : 'Expense Account'}
                   icon={CreditCard}
@@ -591,11 +587,19 @@ function PurchaseRequisitionsPageContent() {
             <h3 className="text-base font-bold text-slate-900 dark:text-white mb-3">
               {isRTL ? `تحويل ${convertReq.req_number} لأمر شراء` : `Convert ${convertReq.req_number} to PO`}
             </h3>
-            <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'اختر المورد' : 'Select Supplier'} *</label>
-            <select value={convertSupplierId} onChange={e => setConvertSupplierId(e.target.value)} className="h-10 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 w-full px-3 text-sm mb-4">
-              <option value="">{isRTL ? '— اختر —' : '— Select —'}</option>
-              {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-            </select>
+            {/* Converting to a PO picks a supplier, so it uses the same
+                searchable, inline-creatable picker as the PO form itself. */}
+            <div className="mb-4">
+              <RecordSelect
+                kind="supplier"
+                label={isRTL ? 'اختر المورد' : 'Select Supplier'}
+                required
+                value={convertSupplierId}
+                onChange={(id) => setConvertSupplierId(id)}
+                createMode="inline"
+                placeholder={isRTL ? '— اختر —' : '— Select —'}
+              />
+            </div>
             <div className="flex justify-end gap-2">
               <Button variant="outline" size="sm" onClick={() => setConvertReq(null)} className="rounded-lg h-8 text-xs">{isRTL ? 'إلغاء' : 'Cancel'}</Button>
               <Button size="sm" disabled={converting} onClick={confirmConvert} className="rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white h-8 text-xs">

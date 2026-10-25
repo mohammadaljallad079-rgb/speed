@@ -358,6 +358,42 @@ describe("read pages pick their subject through the shared record picker", () =>
     // the list, and a duplicate read is what let the two drift apart.
     assert.doesNotMatch(source, /from\(['"]suppliers['"]\)/);
   });
+
+  test("the rental edit form picks its customer and vehicle through RecordSelect", () => {
+    // The create form and the edit form must agree: editing a contract whose
+    // customer or vehicle is missing from the list used to leave the control
+    // blank while the form still held the old id.
+    const source = read("src/app/rentals/[id]/edit/page.tsx");
+    assert.match(source, /import RecordSelect from "@\/components\/records\/RecordSelect"/);
+    assert.match(source, /kind="customer"[\s\S]{0,300}?createMode="inline"/);
+    assert.match(source, /kind="car"[\s\S]{0,300}?createMode="inline"/);
+    assert.doesNotMatch(source, /customers\.map\(/);
+    assert.doesNotMatch(source, /cars\.map\(/);
+    // No second customer/car query of its own.
+    assert.doesNotMatch(source, /from\(['"]customers['"]\)/);
+    assert.doesNotMatch(source, /from\(['"]cars['"]\)/);
+  });
+
+  test("purchase orders pick the vehicle through RecordSelect, not a raw <option> map", () => {
+    // The supplier beside it was already a picker; leaving the vehicle as a
+    // bespoke <select> meant one form carried two different interaction
+    // patterns for the same kind of field.
+    const source = read("src/app/purchase-orders/page.tsx");
+    assert.match(source, /kind="car"[\s\S]{0,400}?createMode="inline"/);
+    assert.doesNotMatch(source, /vehicles\.map\(/);
+    assert.doesNotMatch(source, /from\(['"]cars['"]\)/);
+  });
+
+  test("requisitions pick the vehicle and the convert-to-PO supplier through RecordSelect", () => {
+    const source = read("src/app/purchase-orders/requisitions/page.tsx");
+    assert.match(source, /import RecordSelect from "@\/components\/records\/RecordSelect"/);
+    assert.match(source, /kind="car"[\s\S]{0,400}?createMode="inline"/);
+    assert.match(source, /kind="supplier"[\s\S]{0,400}?createMode="inline"/);
+    assert.doesNotMatch(source, /vehicles\.map\(/);
+    assert.doesNotMatch(source, /suppliers\.map\(/);
+    assert.doesNotMatch(source, /from\(['"]cars['"]\)/);
+    assert.doesNotMatch(source, /from\(['"]suppliers['"]\)/);
+  });
 });
 
 describe("chart of accounts selector", () => {

@@ -1647,6 +1647,16 @@ that applies the filters it is given and returns only affected rows.
   `docs/screenshots/` and is listed in `docs/screenshots/MANIFEST.json`; the
   rental/purchasing shots were captured against the local dev harness (port 3099
   + the PostgREST stub), not production.
-- Tests: `tests/exec55-smart-forms-inline-create.test.ts` (41) asserts the picker,
-  inline mode, no ad-hoc option map and no duplicate table read per form;
+- **A picker that creates a record must then READ that record.** `RecordSelect`
+  hands the selected row back as the second `onChange` argument; a form that
+  instead looks the id up in a list fetched at mount cannot see a record created
+  inline seconds earlier. `payments/new` did exactly that, so an inline-created
+  customer left the balance panel and the open-invoice list empty with no error.
+  Prefer the row the picker returns and fall back to the mount-time list.
+- **A list page reads its own display data from the join, not a second query.**
+  `supplier-payments` fetched the whole suppliers table into state nothing
+  rendered - the names come from `suppliers(name)` on each payment row.
+- Tests: `tests/exec55-smart-forms-inline-create.test.ts` (43) asserts the picker,
+  inline mode, no ad-hoc option map and no duplicate table read per form, the
+  created-row read, and the absence of the dead suppliers read;
   `tests/exec52-super-admin-smart-forms.test.ts` (17) guards `describe`.

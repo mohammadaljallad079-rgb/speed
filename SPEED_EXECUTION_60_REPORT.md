@@ -2,8 +2,8 @@
 ## Final gap closure — AI Agent, SaaS, Smart Forms, Excel, Notifications
 
 **Branch:** `feat/final-hardening-round5`
-**Tip commit:** `2b94c68a156544ee8656713858abb92b80c3a315`
-**Commit URL:** https://github.com/mohammadaljallad079-rgb/speed/commit/2b94c68a156544ee8656713858abb92b80c3a315
+**Tip commit:** `a60f32689ceb8bbaf8bbc3fd27589658817eda50`
+**Commit URL:** https://github.com/mohammadaljallad079-rgb/speed/commit/a60f32689ceb8bbaf8bbc3fd27589658817eda50
 **Base (last confirmed pushed):** `c536858a6e629c495b4d3b6b294cfa54c1424bd0` (Exec 41)
 **Date:** 2026-10-24
 
@@ -19,9 +19,9 @@ repository state was confirmed against GitHub:
 | Working branch | `feat/final-hardening-round5` |
 | `c536858` (Exec 41, "last pushed") | **is an ancestor of HEAD** — `merge-base --is-ancestor` → YES |
 | Remote `origin/feat/final-hardening-round5` | `9ea45b5` (Exec 58) — **stale** |
-| Local commits ahead of remote | **16** (Exec 56 → Exec 60) |
+| Local commits ahead of remote | **17** (Exec 56 → Exec 60) |
 
-So the branch had accumulated sixteen local commits beyond the last pushed tip
+So the branch had accumulated seventeen local commits beyond the last pushed tip
 and none had reached GitHub. That is the reason the Super Admin console was
 reported missing in production: **the release was never published**, not a code
 defect. Publishing is a fast-forward and is listed as an owner step in §7.
@@ -278,10 +278,16 @@ AGENTS.md is stale for this branch.
 - **Not deployed.** No production contact, no live DDL, no live financial data
   touched. Screenshots and acceptance runs are against the local dev stack
   (Next.js :3099 + the PostgREST stub).
-- **The branch is not published.** Sixteen commits (Exec 56 → 60) exist only
-  locally. Until they are pushed, production will not contain the Super Admin
-  console or anything in this report. Publishing is a **fast-forward** and is an
-  owner step:
+- **The branch is not published, and I could not publish it.** Seventeen commits
+  (Exec 56 → 60) exist only locally. Until they are pushed, production will not
+  contain the Super Admin console or anything in this report. **The push was
+  attempted and blocked: the `GITHUB_TOKEN` available to this sandbox is
+  rejected by GitHub** — `curl -H "Authorization: Bearer $GITHUB_TOKEN"
+  https://api.github.com/user` returns `401 Bad credentials`, and `gh auth
+  status` reports "The token in GITHUB_TOKEN is invalid". No other credential is
+  configured (no `credential.helper`, no token in `.git/config`). The working
+  tree is clean at `a60f326`, so publishing is a **fast-forward** once a valid
+  token is supplied:
 
   ```bash
   git push origin feat/final-hardening-round5
@@ -303,8 +309,9 @@ AGENTS.md is stale for this branch.
 |---|---|
 | `9b4846f` | `test(exec60): prove the Excel export in a real browser; commit the screens` |
 | `2b94c68` | `fix(exec60): restore the inline (+) create on four Smart Form pickers` |
+| `a60f326` | `docs(exec60): closure report + the invariants the four missing labels taught` |
 
-Full Exec 60 range since the last pushed base: `c536858..2b94c68` (16 commits,
+Full Exec 60 range since the last pushed base: `c536858..a60f326` (17 commits,
 Exec 56 → 60).
 
 ---

@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
-import { supabase, SupplierPayment, Supplier, PurchaseInvoice } from "@/lib/supabase"
+import { supabase, SupplierPayment, PurchaseInvoice } from "@/lib/supabase"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
 import RecordSelect from "@/components/records/RecordSelect"
 import {
@@ -30,7 +30,6 @@ function SupplierPaymentsPageContent() {
   const { t, isRTL } = useLanguage()
   const [mounted, setMounted] = useState(false)
   const [payments, setPayments] = useState<SupplierPayment[]>([])
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [bills, setBills] = useState<PurchaseInvoice[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -51,7 +50,6 @@ function SupplierPaymentsPageContent() {
   useEffect(() => {
     setMounted(true)
     fetchPayments()
-    fetchSuppliers()
     fetchBills()
   }, [])
 
@@ -67,11 +65,6 @@ function SupplierPaymentsPageContent() {
       console.error('Error fetching payments:', error)
     }
     setLoading(false)
-  }
-
-  async function fetchSuppliers() {
-    const { data } = await supabase.from('suppliers').select('*').order('name')
-    if (data) setSuppliers(data)
   }
 
   async function fetchBills() {

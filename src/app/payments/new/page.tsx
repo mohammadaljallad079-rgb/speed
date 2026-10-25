@@ -81,8 +81,10 @@ function NewPaymentPageContent() {
     setCustomers(data || [])
   }
 
-  async function fetchCustomerData(customerId: string) {
-    const customer = customers.find(c => c.id === customerId)
+  async function fetchCustomerData(customerId: string, known?: Record<string, unknown> | null) {
+    // Prefer the row the picker just handed over: it is authoritative for a
+    // record created inline, which the mount-time list cannot contain yet.
+    const customer = known ?? customers.find(c => c.id === customerId)
     setSelectedCustomer(customer || null)
 
     const { data: invData } = await supabase
@@ -97,9 +99,9 @@ function NewPaymentPageContent() {
     setCustomerBalance(balance)
   }
 
-  function handleCustomerChange(customerId: string) {
+  function handleCustomerChange(customerId: string, row?: Record<string, unknown> | null) {
     setForm(prev => ({ ...prev, customer_id: customerId, invoice_id: '', car_plate: '', car_info: '' }))
-    fetchCustomerData(customerId)
+    fetchCustomerData(customerId, row)
   }
 
   function handleInvoiceChange(invoiceId: string) {
@@ -287,7 +289,7 @@ function NewPaymentPageContent() {
                       label={isRTL ? 'العميل' : 'Customer'}
                       required
                       value={form.customer_id}
-                      onChange={(id) => handleCustomerChange(id)}
+                      onChange={(id, row) => handleCustomerChange(id, row)}
                       createMode="inline"
                       placeholder={isRTL ? 'اختر العميل' : 'Select customer'}
                     />

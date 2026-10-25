@@ -290,6 +290,24 @@ describe("inline creation is wired for every record kind", () => {
     }
   });
 
+  test("an inline-created customer is used for the balance, not looked up in a stale list", () => {
+    // The picker hands back the created row. Looking the customer up in the
+    // list fetched at mount cannot see a record created a moment ago, so the
+    // balance panel and the open-invoice list stayed empty for a new customer
+    // even though the form held a valid id.
+    const source = read("src/app/payments/new/page.tsx");
+    assert.match(source, /onChange=\{\(id, row\) => handleCustomerChange\(id, row\)\}/);
+    assert.match(source, /known \?\? customers\.find/);
+  });
+
+  test("the supplier-payments list does not fetch suppliers it never displays", () => {
+    // Names come from the `suppliers(name)` join on each payment row; the extra
+    // full-table read and its state were dead.
+    const source = read("src/app/supplier-payments/page.tsx");
+    assert.doesNotMatch(source, /from\(['"]suppliers['"]\)\.select/);
+    assert.doesNotMatch(source, /\bsetSuppliers\b/);
+  });
+
   test("the vehicle picker creates inline in rentals and purchases", () => {
     for (const page of ["src/app/rentals/new/page.tsx", "src/app/purchases/new/page.tsx"]) {
       const source = read(page);

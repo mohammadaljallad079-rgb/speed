@@ -36,6 +36,9 @@
     "docs/screenshots/bank-transfer-smartform-desktop.png",
     "docs/screenshots/rental-new-smartform-desktop.png",
     "docs/screenshots/car-new-smartform-desktop.png",
+    "docs/screenshots/report-vat-export-desktop.png",
+    "docs/screenshots/hr-attendance-smartform-desktop.png",
+    "docs/screenshots/hr-payroll-smartform-desktop.png",
     "docs/screenshots/super-admin-login-mobile.png",
     "docs/screenshots/erp-public-mobile.png",
     "docs/screenshots/public-fleet-mobile.png",
@@ -70,6 +73,9 @@
     "docs/screenshots/notifications-bell-mobile.png",
     "docs/screenshots/bank-transfer-smartform-mobile.png",
     "docs/screenshots/rental-new-smartform-mobile.png",
-    "docs/screenshots/car-new-smartform-mobile.png"
+    "docs/screenshots/car-new-smartform-mobile.png",
+    "docs/screenshots/report-vat-export-mobile.png",
+    "docs/screenshots/hr-attendance-smartform-mobile.png",
+    "docs/screenshots/hr-payroll-smartform-mobile.png"
   ]
 }

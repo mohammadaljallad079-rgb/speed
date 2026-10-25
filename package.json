@@ -7,6 +7,7 @@
     "dev:stub": "node scripts/dev/local-supabase-stub.mjs 54321",
     "shots": "node scripts/dev/capture-screenshots.mjs",
     "shots:e2e": "node scripts/dev/e2e-depreciation.mjs",
+    "e2e:excel-export": "node scripts/dev/e2e-excel-export.mjs",
     "e2e:ai-financial": "node scripts/dev/e2e-ai-financial-actions.mjs",
     "build": "next build",
     "start": "next start",

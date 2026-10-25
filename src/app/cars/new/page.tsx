@@ -721,6 +721,7 @@ function NewCarForm() {
                         <td className="py-2 pr-2 min-w-[180px]">
                           <RecordSelect
                             kind="account"
+                            label={isRTL ? 'حساب المصروف' : 'Expense account'}
                             value={row.account_id}
                             onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
                             createMode="inline"

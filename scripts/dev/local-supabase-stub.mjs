@@ -121,6 +121,12 @@ const TABLES = {
     { id: "jl8", journal_entry_id: "je4", account_id: "ac2", debit: 1000, credit: 0, description: "Capital into bank", line_order: 1 },
     { id: "jl9", journal_entry_id: "je4", account_id: "ac8", debit: 0, credit: 1000, description: "Owner equity", line_order: 2 },
   ],
+  // Exec 60 — the HR Smart Forms select an employee through the shared record
+  // picker, so the fixture must carry real rows or the control renders empty.
+  employees: [
+    { id: "e1", full_name: "Yousef Ahmed", job_title: "Sales Executive", position: "Sales Executive", phone: "+97339001122", status: "active", tenant_id: TENANT_A },
+    { id: "e2", full_name: "Mariam Ali", job_title: "Accountant", position: "Accountant", phone: "+97339003344", status: "active", tenant_id: TENANT_A },
+  ],
   cars: [
     { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A, purchase_price: 10000, purchase_date: "2025-01-01" },
     { id: "car2", make: "Nissan", model: "Patrol", year: 2023, plate_number: "67890", status: "rented", category: "rental", tenant_id: TENANT_A, purchase_price: 24000, purchase_date: "2024-06-01" },
@@ -180,8 +186,16 @@ function selectRows(table, searchParams) {
     // asset with `.like("reference_number", "DEP-<car>-%" )`.
     if (value.startsWith("like.")) {
       const pattern = value.slice(5);
-      const re = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*") + "$");
-      rows = rows.filter((r) => r[key] != null && re.test(String(r[key])));
+      // A malformed pattern must not take the whole fixture down: an unhandled
+      // `RegExp` throw here killed the stub process, which then looked like the
+      // app refusing every request. A bad filter narrows to nothing instead.
+      let re = null;
+      try {
+        re = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/%/g, ".*") + "$");
+      } catch {
+        re = null;
+      }
+      rows = re ? rows.filter((r) => r[key] != null && re.test(String(r[key]))) : [];
       continue;
     }
     // PostgREST `in.(a,b,c)`. The sale posting resolves the chart by code with
@@ -334,6 +348,29 @@ const server = http.createServer(async (req, res) => {
       // 006). A stub that accepted every insert would let a replayed key post a
       // SECOND financial document, so the constraint is enforced here too - the
       // same 23505 the app's `createSupabaseRepairStore` looks for.
+      // Migration 012 puts a UNIQUE index on
+      // (tenant_id, recipient_id, dedupe_key) for a real tenant and on
+      // (recipient_id, dedupe_key) for the NULL tenant. Without it here, a
+      // replayed contract event (or a second due-date scan) appends a SECOND
+      // notification and the "never duplicate" promise looks broken in the
+      // browser while the live schema would have refused the row. Enforce the
+      // same 23505 the app's `isDuplicate` looks for.
+      if (table === "notifications") {
+        for (const r of rows) {
+          const clash = TABLES[table].some((e) => {
+            if ((e.recipient_id ?? null) !== (r.recipient_id ?? null)) return false;
+            if (e.dedupe_key !== r.dedupe_key) return false;
+            if ((e.tenant_id ?? null) === null && (r.tenant_id ?? null) === null) return true;
+            return (e.tenant_id ?? null) === (r.tenant_id ?? null);
+          });
+          if (clash) {
+            return send(res, 409, {
+              code: "23505",
+              message: `duplicate key value violates unique constraint "notifications_tenant_dedupe_uidx"`,
+            });
+          }
+        }
+      }
       if (table === "ai_repair_executions") {
         for (const r of rows) {
           const clash = TABLES[table].some(

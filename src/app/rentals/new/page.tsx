@@ -718,6 +718,7 @@ function NewRentalForm() {
                   <div className="col-span-3">
                     <RecordSelect
                       kind="account"
+                      label={isRTL ? "حساب المصروف" : "Expense account"}
                       value={row.account_id}
                       onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
                       createMode="inline"

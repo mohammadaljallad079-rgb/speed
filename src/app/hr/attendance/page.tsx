@@ -214,6 +214,8 @@ function AttendanceContent() {
             <CardContent className="space-y-3">
               <RecordSelect
                 kind="employee"
+                label={isRTL ? 'الموظف' : 'Employee'}
+                required
                 value={checkInEmp}
                 onChange={(id) => setCheckInEmp(id)}
                 placeholder={isRTL ? 'اختر موظف...' : 'Select employee...'}
@@ -239,6 +241,8 @@ function AttendanceContent() {
             <CardContent className="space-y-3">
               <RecordSelect
                 kind="employee"
+                label={isRTL ? 'الموظف' : 'Employee'}
+                required
                 value={checkOutEmp}
                 onChange={(id) => setCheckOutEmp(id)}
                 placeholder={isRTL ? 'اختر موظف...' : 'Select employee...'}

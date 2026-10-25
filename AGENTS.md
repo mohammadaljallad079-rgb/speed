@@ -1621,3 +1621,32 @@ that applies the filters it is given and returns only affected rows.
 - `tests/exec57-booking-availability.test.ts` (registered in `test:core`) guards
   all of the above. Baseline after Exec 57: 1065 tests / 1059 pass / 6 skipped /
   0 fail; typecheck 0 new errors; lint clean; production build green.
+
+## Execution 58 invariants (one record picker for every relational field)
+
+- **One picker, no bespoke option maps.** Every field that references another
+  module's record uses `<RecordSelect kind=... createMode="inline" />`. A page
+  must not build its own `<select>` + `.map()` list for a customer, supplier,
+  vehicle or account, and must not keep a second read of that table: a duplicate
+  read is exactly what lets the control and the form's stored id drift apart.
+  Converted in Exec 58: `rentals/[id]/edit` (customer, vehicle),
+  `purchase-orders` (vehicle), `purchase-orders/requisitions` (vehicle + the
+  convert-to-PO supplier modal), plus `supplier-statements` (Exec 58a).
+- **`RecordSource.describe` exists because a record's identity is not always one
+  column.** A vehicle is "Toyota Corolla (12345)", not "12345". `recordLabel`
+  consults `describe` first and falls back to `labelColumn`; without it the
+  picker conversion is a readability regression even when the interaction is
+  better. Add a `describe` when a kind's natural label spans columns.
+- **A dense analytic grid is not a Smart Form.** The manual journal editor's
+  optional per-line dimensions (vehicle/customer/supplier/driver/contract) are
+  not converted: it is a 10px in-row grid and three of the five dimensions
+  (driver, contract, and cost centre/branch beside them) have no `RecordKind` at
+  all. Converting only part of that row would make one row carry two
+  interaction patterns. Revisit only with new record kinds, not as a field swap.
+- **Evidence is committed, not described.** Browser proof lives in
+  `docs/screenshots/` and is listed in `docs/screenshots/MANIFEST.json`; the
+  rental/purchasing shots were captured against the local dev harness (port 3099
+  + the PostgREST stub), not production.
+- Tests: `tests/exec55-smart-forms-inline-create.test.ts` (41) asserts the picker,
+  inline mode, no ad-hoc option map and no duplicate table read per form;
+  `tests/exec52-super-admin-smart-forms.test.ts` (17) guards `describe`.

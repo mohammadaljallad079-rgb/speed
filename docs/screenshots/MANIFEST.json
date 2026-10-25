@@ -3,6 +3,8 @@
   "files": [
     "docs/screenshots/super-admin-login-desktop.png",
     "docs/screenshots/erp-public-desktop.png",
+    "docs/screenshots/public-fleet-desktop.png",
+    "docs/screenshots/public-car-detail-desktop.png",
     "docs/screenshots/super-admin-overview-desktop.png",
     "docs/screenshots/super-admin-companies-desktop.png",
     "docs/screenshots/super-admin-users-desktop.png",
@@ -29,8 +31,11 @@
     "docs/screenshots/supplier-statements-desktop.png",
     "docs/screenshots/supplier-payments-desktop.png",
     "docs/screenshots/purchases-dashboard-desktop.png",
+    "docs/screenshots/notifications-bell-desktop.png",
     "docs/screenshots/super-admin-login-mobile.png",
     "docs/screenshots/erp-public-mobile.png",
+    "docs/screenshots/public-fleet-mobile.png",
+    "docs/screenshots/public-car-detail-mobile.png",
     "docs/screenshots/super-admin-overview-mobile.png",
     "docs/screenshots/super-admin-companies-mobile.png",
     "docs/screenshots/super-admin-users-mobile.png",
@@ -57,7 +62,6 @@
     "docs/screenshots/supplier-statements-mobile.png",
     "docs/screenshots/supplier-payments-mobile.png",
     "docs/screenshots/purchases-dashboard-mobile.png",
-    "docs/screenshots/public-fleet-desktop.png",
-    "docs/screenshots/public-car-detail-desktop.png"
+    "docs/screenshots/notifications-bell-mobile.png"
   ]
 }

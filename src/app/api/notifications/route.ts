@@ -93,7 +93,8 @@ export async function GET(request: Request) {
       ),
     });
   } catch (error) {
-    return toErrorResponse(error);
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
   }
 }
 
@@ -223,6 +224,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: false, error: "Unknown operation", code: "bad_request" }, { status: 400 });
   } catch (error) {
-    return toErrorResponse(error);
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
   }
 }

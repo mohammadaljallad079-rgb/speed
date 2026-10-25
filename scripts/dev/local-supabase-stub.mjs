@@ -143,6 +143,12 @@ const TABLES = {
     { id: "inv1", invoice_number: "INV-0001", customer_id: "c1", invoice_date: "2026-09-08", total_amount: 330, vat_amount: 30, paid_amount: 330, status: "paid", invoice_type: "rental", car_id: "car1", tenant_id: TENANT_A },
     { id: "inv2", invoice_number: "INV-0002", customer_id: "c2", invoice_date: "2026-10-06", total_amount: 220, vat_amount: 20, paid_amount: 0, status: "pending", invoice_type: "rental", car_id: "car2", tenant_id: TENANT_A },
   ],
+  // Exec 58 — the notification store and the rows the due-date scan reads.
+  rental_contracts: [
+    { id: "rc1", contract_number: "RC-0001", customer_id: "c1", car_id: "car1", status: "active", start_date: "2026-10-01", end_date: "2026-10-20", tenant_id: TENANT_A },
+    { id: "rc2", contract_number: "RC-0002", customer_id: "c2", car_id: "car2", status: "active", start_date: "2026-10-10", end_date: "2027-01-10", tenant_id: TENANT_A },
+  ],
+  notifications: [],
 };
 
 /** Rows a table returns, honouring the simple `eq`/`in` filters the pages send. */

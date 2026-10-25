@@ -499,6 +499,11 @@ describe("committed screenshots are real captures, not placeholders", () => {
       "report-expenses-by-branch",
       "report-vat-purchases",
       "report-vehicle-profitability",
+      // Execution 58: the notification bell panel (opened, scanned, populated).
+      "notifications-bell",
+      // Exec 56/58: the anonymous marketing catalogue.
+      "public-fleet",
+      "public-car-detail",
     ]) {
       for (const vp of ["desktop", "mobile"]) {
         const file = path.join(dir, `${name}-${vp}.png`);

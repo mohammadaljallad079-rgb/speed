@@ -352,3 +352,27 @@ describe("Exec58 — notification labels and safety", () => {
     assert.match(sql, /where tenant_id is null/);
   });
 });
+
+describe("Exec58 — notifications route hygiene", () => {
+  const route = read("src/app/api/notifications/route.ts");
+
+  test("the route authenticates via requireContext and never trusts the body for identity", () => {
+    assert.match(route, /requireContext\(request\)/);
+    assert.ok(!/body\.tenant_id/.test(route), "tenant_id must never come from the body");
+    assert.ok(!/body\.role/.test(route), "role must never come from the body");
+    assert.ok(!/body\.recipient/.test(route), "recipient must never come from the body");
+    assert.match(route, /context\.tenantId/);
+  });
+
+  test("the route introduces no SQL/exec/eval/child_process", () => {
+    assert.ok(!/\beval\s*\(/.test(route));
+    assert.ok(!/new\s+Function\s*\(/.test(route));
+    assert.ok(!/child_process/.test(route));
+    assert.ok(!/exec_sql/.test(route));
+  });
+
+  test("the notifications API is not on the public allow-list (it is tenant data)", () => {
+    const mw = read("src/middleware.ts");
+    assert.ok(!mw.includes('"/api/notifications"'), "notifications must stay behind the auth gate");
+  });
+});

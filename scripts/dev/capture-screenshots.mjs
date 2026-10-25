@@ -27,6 +27,12 @@ const SUPER_ADMIN_PASSWORD = "local-dev-password";
 const SHOTS = [
   { name: "super-admin-login", path: "/super-admin-login", auth: false },
   { name: "erp-public", path: "/erp", auth: false },
+  // The anonymous marketing catalogue (Exec 56). Both pages are public and read
+  // `/api/public/vehicles` with a safe projection, so they are captured without
+  // a session. They were committed once but had fallen out of this list, which
+  // made the regenerated MANIFEST.json drop them.
+  { name: "public-fleet", path: "/fleet", auth: false },
+  { name: "public-car-detail", path: "/cars/car1", auth: false },
   { name: "super-admin-overview", path: "/super-admin", auth: true, expect: "TOTAL COMPANIES" },
   { name: "super-admin-companies", path: "/super-admin", auth: true, click: "Companies", expect: "Action" },
   { name: "super-admin-users", path: "/super-admin", auth: true, click: "Users", expect: "PICK A COMPANY" },
@@ -57,6 +63,10 @@ const SHOTS = [
   { name: "supplier-statements", path: "/supplier-statements", auth: true, select: true },
   { name: "supplier-payments", path: "/supplier-payments", auth: true },
   { name: "purchases-dashboard", path: "/purchases/dashboard", auth: true },
+  // Execution 58: the notification bell, opened over the dashboard. The shot
+  // first runs the deterministic due-date scan so the panel shows real rows
+  // (the seeded contracts/vehicles are due), not an empty state.
+  { name: "notifications-bell", path: "/dashboard", auth: true, bell: true, expect: "Notifications" },
 ];
 
 const VIEWPORTS = [
@@ -189,6 +199,20 @@ async function main() {
               }
             } else {
               throw new Error(`[capture] select not found for ${label}`);
+            }
+          }
+          if (shot.bell) {
+            // Open the bell, run the scan, and wait for a real row. The panel is
+            // client-rendered from `/api/notifications`, so retry until it holds
+            // data rather than screenshotting an empty dropdown.
+            const bell = page.getByRole("button", { name: /notifications|الإشعارات/i }).first();
+            await bell.waitFor({ state: "visible", timeout: 20000 });
+            await bell.click();
+            const scan = page.getByRole("button", { name: /refresh alerts|تحديث التنبيهات/i }).first();
+            await scan.waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
+            if (await scan.count()) {
+              await scan.click();
+              await page.waitForTimeout(2500);
             }
           }
           await waitForContent(page, label, shot.expect);

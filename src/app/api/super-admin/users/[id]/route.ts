@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
 import { badRequest, notFound } from "@/lib/auth/errors";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { assertRoleChangeAllowed, assertSuperAdmin } from "@/lib/super-admin/policy";
+import { assertRoleChangeAllowed, assertRoleTargetEditable, assertSuperAdmin } from "@/lib/super-admin/policy";
 import { setUserActive, setUserRole, type AdminDb } from "@/lib/super-admin/service";
 
 export const dynamic = "force-dynamic";
@@ -37,6 +37,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .maybeSingle();
     if (readError) throw readError;
     if (!existing) throw notFound("User not found");
+    const currentRole = (existing as { role?: unknown }).role;
 
     const changed: string[] = [];
 
@@ -47,6 +48,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
 
     if (body.role !== undefined) {
+      // Both directions matter: the requested role may not be `super_admin`, and
+      // the target may not currently BE one (demotion is the same privilege
+      // change). Provisioning owns the global role.
+      assertRoleTargetEditable(currentRole);
       assertRoleChangeAllowed(body.role);
       await setUserRole(db, id, body.role);
       changed.push("role");

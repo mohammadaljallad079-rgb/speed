@@ -193,6 +193,35 @@ export default function SuperAdminPage() {
     [load],
   )
 
+  // A role is company-scoped and may never be `super_admin` (the console cannot
+  // grant or revoke the global role - that is a provisioning action, enforced
+  // again in `assertRoleChangeAllowed` and by migration 004).
+  const changeRole = useCallback(
+    async (user: TenantUser, role: string) => {
+      setBusyUser(user.id)
+      setError(null)
+      try {
+        const res = await fetch(`/api/super-admin/users/${user.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role }),
+        })
+        if (res.ok) {
+          setTenantUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, role } : u)))
+          void load()
+        } else {
+          const body = await res.json().catch(() => null)
+          setError(body?.error ?? t("تعذر تغيير الدور.", "Could not change the role."))
+        }
+      } catch {
+        setError(t("تعذر الاتصال بالخادم.", "Could not reach the server."))
+      } finally {
+        setBusyUser(null)
+      }
+    },
+    [load, t],
+  )
+
   const setCompanyActive = useCallback(
     async (tenant: TenantSummary, active: boolean) => {
       setBusyUser("__company__")
@@ -337,6 +366,7 @@ export default function SuperAdminPage() {
                 users={allUsers}
                 onOpen={openTenant}
                 onToggle={toggleUser}
+                onRoleChange={changeRole}
                 busyUser={busyUser}
                 t={t}
               />
@@ -565,6 +595,7 @@ function UsersTab({
   users,
   onOpen,
   onToggle,
+  onRoleChange,
   busyUser,
   t,
 }: {
@@ -573,6 +604,7 @@ function UsersTab({
   users: TenantUser[]
   onOpen: (t: TenantSummary) => void
   onToggle: (u: TenantUser) => void
+  onRoleChange: (u: TenantUser, role: string) => void
   busyUser: string | null
   t: (a: string, e: string) => string
 }) {
@@ -604,22 +636,41 @@ function UsersTab({
             </h3>
             <ul className="mt-3 divide-y divide-white/5">
               {users.map((u) => (
-                <li key={u.id} className="flex items-center justify-between py-3">
+                <li key={u.id} className="flex items-center justify-between gap-3 py-3">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-white">{u.fullName || u.email}</p>
-                    <p className="truncate text-xs text-slate-400">
-                      {u.email} · {u.role}
-                    </p>
+                    <p className="truncate text-xs text-slate-400">{u.email}</p>
                   </div>
-                  <button
-                    disabled={busyUser === u.id}
-                    onClick={() => void onToggle(u)}
-                    className={`rounded px-3 py-1.5 text-xs font-bold ${
-                      u.isActive ? "bg-green-600/20 text-green-300" : "bg-slate-700 text-slate-300"
-                    }`}
-                  >
-                    {busyUser === u.id ? "…" : u.isActive ? t("تعطيل", "Disable") : t("تفعيل", "Enable")}
-                  </button>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    {u.role === "super_admin" ? (
+                      // The global role is not company-scoped and is never
+                      // managed here; show it, do not offer to change it.
+                      <span className="rounded bg-red-500/15 px-2 py-1 text-[11px] font-bold text-red-300">
+                        {t("مدير عام", "Super admin")}
+                      </span>
+                    ) : (
+                      <select
+                        aria-label={t(`دور ${u.email}`, `Role for ${u.email}`)}
+                        value={u.role}
+                        disabled={busyUser === u.id}
+                        onChange={(e) => onRoleChange(u, e.target.value)}
+                        className="rounded border border-white/10 bg-slate-800 px-2 py-1.5 text-xs font-semibold text-slate-200 disabled:opacity-50"
+                      >
+                        <option value="admin">{t("مدير الشركة", "Company admin")}</option>
+                        <option value="staff">{t("موظف", "Staff")}</option>
+                        <option value="client">{t("عميل", "Customer")}</option>
+                      </select>
+                    )}
+                    <button
+                      disabled={busyUser === u.id}
+                      onClick={() => void onToggle(u)}
+                      className={`rounded px-3 py-1.5 text-xs font-bold ${
+                        u.isActive ? "bg-green-600/20 text-green-300" : "bg-slate-700 text-slate-300"
+                      }`}
+                    >
+                      {busyUser === u.id ? "…" : u.isActive ? t("تعطيل", "Disable") : t("تفعيل", "Enable")}
+                    </button>
+                  </div>
                 </li>
               ))}
               {users.length === 0 && <li className="py-3 text-sm text-slate-500">{t("لا مستخدمون.", "No users.")}</li>}

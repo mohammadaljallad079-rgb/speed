@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   assertSuperAdmin,
   assertRoleChangeAllowed,
+  assertRoleTargetEditable,
   tenantStatus,
   isAssignableRole,
 } from "../src/lib/super-admin/policy.ts";
@@ -136,6 +137,27 @@ describe("super_admin is the only role admitted to the global console", () => {
     assert.equal(isAssignableRole("staff"), true);
     assert.equal(isAssignableRole("super_admin"), false);
     assert.equal(isAssignableRole("root"), false);
+  });
+
+  test("the current role is guarded too, so a super admin cannot be demoted", () => {
+    // `assertRoleChangeAllowed` only inspects the requested role. Checking just
+    // that would let a global operator be demoted to `staff` - the same
+    // privilege change in the other direction - so the target is checked as well.
+    assert.throws(() => assertRoleTargetEditable("super_admin"), /not managed/);
+    assert.equal(assertRoleTargetEditable("admin"), undefined);
+    assert.equal(assertRoleTargetEditable("staff"), undefined);
+    assert.equal(assertRoleTargetEditable(null), undefined);
+  });
+
+  test("the user route enforces both directions before it writes", () => {
+    const route = read("src/app/api/super-admin/users/[id]/route.ts");
+    assert.match(route, /assertRoleTargetEditable\(currentRole\)/);
+    assert.match(route, /assertRoleChangeAllowed\(body\.role\)/);
+    // The target check must precede the write, not follow it.
+    assert.ok(
+      route.indexOf("assertRoleTargetEditable(currentRole)") < route.indexOf("await setUserRole("),
+      "the target guard must run before setUserRole",
+    );
   });
 });
 

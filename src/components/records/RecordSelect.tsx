@@ -118,8 +118,12 @@ export default function RecordSelect({
     let cancelled = false
     void (async () => {
       const { data } = await supabase.from(source.table).select(source.listColumns).eq("id", value).maybeSingle()
+      // A failed lookup (e.g. the id is not a UUID) must not reject unhandled;
+      // the control simply keeps the placeholder.
       if (!cancelled) setSelectedRow((data as unknown as RecordRow) ?? null)
-    })()
+    })().catch(() => {
+      if (!cancelled) setSelectedRow(null)
+    })
     return () => {
       cancelled = true
     }

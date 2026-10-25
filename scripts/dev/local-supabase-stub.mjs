@@ -43,11 +43,11 @@ const TENANTS = [
 
 const USERS = [
   { id: SUPER_ADMIN.id, email: SUPER_ADMIN.email, full_name: SUPER_ADMIN.full_name, role: "super_admin", tenant_id: null, is_active: true, created_at: "2026-07-01T08:00:00Z", customer_id: null },
-  { id: "a1", email: "speedadmin@speed.local", full_name: "SPEED Administrator", role: "admin", tenant_id: TENANT_A, is_active: true, created_at: "2026-08-02T08:00:00Z", customer_id: null },
-  { id: "a2", email: "staff@speed.local", full_name: "Front Desk", role: "staff", tenant_id: TENANT_A, is_active: true, created_at: "2026-08-03T08:00:00Z", customer_id: null },
-  { id: "a3", email: "old@speed.local", full_name: "Former Staff", role: "staff", tenant_id: TENANT_A, is_active: false, created_at: "2026-08-04T08:00:00Z", customer_id: null },
-  { id: "b1", email: "admin@harbour.local", full_name: "Harbour Administrator", role: "admin", tenant_id: TENANT_B, is_active: true, created_at: "2026-09-15T08:00:00Z", customer_id: null },
-  { id: "b2", email: "driver@harbour.local", full_name: "Harbour Driver", role: "staff", tenant_id: TENANT_B, is_active: true, created_at: "2026-09-16T08:00:00Z", customer_id: null },
+  { id: "aaaaaaaa-1111-1111-1111-111111111111", email: "speedadmin@speed.local", full_name: "SPEED Administrator", role: "admin", tenant_id: TENANT_A, is_active: true, created_at: "2026-08-02T08:00:00Z", customer_id: null },
+  { id: "aaaaaaaa-2222-2222-2222-222222222222", email: "staff@speed.local", full_name: "Front Desk", role: "staff", tenant_id: TENANT_A, is_active: true, created_at: "2026-08-03T08:00:00Z", customer_id: null },
+  { id: "aaaaaaaa-3333-3333-3333-333333333333", email: "old@speed.local", full_name: "Former Staff", role: "staff", tenant_id: TENANT_A, is_active: false, created_at: "2026-08-04T08:00:00Z", customer_id: null },
+  { id: "bbbbbbbb-1111-1111-1111-111111111111", email: "admin@harbour.local", full_name: "Harbour Administrator", role: "admin", tenant_id: TENANT_B, is_active: true, created_at: "2026-09-15T08:00:00Z", customer_id: null },
+  { id: "bbbbbbbb-2222-2222-2222-222222222222", email: "driver@harbour.local", full_name: "Harbour Driver", role: "staff", tenant_id: TENANT_B, is_active: true, created_at: "2026-09-16T08:00:00Z", customer_id: null },
 ];
 
 const BRANCHES = [
@@ -59,7 +59,7 @@ const BRANCHES = [
 const ACTIVITY = [
   { id: "e1", action: "create", entity: "invoices", entity_id: "i1", user_email: "speedadmin@speed.local", tenant_id: TENANT_A, created_at: "2026-10-23T10:15:00Z", metadata: {} },
   { id: "e2", action: "update", entity: "suppliers", entity_id: "s1", user_email: "admin@harbour.local", tenant_id: TENANT_B, created_at: "2026-10-23T09:40:00Z", metadata: {} },
-  { id: "e3", action: "login", entity: "users", entity_id: "a1", user_email: "speedadmin@speed.local", tenant_id: TENANT_A, created_at: "2026-10-23T08:05:00Z", metadata: {} },
+  { id: "e3", action: "login", entity: "users", entity_id: "aaaaaaaa-1111-1111-1111-111111111111", user_email: "speedadmin@speed.local", tenant_id: TENANT_A, created_at: "2026-10-23T08:05:00Z", metadata: {} },
 ];
 
 const TABLES = {
@@ -272,7 +272,12 @@ const server = http.createServer(async (req, res) => {
       const rows = Array.isArray(body) ? body : [body];
       TABLES[table] = TABLES[table] ?? [];
       const created = rows.map((r, i) => {
-        const row = { id: `${table.slice(0, 2)}-new-${TABLES[table].length + i + 1}`, ...r };
+        // A real Supabase id is a UUID. Emitting a short slug here made an id
+        // that a UUID-validating route (e.g. the Super Admin user PATCH) would
+        // reject, so the stub would diverge from the live schema.
+        const n = TABLES[table].length + i + 1;
+        const prefix = Buffer.from(table).toString("hex").slice(0, 8).padEnd(8, "0");
+        const row = { id: `${prefix}-0000-4000-8000-${String(n).padStart(12, "0")}`, ...r };
         TABLES[table].push(row);
         return row;
       });

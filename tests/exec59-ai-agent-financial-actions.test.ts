@@ -10,6 +10,7 @@ import {
   validateRepairInput,
 } from "../src/lib/ai/repair-catalog.ts";
 import { proposeRepair, executeRepair, type RepairDeps, type FinancePort } from "../src/lib/ai/repair-workflow.ts";
+import { createMemoryRepairStore, createResilientRepairStore, type RepairStore } from "../src/lib/ai/repair-store.ts";
 import type { AuthContext } from "../src/lib/auth/types.ts";
 import type { ReportingDb } from "../src/lib/reporting/data.ts";
 
@@ -98,6 +99,13 @@ function recordingDb(seed: Record<string, Record<string, unknown>[]> = {}) {
   };
   return { client, tables, writes };
 }
+
+/**
+ * A memory store *marked durable*, standing in for the migration-006 ledger.
+ * `executeRepair` refuses a financial write without durable idempotency, so a
+ * test that expects the write to proceed must supply one.
+ */
+const durableStore = () => ({ ...createMemoryRepairStore(), durable: true });
 
 function depsWith(finance: FinancePort, db: any, tenantId: string | null = "tenant-a"): RepairDeps {
   return {
@@ -268,6 +276,7 @@ describe("Exec 59 — the AI agent can change invoices and contracts", () => {
       proposal,
       { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
       deps,
+      { store: durableStore() },
     );
     assert.equal(result.ok, true);
     assert.equal(result.status, "verified");
@@ -296,6 +305,7 @@ describe("Exec 59 — the AI agent can change invoices and contracts", () => {
       proposal,
       { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
       deps,
+      { store: durableStore() },
     );
     assert.equal(result.ok, false);
     assert.equal(result.status, "unresolved");
@@ -322,6 +332,7 @@ describe("Exec 59 — the AI agent can change invoices and contracts", () => {
       proposal,
       { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
       deps,
+      { store: durableStore() },
     );
     assert.equal(result.ok, false);
     assert.equal(result.status, "failed");
@@ -347,9 +358,139 @@ describe("Exec 59 — the AI agent can change invoices and contracts", () => {
       proposal,
       { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
       deps,
+      { store: durableStore() },
     );
     assert.equal(result.ok, false);
     assert.equal(result.error!.code, "not_configured");
+
+  });
+});
+
+/**
+ * Execution 60, Section 9 — financial durability is mandatory.
+ *
+ * Execution 59 showed the posting works, but leaned on the migration-006 unique
+ * index. The resilient store silently degrades to per-process memory when that
+ * table is absent, and a per-process guard cannot stop a retry routed to another
+ * worker (or served after a restart) from posting a second invoice. These tests
+ * pin the fail-closed behaviour the assignment asks for: no durable store, no
+ * financial write.
+ */
+describe("Exec 60 — a financial write without durable idempotency is refused", () => {
+  const goodFinance = (): FinancePort => ({
+    issueInvoice: async () => ({ id: "inv1", invoiceNumber: "SI-1", totalAmount: 110, status: "pending" }),
+    reverseInvoice: async () => ({ invoiceId: "x", journalId: "j", created: true }),
+    extendContract: async () => ({ contractId: "ct1", newEndDate: "2026-06-30", additionalAmount: 0 }),
+  });
+
+  async function proposeIssue(finance: FinancePort, client: unknown) {
+    return proposeRepair(
+      context(),
+      "invoice_issue",
+      { customerId: "c1", amount: 100, vat: 10, discount: 0, invoiceType: "sale" },
+      depsWith(finance, client),
+    );
+  }
+
+  test("no store at all: the write is refused as unavailable and nothing is posted", async () => {
+    const { client } = recordingDb({ customers: [{ id: "c1", full_name: "A", tenant_id: "tenant-a" }] });
+    let called = false;
+    const finance: FinancePort = {
+      issueInvoice: async () => {
+        called = true;
+        return { id: "inv1", invoiceNumber: "SI-1", totalAmount: 110, status: "pending" };
+      },
+      reverseInvoice: async () => ({ invoiceId: "x", journalId: "j", created: true }),
+      extendContract: async () => ({ contractId: "ct1", newEndDate: "2026-06-30", additionalAmount: 0 }),
+    };
+    const proposal = await proposeIssue(finance, client);
+    const result = await executeRepair(
+      context(),
+      proposal,
+      { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
+      depsWith(finance, client),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.error!.code, "durability_unavailable");
+    assert.equal(called, false, "the finance port must not be reached without durable idempotency");
+  });
+
+  test("a NON-durable store is refused exactly like no store", async () => {
+    const { client } = recordingDb({ customers: [{ id: "c1", full_name: "A", tenant_id: "tenant-a" }] });
+    const finance = goodFinance();
+    const proposal = await proposeIssue(finance, client);
+    const result = await executeRepair(
+      context(),
+      proposal,
+      { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
+      depsWith(finance, client),
+      { store: createMemoryRepairStore() },
+    );
+    assert.equal(result.status, "unavailable");
+    assert.equal(result.error!.code, "durability_unavailable");
+  });
+
+  test("a DURABLE store lets the same write proceed", async () => {
+    const { client, tables } = recordingDb({ customers: [{ id: "c1", full_name: "A", tenant_id: "tenant-a" }] });
+    const finance: FinancePort = {
+      issueInvoice: async () => {
+        tables.invoices = [
+          { id: "inv1", invoice_number: "SI-9", status: "pending", total_amount: 110, invoice_type: "sale", tenant_id: "tenant-a" },
+        ];
+        return { id: "inv1", invoiceNumber: "SI-9", totalAmount: 110, status: "pending", journalId: "j1", journalCreated: true };
+      },
+      reverseInvoice: async () => ({ invoiceId: "x", journalId: "j", created: true }),
+      extendContract: async () => ({ contractId: "ct1", newEndDate: "2026-06-30", additionalAmount: 0 }),
+    };
+    const proposal = await proposeIssue(finance, client);
+    const result = await executeRepair(
+      context(),
+      proposal,
+      { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
+      depsWith(finance, client),
+      { store: durableStore() },
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.status, "verified");
+  });
+
+  test("a READ action is unaffected by the durability requirement", async () => {
+    const { client } = recordingDb({});
+    const proposal = await proposeRepair(context(), "date_filter_diagnostic", { from: "2026-01-01", to: "2026-01-31" }, depsWith(goodFinance(), client));
+    // No store, yet a read must still run: only financial writes need durability.
+    const result = await executeRepair(
+      context(),
+      proposal,
+      { proposalId: proposal.proposalId, approved: true, fingerprint: proposal.fingerprint },
+      depsWith(goodFinance(), client),
+    );
+    assert.notEqual(result.error?.code, "durability_unavailable");
+  });
+
+  test("the resilient wrapper reports durable=false once it degrades", async () => {
+    const broken: RepairStore = {
+      durable: true,
+      claim: async () => {
+        throw new Error("relation ai_repair_executions does not exist");
+      },
+      finalize: async () => true,
+      get: async () => null,
+      history: async () => [],
+    };
+    const store = createResilientRepairStore(broken);
+    assert.equal(store.durable, true, "healthy primary is durable");
+    await store.claim({
+      tenantId: "tenant-a",
+      userId: null,
+      userEmail: null,
+      proposalId: "p",
+      action: "invoice_issue",
+      planFingerprint: "f",
+      contentFingerprint: "c",
+      idempotencyKey: "k",
+    });
+    assert.equal(store.durable, false, "a degraded store must not claim durability");
   });
 });
 

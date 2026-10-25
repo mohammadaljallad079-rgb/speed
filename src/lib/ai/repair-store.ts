@@ -62,6 +62,14 @@ export interface FinalizeInput {
 }
 
 export interface RepairStore {
+  /**
+   * Whether the backing store survives a process restart. A memory store is
+   * per-process, so two requests served by different workers (or the same worker
+   * after a restart) cannot see each other's claims. Financial writes require a
+   * durable store: without one a retry after a lost response would post a second
+   * invoice, because nothing outside this process remembers the first.
+   */
+  readonly durable: boolean;
   /** Atomically claims the key, or reports how it is already used. */
   claim(input: ClaimInput): Promise<ClaimResult>;
   /** Marks a claimed key as resolved (or unresolved) exactly once. */
@@ -85,6 +93,7 @@ export function createMemoryRepairStore(): RepairStore {
   const k = (tenantId: string | null, key: string) => `${tenantId ?? "∅"}::${key}`;
 
   return {
+    durable: false,
     async claim(input) {
       const id = k(input.tenantId, input.idempotencyKey);
       const existing = byKey.get(id);
@@ -197,6 +206,7 @@ export function createSupabaseRepairStore(client: SupabaseClientLike): RepairSto
   }
 
   return {
+    durable: true,
     async claim(input) {
       const insert = await client.from(table).insert({
         tenant_id: input.tenantId,
@@ -268,6 +278,11 @@ export function createSupabaseRepairStore(client: SupabaseClientLike): RepairSto
  * app run before migration 006 is applied — the same pattern as `hasColumn`
  * elsewhere. The limitation is explicit: a degraded store is per-process and
  * does not survive a restart, and this is reported (never hidden).
+ *
+ * `durable` reports whether the PRIMARY is still answering, and it flips to
+ * `false` the moment the wrapper degrades. Financial writes consult it and
+ * refuse rather than post against a store that cannot stop a double-post
+ * (see `executeRepair`).
  */
 export function createResilientRepairStore(primary: RepairStore, fallback: RepairStore = createMemoryRepairStore()): RepairStore {
   let degraded = false;
@@ -281,6 +296,9 @@ export function createResilientRepairStore(primary: RepairStore, fallback: Repai
   };
 
   return {
+    get durable() {
+      return primary.durable && !degraded;
+    },
     async claim(input) {
       if (!degraded) {
         try {

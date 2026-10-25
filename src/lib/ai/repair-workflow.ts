@@ -147,6 +147,12 @@ export type RepairExecutionStatus =
   | "duplicate"
   | "in_progress"
   | "unresolved"
+  /**
+   * A prerequisite for a safe execution is missing (today: a financial write
+   * with no durable idempotency ledger). Distinct from `failed`: nothing was
+   * attempted and nothing changed.
+   */
+  | "unavailable"
   | "failed";
 
 export interface RepairApproval {
@@ -850,6 +856,23 @@ export async function executeRepair(
   //    constraint on (tenant_id, idempotency_key) makes concurrent requests,
   //    restarts and a lost response all safe. Without one, fall back to the
   //    best-effort in-memory port.
+  //
+  //    A FINANCIAL write may NOT fall back. The in-memory port lives in one
+  //    process: a retry routed to another worker, or served after a restart,
+  //    would see no record of the first attempt and post the invoice twice. The
+  //    durable ledger is the only thing that can stop that, so when it is
+  //    missing we refuse the write outright (fail closed) and say why, instead
+  //    of silently risking a duplicate posting.
+  if (spec.effect === "financial" && !(options.store?.durable ?? false)) {
+    return fail(
+      "unavailable",
+      "durability_unavailable",
+      "لا يمكن تنفيذ عملية مالية دون تخزين منع تكرار دائم. يجب تطبيق الترحيل 006 (جدول ai_repair_executions) أولاً.",
+      "A financial write requires durable idempotency. Apply migration 006 (the ai_repair_executions ledger) first.",
+      { ok: false, detailAr: "لم يتم تنفيذ أي تغيير مالي.", detailEn: "No financial change was made." },
+    );
+  }
+
   let claimed = false;
   if (options.store) {
     const claim = await options.store.claim({

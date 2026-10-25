@@ -420,6 +420,7 @@ describe("Exec23 — evidence sufficiency", () => {
 describe("Exec23 — resilience and regression safety", () => {
   test("a broken durable store degrades to the in-memory fallback", async () => {
     const broken: RepairStore = {
+      durable: true,
       claim: async () => { throw new Error("table missing"); },
       finalize: async () => { throw new Error("table missing"); },
       get: async () => { throw new Error("table missing"); },

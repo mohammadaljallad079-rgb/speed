@@ -63,7 +63,7 @@ export interface RepairVerification {
 
 export interface RepairExecutionResult {
   ok: boolean;
-  status: "verified" | "rejected" | "conflict" | "expired" | "forbidden" | "duplicate" | "failed";
+  status: "verified" | "rejected" | "conflict" | "expired" | "forbidden" | "duplicate" | "in_progress" | "unresolved" | "unavailable" | "failed";
   proposalId: string;
   action: string;
   changed: Record<string, unknown> | null;

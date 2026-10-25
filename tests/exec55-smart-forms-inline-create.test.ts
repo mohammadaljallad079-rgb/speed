@@ -344,6 +344,22 @@ describe("inline creation is wired for every record kind", () => {
   });
 });
 
+describe("read pages pick their subject through the shared record picker", () => {
+  test("supplier statements selects the supplier through RecordSelect", () => {
+    // A statement page is a read view, but its subject is still a record
+    // reference: mapping `suppliers` into <option> meant a missing supplier
+    // could only be created by leaving the page. It now uses the shared picker
+    // with inline create, like every creation form.
+    const source = read("src/app/supplier-statements/page.tsx");
+    assert.match(source, /import RecordSelect from "@\/components\/records\/RecordSelect"/);
+    assert.match(source, /kind="supplier"[\s\S]{0,400}?createMode="inline"/);
+    assert.doesNotMatch(source, /suppliers\.map\(/);
+    // The page must not keep a second supplier query of its own; the picker owns
+    // the list, and a duplicate read is what let the two drift apart.
+    assert.doesNotMatch(source, /from\(['"]suppliers['"]\)/);
+  });
+});
+
 describe("chart of accounts selector", () => {
   test("the account kind sources from the accounts table and shows the code", () => {
     assert.equal(RECORD_SCHEMAS.account.table, "accounts");

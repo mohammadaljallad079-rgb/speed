@@ -3,13 +3,14 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
-import { supabase, Supplier, PurchaseInvoice, SupplierPayment, DebitNote } from "@/lib/supabase"
+import { supabase, PurchaseInvoice, SupplierPayment, DebitNote } from "@/lib/supabase"
 import { formatCurrency, formatDate } from "@/lib/utils"
 import {
   FileBarChart, Search, Download, User, Calendar, ArrowDownLeft, ArrowUpRight, Minus
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import RecordSelect from "@/components/records/RecordSelect"
 import { Badge } from "@/components/ui/badge"
 
 type StatementRow = {
@@ -25,7 +26,6 @@ type StatementRow = {
 function SupplierStatementsPageContent() {
   const { t, isRTL } = useLanguage()
   const [mounted, setMounted] = useState(false)
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [selectedSupplier, setSelectedSupplier] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [statement, setStatement] = useState<StatementRow[]>([])
@@ -33,13 +33,7 @@ function SupplierStatementsPageContent() {
 
   useEffect(() => {
     setMounted(true)
-    fetchSuppliers()
   }, [])
-
-  async function fetchSuppliers() {
-    const { data } = await supabase.from('suppliers').select('*').order('name')
-    if (data) setSuppliers(data)
-  }
 
   async function generateStatement(supplierId: string) {
     if (!supplierId) return
@@ -137,8 +131,6 @@ function SupplierStatementsPageContent() {
 
   if (!mounted) return null
 
-  const selectedSupplierName = suppliers.find(s => s.id === selectedSupplier)?.name || ''
-
   return (
     <DashboardLayout>
       <div className="space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
@@ -155,24 +147,24 @@ function SupplierStatementsPageContent() {
 
         {/* Supplier Selector */}
         <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 border border-slate-200 dark:border-slate-700">
-          <label className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2 block flex items-center gap-2">
-            <User className="w-4 h-4 text-violet-500" />
-            {isRTL ? 'اختر المورد' : 'Select Supplier'}
-          </label>
           <div className="flex gap-3">
-            <select
+            {/* The statement's subject is a record reference like any other: it
+                is picked from the supplier module and can be created inline, so
+                a missing supplier does not force the user to abandon the page.
+                The label is passed in rather than wrapped around the control so
+                the (+) button sits beside it, visible without opening the list. */}
+            <RecordSelect
+              kind="supplier"
+              className="flex-1"
+              label={isRTL ? 'اختر المورد' : 'Select Supplier'}
               value={selectedSupplier}
-              onChange={(e) => {
-                setSelectedSupplier(e.target.value)
-                generateStatement(e.target.value)
+              createMode="inline"
+              placeholder={isRTL ? 'اختر مورد...' : 'Select a supplier...'}
+              onChange={(id) => {
+                setSelectedSupplier(id)
+                generateStatement(id)
               }}
-              className="flex-1 h-11 px-3 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-900 dark:text-white"
-            >
-              <option value="">{isRTL ? 'اختر مورد...' : 'Select a supplier...'}</option>
-              {suppliers.map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
+            />
           </div>
         </div>
 

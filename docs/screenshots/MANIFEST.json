@@ -70,6 +70,9 @@
     "docs/screenshots/supplier-payments-desktop.png",
     "docs/screenshots/supplier-payments-mobile.png",
     "docs/screenshots/supplier-statements-desktop.png",
-    "docs/screenshots/supplier-statements-mobile.png"
+    "docs/screenshots/supplier-statements-inline-create-desktop.png",
+    "docs/screenshots/supplier-statements-mobile.png",
+    "docs/screenshots/supplier-statements-picker-desktop.png",
+    "docs/screenshots/supplier-statements-picker-mobile.png"
   ]
 }

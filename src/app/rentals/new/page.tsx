@@ -83,14 +83,13 @@ function NewRentalForm() {
   const [dropoffSuggestions, setDropoffSuggestions] = useState<PlaceSuggestion[]>([])
   const [showPickupSuggestions, setShowPickupSuggestions] = useState(false)
   const [showDropoffSuggestions, setShowDropoffSuggestions] = useState(false)
-  const [accounts, setAccounts] = useState<{code:string; name:string; name_ar:string|null; name_en:string|null}[]>([])
   const [taxOptions, setTaxOptions] = useState<{id:string; name_ar:string|null; name_en:string|null; rate:number; type:string|null}[]>([])
   const [expenses, setExpenses] = useState([
-    { id: 'exp1', expense_type: 'Insurance', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp2', expense_type: 'Registration', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp3', expense_type: 'Maintenance' },
-    { id: 'exp4', expense_type: 'Fuel', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp5', expense_type: 'Damage', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp1', expense_type: 'Insurance', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp2', expense_type: 'Registration', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp3', expense_type: 'Maintenance', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp4', expense_type: 'Fuel', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp5', expense_type: 'Damage', account_id: '', account_code: '', amount: '', vat_percent: '0' },
   ])
 
   const [contract, setContract] = useState({
@@ -149,16 +148,14 @@ function NewRentalForm() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [carsRes, customersRes, settingsRes, accountsRes, taxesRes] = await Promise.all([
+      const [carsRes, customersRes, settingsRes, taxesRes] = await Promise.all([
         supabase.from("cars").select("id,make,model,year,plate_number,daily_rate,mileage").order("make"),
         supabase.from("customers").select("id,full_name,email,phone,national_id,license_number").order("full_name"),
         supabase.from("settings").select("company_profile").single(),
-        supabase.from("accounts").select("code,name,name_ar,name_en").eq("is_active", true).order("code"),
         supabase.from("tax_settings").select("id,name_ar,name_en,rate,type").eq("is_active", true).order("name_ar"),
       ])
       setCars(carsRes.data || [])
       setCustomers(customersRes.data || [])
-      setAccounts(accountsRes.data || [])
       setTaxOptions(taxesRes.data || [])
       const { data: nextNumber } = await supabase.rpc('get_next_contract_number')
       if (nextNumber) setContract(prev => ({ ...prev, contract_number: nextNumber }))
@@ -170,10 +167,15 @@ function NewRentalForm() {
     fetchData()
   }, [])
   const addExpenseRow = () => {
-    setExpenses(prev => [...prev, { id: 'exp' + Date.now(), expense_type: '', account_code: '', amount: '', vat_percent: '0' }])
+    setExpenses(prev => [...prev, { id: 'exp' + Date.now(), expense_type: '', account_id: '', account_code: '', amount: '', vat_percent: '0' }])
   }
   const updateExpenseRow = (id: string, field: string, value: string) => {
     setExpenses(prev => prev.map(row => row.id === id ? { ...row, [field]: value } : row))
+  }
+  // The expense account comes from the shared, database-backed picker; the row
+  // keeps both the id (stable link) and the code (the shape the payload used).
+  const setExpenseAccount = (id: string, accountId: string, row: Record<string, unknown> | null) => {
+    setExpenses(prev => prev.map(r => r.id === id ? { ...r, account_id: accountId, account_code: String(row?.code ?? '') } : r))
   }
   const removeExpenseRow = (id: string) => {
     setExpenses(prev => prev.filter(row => row.id !== id))
@@ -714,12 +716,15 @@ function NewRentalForm() {
                     <Input className={inputClass} value={row.expense_type} onChange={e => updateExpenseRow(row.id, "expense_type", e.target.value)} placeholder={isRTL ? "نوع المصروف" : "Expense type"} />
                   </div>
                   <div className="col-span-3">
-                    <select className={selectClass} value={row.account_code} onChange={e => updateExpenseRow(row.id, "account_code", e.target.value)}>
-                      <option value="">{isRTL ? "اختر حساب" : "Select account"}</option>
-                      {accounts.map(a => (
-                        <option key={a.code} value={a.code}>{a.code} — {isRTL ? (a.name_ar || a.name) : (a.name_en || a.name)}</option>
-                      ))}
-                    </select>
+                    <RecordSelect
+                      kind="account"
+                      value={row.account_id}
+                      onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
+                      createMode="inline"
+                      eq={[['is_active', 'true']]}
+                      filter={(r) => r.type !== 'asset' && r.type !== 'liability'}
+                      placeholder={isRTL ? "اختر حساب" : "Select account"}
+                    />
                   </div>
                   <div className="col-span-2">
                     <Input className={inputClass} type="number" step="0.001" value={row.amount} onChange={e => updateExpenseRow(row.id, "amount", e.target.value)} placeholder="0.000" />

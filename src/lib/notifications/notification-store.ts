@@ -36,13 +36,22 @@ interface SelectQuery extends PromiseLike<QueryResult<Record<string, unknown>[]>
   maybeSingle(): Promise<QueryResult<Record<string, unknown>>>;
 }
 
+/**
+ * The update builder. It must expose BOTH `eq` and `is`, because a tenant-less
+ * caller (the single-tenant install) scopes its row with `tenant_id is null` —
+ * `eq("tenant_id", "")` never matches a NULL column, which silently made
+ * "mark read" a no-op that still reported success.
+ */
+export interface UpdateQuery extends PromiseLike<QueryResult<unknown>> {
+  eq(column: string, value: string): UpdateQuery;
+  is(column: string, value: null): UpdateQuery;
+}
+
 export interface NotificationDb {
   from(table: string): {
     select(columns: string): SelectQuery;
     insert(rows: Record<string, unknown> | Record<string, unknown>[]): Promise<QueryResult<unknown>>;
-    update(values: Record<string, unknown>): {
-      eq(column: string, value: string): { eq(column: string, value: string): Promise<QueryResult<unknown>> };
-    };
+    update(values: Record<string, unknown>): UpdateQuery;
   };
 }
 
@@ -167,12 +176,14 @@ export async function markNotificationRead(
   recipientId: string | null,
   id: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const scope = tenantId ?? "";
-  const { error } = await db
-    .from("notifications")
-    .update({ read_at: new Date().toISOString() })
-    .eq("id", id)
-    .eq(tenantId ? "tenant_id" : "recipient_id", tenantId ? scope : (recipientId ?? ""));
+  // The row is scoped by tenant first (NULL-safe, matching `listNotifications`),
+  // then by recipient when one is known. A tenant-less caller must use
+  // `tenant_id is null`; `eq("tenant_id", "")` matches nothing and would leave
+  // the row unread while still returning success.
+  let query = db.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
+  query = tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+  if (recipientId) query = query.eq("recipient_id", recipientId);
+  const { error } = await query;
   if (!error) return { ok: true };
   return { ok: false, error: isMissingTable(error) ? "table_missing" : error.message };
 }

@@ -32,6 +32,9 @@
     "docs/screenshots/supplier-payments-desktop.png",
     "docs/screenshots/purchases-dashboard-desktop.png",
     "docs/screenshots/notifications-bell-desktop.png",
+    "docs/screenshots/bank-transfer-smartform-desktop.png",
+    "docs/screenshots/rental-new-smartform-desktop.png",
+    "docs/screenshots/car-new-smartform-desktop.png",
     "docs/screenshots/super-admin-login-mobile.png",
     "docs/screenshots/erp-public-mobile.png",
     "docs/screenshots/public-fleet-mobile.png",
@@ -62,6 +65,9 @@
     "docs/screenshots/supplier-statements-mobile.png",
     "docs/screenshots/supplier-payments-mobile.png",
     "docs/screenshots/purchases-dashboard-mobile.png",
-    "docs/screenshots/notifications-bell-mobile.png"
+    "docs/screenshots/notifications-bell-mobile.png",
+    "docs/screenshots/bank-transfer-smartform-mobile.png",
+    "docs/screenshots/rental-new-smartform-mobile.png",
+    "docs/screenshots/car-new-smartform-mobile.png"
   ]
 }

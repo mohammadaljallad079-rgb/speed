@@ -81,6 +81,7 @@ export default function RecordSelect({
 
   const [open, setOpen] = useState(false)
   const [rows, setRows] = useState<RecordRow[]>([])
+  const [selectedRow, setSelectedRow] = useState<RecordRow | null>(null)
   const [loading, setLoading] = useState(true)
   const [term, setTerm] = useState("")
   const [showCreate, setShowCreate] = useState(false)
@@ -100,6 +101,30 @@ export default function RecordSelect({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source.table])
 
+  // The current value is not necessarily in the list: a record created inline
+  // for a sibling field, or one the `filter` excludes, still has to be shown by
+  // name. An empty control would look like "nothing selected" while the form
+  // actually holds an id.
+  useEffect(() => {
+    const inList = rows.find((r) => String(r.id) === value)
+    if (inList) {
+      setSelectedRow(inList)
+      return
+    }
+    if (!value) {
+      setSelectedRow(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      const { data } = await supabase.from(source.table).select(source.listColumns).eq("id", value).maybeSingle()
+      if (!cancelled) setSelectedRow((data as unknown as RecordRow) ?? null)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [value, rows, source.table, source.listColumns])
+
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
@@ -108,7 +133,7 @@ export default function RecordSelect({
     return () => document.removeEventListener("mousedown", onClick)
   }, [])
 
-  const selected = useMemo(() => rows.find((r) => String(r.id) === value) ?? null, [rows, value])
+  const selected = selectedRow
 
   const filtered = useMemo(
     () => rows.filter((r) => recordMatches(source, r, term)).slice(0, 100),

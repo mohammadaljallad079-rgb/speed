@@ -132,20 +132,33 @@ function fakeDb(opts: { tableMissing?: boolean } = {}) {
           return { error: null };
         },
         update(values: Record<string, unknown>) {
-          return {
-            eq(col1: string, val1: string) {
-              return {
-                async eq(col2: string, val2: string) {
-                  if (opts.tableMissing) return { error: missing() };
-                  const target = rows.find(
-                    (r) => (r as any)[col1] === val1 && (r as any)[col2] === val2,
-                  );
-                  if (target) Object.assign(target, values);
-                  return { error: null };
-                },
-              };
+          // A PostgREST update chain: `eq`/`is` accumulate predicates and only
+          // the row matching ALL of them is written. Modelling `is(col, null)`
+          // faithfully is what catches the NULL-tenant "mark read" defect.
+          const predicates: Array<[string, string | null]> = [];
+          const q: any = {
+            eq(col: string, val: string) {
+              predicates.push([col, val]);
+              return q;
+            },
+            is(col: string, _val: null) {
+              predicates.push([col, null]);
+              return q;
+            },
+            then(onfulfilled: any, onrejected: any) {
+              if (opts.tableMissing) {
+                return Promise.resolve({ error: missing() }).then(onfulfilled, onrejected);
+              }
+              const target = rows.find((r) =>
+                predicates.every(([col, val]) =>
+                  val === null ? (r as any)[col] === null : (r as any)[col] === val,
+                ),
+              );
+              if (target) Object.assign(target, values);
+              return Promise.resolve({ error: null }).then(onfulfilled, onrejected);
             },
           };
+          return q;
         },
       };
     },
@@ -319,6 +332,35 @@ describe("Exec58 — notification store", () => {
     const after = await listNotifications(db as unknown as NotificationDb, "t1", "u1");
     assert.equal(after.unread, 0);
     assert.ok(after.records[0].readAt);
+  });
+
+  test("a tenant-less (NULL tenant) notification can be marked read", async () => {
+    // The live install is single-tenant: `tenant_id` is NULL and the route passes
+    // no recipient. Scoping the update with `eq("tenant_id", "")` matches nothing,
+    // so the row stayed unread while the API still answered success.
+    const db = fakeDb();
+    await insertNotifications(db as unknown as NotificationDb, null, null, [
+      bookingConfirmed({ contractId: "c2", contractNumber: "RC-2" }),
+    ]);
+    const before = await listNotifications(db as unknown as NotificationDb, null, null);
+    assert.equal(before.unread, 1);
+    const marked = await markNotificationRead(db as unknown as NotificationDb, null, null, before.records[0].id);
+    assert.equal(marked.ok, true);
+    const after = await listNotifications(db as unknown as NotificationDb, null, null);
+    assert.equal(after.unread, 0, "a NULL-tenant notification must actually be marked read");
+    assert.ok(after.records[0].readAt);
+  });
+
+  test("a foreign notification id is not writable across tenants", async () => {
+    const db = fakeDb();
+    await insertNotifications(db as unknown as NotificationDb, "t2", "u2", [
+      bookingConfirmed({ contractId: "c3", contractNumber: "RC-3" }),
+    ]);
+    const foreign = await listNotifications(db as unknown as NotificationDb, "t2", "u2");
+    const marked = await markNotificationRead(db as unknown as NotificationDb, "t1", "u1", foreign.records[0].id);
+    assert.equal(marked.ok, true, "the call succeeds but writes nothing");
+    const still = await listNotifications(db as unknown as NotificationDb, "t2", "u2");
+    assert.equal(still.unread, 1, "another tenant's notification must not be marked read");
   });
 });
 

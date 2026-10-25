@@ -318,6 +318,30 @@ describe("inline creation is wired for every record kind", () => {
       );
     }
   });
+
+  test("the vehicle expense rows pick their account from the shared chart picker", () => {
+    // `car_expenses[].account_code` was previously a raw <select> over the
+    // accounts table. It is now the same database-backed picker used everywhere
+    // else, so the row carries the account id and the code.
+    for (const page of ["src/app/cars/new/page.tsx", "src/app/rentals/new/page.tsx"]) {
+      const source = read(page);
+      assert.match(
+        source,
+        /kind="account"[\s\S]{0,400}?setExpenseAccount/,
+        `${page} should select the expense account through RecordSelect`,
+      );
+      assert.doesNotMatch(source, /accounts\.map\(/, `${page} still maps accounts into <option> elements`);
+    }
+  });
+
+  test("the bank transfer selects its cash/bank accounts through the shared picker", () => {
+    const source = read("src/app/accounting/bank-transfer/page.tsx");
+    assert.match(source, /import RecordSelect from '@\/components\/records\/RecordSelect'/);
+    assert.match(source, /kind="account"[\s\S]{0,400}?createMode="inline"/);
+    // Both legs of the transfer are DB-backed selectors, not raw <select>s.
+    assert.equal((source.match(/<RecordSelect/g) ?? []).length, 2);
+    assert.doesNotMatch(source, /accounts\.map\(/);
+  });
 });
 
 describe("chart of accounts selector", () => {
@@ -338,5 +362,34 @@ describe("chart of accounts selector", () => {
     assert.equal(values.type, "asset");
     assert.equal(values.is_active, true);
     assert.equal(values.parent_id, "");
+  });
+});
+
+describe("selected value stays visible when it is not in the list", () => {
+  const source = read("src/components/records/RecordSelect.tsx");
+
+  test("the control resolves the selected row by id, not only from the loaded list", () => {
+    // A record created inline for a sibling field, or one the `filter` excludes,
+    // is not in `rows`. Looking it up only in `rows` leaves the control showing
+    // the placeholder while the form holds an id - it looks unset and the user
+    // re-picks or saves a value they cannot see.
+    assert.match(source, /maybeSingle\(\)/, "RecordSelect must resolve the value by id");
+    assert.match(source, /setSelectedRow/, "the resolved row must drive the label");
+  });
+
+  test("the visible label is the resolved row, never a lookup confined to the list", () => {
+    assert.doesNotMatch(
+      source,
+      /const selected = useMemo\(\(\) => rows\.find/,
+      "the label must not be derived from the filtered list alone",
+    );
+  });
+
+  test("each quick-create field's label is bound to its control", () => {
+    // Without htmlFor/id the field has no accessible name, and the modal cannot
+    // be driven (or QA-tested) by its labels.
+    const modal = read("src/components/records/QuickCreateModal.tsx");
+    assert.match(modal, /<Label htmlFor=\{controlId\}/);
+    assert.match(modal, /id=\{controlId\}/);
   });
 });

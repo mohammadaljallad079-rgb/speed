@@ -280,6 +280,20 @@ const server = http.createServer(async (req, res) => {
       return send(res, 201, wantsObject ? created[0] : created);
     }
     let rows = selectRows(table, url.searchParams);
+    // PostgREST `PATCH` (`.update(...)`). Without this the stub echoed the rows
+    // unchanged, so an update appeared to succeed while nothing was written -
+    // which is exactly how the notification "mark read" defect stayed invisible
+    // in the browser. It applies the SAME filters `selectRows` understands.
+    if (req.method === "PATCH") {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      const patch = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const affected = rows.map((r) => Object.assign(r, patch));
+      const wantsObject = String(req.headers.accept ?? "").includes("pgrst.object");
+      return send(res, 200, wantsObject ? affected[0] ?? null : affected, {
+        "content-range": affected.length ? `0-${affected.length - 1}/${affected.length}` : "*/0",
+      });
+    }
     // PostgREST embed, e.g. `select=*,car:cars(...)`. The depreciation screen
     // reads the vehicle through this relation.
     if (/car:cars\(/.test(url.searchParams.get("select") ?? "") && table === "depreciation_schedules") {

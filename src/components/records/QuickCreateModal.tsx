@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useId, useMemo, useState } from "react"
 
 import { supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/LanguageContext"
@@ -177,13 +177,16 @@ function Field({
 }) {
   const label = `${isRTL ? field.ar : field.en}${field.required ? " *" : ""}`
   const inputClass = "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
+  // Associate the label with its control so the field is reachable by name
+  // (screen readers, and automated QA that fills a form by its labels).
+  const controlId = useId()
 
   return (
     <div className={className}>
-      <Label className="mb-1 block text-xs font-semibold text-slate-600">{label}</Label>
+      <Label htmlFor={controlId} className="mb-1 block text-xs font-semibold text-slate-600">{label}</Label>
 
       {field.type === "select" ? (
-        <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={inputClass}>
+        <select id={controlId} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={inputClass}>
           {field.options?.map((o) => (
             <option key={o.value} value={o.value}>
               {isRTL ? o.ar : o.en}
@@ -192,6 +195,7 @@ function Field({
         </select>
       ) : field.type === "textarea" ? (
         <textarea
+          id={controlId}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}
           rows={2}
@@ -199,13 +203,14 @@ function Field({
         />
       ) : field.type === "checkbox" ? (
         <input
+          id={controlId}
           type="checkbox"
           checked={value === true}
           onChange={(e) => onChange(e.target.checked)}
           className="h-4 w-4 rounded border-slate-300"
         />
       ) : field.name === "parent_id" && parents ? (
-        <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={inputClass}>
+        <select id={controlId} value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} className={inputClass}>
           <option value="">{isRTL ? "بدون (مستوى أول)" : "None (level 1)"}</option>
           {parents.map((p) => (
             <option key={p.id} value={p.id}>
@@ -215,6 +220,7 @@ function Field({
         </select>
       ) : (
         <Input
+          id={controlId}
           type={field.type === "number" ? "number" : field.type}
           value={String(value ?? "")}
           onChange={(e) => onChange(e.target.value)}

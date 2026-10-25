@@ -67,6 +67,12 @@ const SHOTS = [
   // first runs the deterministic due-date scan so the panel shows real rows
   // (the seeded contracts/vehicles are due), not an empty state.
   { name: "notifications-bell", path: "/dashboard", auth: true, bell: true, expect: "Notifications" },
+  // Execution 58: the Smart Forms whose reference fields were converted to the
+  // shared, database-backed picker (RecordSelect + inline Quick Create). These
+  // are captured so the change is visible, not just asserted in a test.
+  { name: "bank-transfer-smartform", path: "/accounting/bank-transfer", auth: true, expect: "Transfer Details" },
+  { name: "rental-new-smartform", path: "/rentals/new", auth: true, expect: "Expense" },
+  { name: "car-new-smartform", path: "/cars/new", auth: true, expect: "Expense" },
 ];
 
 const VIEWPORTS = [

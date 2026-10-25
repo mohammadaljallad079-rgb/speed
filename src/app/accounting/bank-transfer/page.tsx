@@ -4,20 +4,21 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { ArrowLeft, Save, Loader2, ArrowRightLeft, Building2, Wallet, Calendar, X, FileText } from 'lucide-react'
+import RecordSelect from '@/components/records/RecordSelect'
+import { ArrowLeft, Save, Loader2, ArrowRightLeft, Wallet, Calendar, X, FileText } from 'lucide-react'
+
+/** The cash and bank ledger accounts a transfer may move money between. */
+const TRANSFER_ACCOUNT_CODES = ['11001', '11002']
 
 interface Account {
   id: string
   code: string
-  name: string
   balance: number
 }
 
@@ -44,8 +45,8 @@ function BankTransferContent() {
     try {
       const { data } = await supabase
         .from('accounts')
-        .select('id, code, name, balance')
-        .in('code', ['11001', '11002'])
+        .select('id, code, balance')
+        .in('code', TRANSFER_ACCOUNT_CODES)
         .order('code')
       if (data) setAccounts(data as Account[])
     } catch (error) {
@@ -130,46 +131,30 @@ function BankTransferContent() {
           </CardHeader>
           <CardContent className="space-y-4">
             {/* From Account */}
-            <div className="space-y-2">
-              <Label className="text-xs font-medium text-slate-500">{isRTL ? 'من حساب *' : 'From Account *'}</Label>
-              <Select value={fromAccount} onValueChange={setFromAccount}>
-                <SelectTrigger className="h-10 rounded-lg">
-                  <SelectValue placeholder={isRTL ? 'اختر الحساب المصدر' : 'Select source account'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {accounts.map(acc => (
-                    <SelectItem key={acc.id} value={acc.id}>
-                      <div className="flex items-center gap-2">
-                        <Wallet className="w-4 h-4 text-slate-400" />
-                        <span>{acc.code} - {acc.name}</span>
-                        <span className="text-xs text-slate-400">({formatCurrency(acc.balance)})</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <RecordSelect
+              kind="account"
+              label={isRTL ? 'من حساب' : 'From Account'}
+              required
+              value={fromAccount}
+              onChange={(id) => setFromAccount(id)}
+              createMode="inline"
+              eq={[['is_active', 'true']]}
+              filter={(row) => TRANSFER_ACCOUNT_CODES.includes(String(row.code))}
+              placeholder={isRTL ? 'اختر الحساب المصدر' : 'Select source account'}
+            />
 
             {/* To Account */}
-            <div className="space-y-2">
-              <Label className="text-xs font-medium text-slate-500">{isRTL ? 'إلى حساب *' : 'To Account *'}</Label>
-              <Select value={toAccount} onValueChange={setToAccount}>
-                <SelectTrigger className="h-10 rounded-lg">
-                  <SelectValue placeholder={isRTL ? 'اختر الحساب الوجهة' : 'Select destination account'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {accounts.map(acc => (
-                    <SelectItem key={acc.id} value={acc.id}>
-                      <div className="flex items-center gap-2">
-                        <Building2 className="w-4 h-4 text-slate-400" />
-                        <span>{acc.code} - {acc.name}</span>
-                        <span className="text-xs text-slate-400">({formatCurrency(acc.balance)})</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <RecordSelect
+              kind="account"
+              label={isRTL ? 'إلى حساب' : 'To Account'}
+              required
+              value={toAccount}
+              onChange={(id) => setToAccount(id)}
+              createMode="inline"
+              eq={[['is_active', 'true']]}
+              filter={(row) => TRANSFER_ACCOUNT_CODES.includes(String(row.code))}
+              placeholder={isRTL ? 'اختر الحساب الوجهة' : 'Select destination account'}
+            />
 
             {/* Amount */}
             <div className="space-y-2">

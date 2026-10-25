@@ -565,6 +565,15 @@ describe("the local dev harness is reproducible", () => {
     assert.match(stub, /"gte\."/);
     assert.match(stub, /is\.null/);
   });
+
+  test("the stub applies PATCH so an update is actually verifiable", () => {
+    // Without a PATCH handler the stub echoed the rows unchanged, so an update
+    // "succeeded" while writing nothing - the notification mark-read defect was
+    // invisible in the browser for exactly that reason.
+    const stub = read("scripts/dev/local-supabase-stub.mjs");
+    assert.match(stub, /req\.method === "PATCH"/);
+    assert.match(stub, /Object\.assign\(r, patch\)/);
+  });
 });
 
 describe("the General Ledger report is engine-driven and tenant-scoped", () => {

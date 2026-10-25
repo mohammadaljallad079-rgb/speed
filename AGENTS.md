@@ -1660,3 +1660,50 @@ that applies the filters it is given and returns only affected rows.
   inline mode, no ad-hoc option map and no duplicate table read per form, the
   created-row read, and the absence of the dead suppliers read;
   `tests/exec52-super-admin-smart-forms.test.ts` (17) guards `describe`.
+
+## Execution 59 invariants (SaaS entitlements + AI agent financial writes)
+
+- **One posting path, two callers.** `POST /api/invoices` is a thin HTTP shell
+  over `issueInvoice` (`src/lib/sales/service.ts`). The AI agent reaches the SAME
+  service through `FinancePort` (`src/lib/ai/finance-port.ts`), whose production
+  binding is `src/lib/ai/supabase-finance-port.ts`. The agent never builds a
+  journal: it calls `postSaleInvoice`/`reverseSaleInvoice` and `nextDocumentNumber`.
+  Re-adding an inline posting transaction to the route would re-create the drift
+  this consolidation removed.
+- **The package gates the agent, and the plan comes from the session.** `PLANS` /
+  `capabilitiesFor` / `planAllowsEffect` / `planGrants` in
+  `src/lib/saas/entitlements.ts` are pure. `loadTenantPlan` / `saveTenantPlan`
+  (`src/lib/saas/tenant-plan.ts`) store the assignment in the existing `settings`
+  table under `tenant_plan`, tenant-scoped, and **fail closed to `free`** - an
+  unreadable or absent row must never widen access. A super admin is the platform
+  operator and is not gated by a company package.
+- **The three tiers are behavioural, not cosmetic.** `free` -> zero AI actions;
+  `premium` -> the agent but NOT financial writes (`403 plan_upgrade_required`);
+  `enterprise` -> financial writes. A financial action is offered only when the
+  wording names the operation AND the caller holds the permission
+  (`selectFinancialActions`), so the model can never select a write unprompted.
+- **A write is still approval-bound and idempotent.** The three financial actions
+  (`invoice_issue`, `invoice_reverse`, `contract_extend`) are high-risk: execute
+  requires the nested `approval` object, the plan fingerprint is re-checked at
+  execution, and the durable `ai_repair_executions` ledger claims the key BEFORE
+  the side effect. A replayed key returns the already-executed result and mints
+  no second document - that guarantee rests on migration 006's UNIQUE
+  `(tenant_id, idempotency_key)` index, so the index must exist to be safe.
+- **The local stub must not diverge from production.** `scripts/dev/local-supabase-stub.mjs`
+  now honours `Prefer: resolution=merge-duplicates` with `on_conflict` (a plain
+  append made a saved package read back as PGRST116 and the app silently kept its
+  default), enforces the `ai_repair_executions` unique key, serves the atomic
+  RPCs (`post_journal_entry`, `generate_document_number`,
+  `update_account_balance`, `get_next_contract_number`) and parses `.in(...)`.
+  Its chart carries 41001/24001/41003 because migrations 003/010 create them on a
+  real install. A stub gap here fakes a defect OR hides a real one, so fix the
+  fixture before "fixing" the app.
+- **Acceptance is a browser run, not a claim.**
+  `scripts/dev/e2e-ai-financial-actions.mjs` (`npm run e2e:ai-financial`) drives
+  the real login + the real `/api/ai/repairs` ops and asserts 28 behaviours: the
+  three-tier gate, a balanced `Dr AR / Cr Revenue / Cr Output VAT` journal, the
+  replay that mints nothing, the reversal that cancels, the extension that bills
+  the extra days, and tenant B refused. Run it after any change to the catalogue,
+  the workflow or the finance port.
+- **Evidence:** `docs/screenshots/super-admin-ai-agent-{desktop,mobile}.png` show
+  the agent rendered on the global console, listed in `MANIFEST.json`.

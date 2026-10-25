@@ -16,7 +16,7 @@
  */
 
 /** The record types a transaction form may reference. */
-export type RecordKind = "customer" | "supplier" | "account" | "car";
+export type RecordKind = "customer" | "supplier" | "account" | "car" | "employee";
 
 export type RecordSource = {
   kind: RecordKind;
@@ -81,6 +81,21 @@ export const RECORD_SOURCES: Record<RecordKind, RecordSource> = {
     createRoute: "/accounting/chart-of-accounts",
     ar: "الحساب المحاسبي",
     en: "Account",
+  },
+  employee: {
+    kind: "employee",
+    table: "employees",
+    listColumns: "id, full_name, job_title, position, phone, status",
+    labelColumn: "full_name",
+    createRoute: "/hr/employees",
+    ar: "الموظف",
+    en: "Employee",
+    describe: (row) => {
+      const name = typeof row.full_name === "string" ? row.full_name.trim() : "";
+      const job = (typeof row.job_title === "string" && row.job_title.trim()) || (typeof row.position === "string" && row.position.trim()) || "";
+      if (name && job) return `${name} — ${job}`;
+      return name || job;
+    },
   },
   car: {
     kind: "car",

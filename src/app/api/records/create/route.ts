@@ -26,7 +26,7 @@ import type { RecordKind } from "@/lib/records/sources";
  * permission was checked.
  */
 
-const KINDS: RecordKind[] = ["customer", "supplier", "account", "car"];
+const KINDS: RecordKind[] = ["customer", "supplier", "account", "car", "employee"];
 
 type Body = {
   kind?: string;

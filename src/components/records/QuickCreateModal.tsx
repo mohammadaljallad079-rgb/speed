@@ -43,6 +43,7 @@ const TITLES: Record<RecordKind, { ar: string; en: string }> = {
   supplier: { ar: "مورد", en: "Supplier" },
   account: { ar: "حساب محاسبي", en: "Account" },
   car: { ar: "مركبة", en: "Vehicle" },
+  employee: { ar: "موظف", en: "Employee" },
 }
 
 export default function QuickCreateModal({ kind, onClose, onCreated }: Props) {

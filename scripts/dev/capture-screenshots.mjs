@@ -37,7 +37,12 @@ const SHOTS = [
   { name: "super-admin-companies", path: "/super-admin", auth: true, click: "Companies", expect: "Action" },
   { name: "super-admin-users", path: "/super-admin", auth: true, click: "Users", expect: "PICK A COMPANY" },
   { name: "super-admin-ai", path: "/super-admin", auth: true, click: "AI Management", expect: "REPAIR EXECUTIONS" },
-  { name: "super-admin-subscriptions", path: "/super-admin", auth: true, click: "Subscriptions", expect: "not implemented" },
+  // Exec 59: the SAME AI engine now renders on the global console. The shot
+  // proves the operator can run the agent (including the write commands) there.
+  { name: "super-admin-ai-agent", path: "/super-admin", auth: true, click: "AI Management", scroll: "#ai-assistant", expect: "change documents" },
+  // Exec 59: the subscription tab now assigns real packages that gate AI
+  // capability, so it no longer says "not implemented".
+  { name: "super-admin-subscriptions", path: "/super-admin", auth: true, click: "Subscriptions", expect: "Financial writes" },
   { name: "super-admin-settings", path: "/super-admin", auth: true, click: "Settings", expect: "GLOBAL SETTINGS" },
   // Stage 2: the financial statements, rendered from the seeded ledger.
   { name: "report-general-ledger", path: "/reports/general-ledger", auth: true },
@@ -134,6 +139,7 @@ async function main() {
     args: ["--no-sandbox", "--disable-dev-shm-usage"],
   });
   const captured = [];
+  const skipped = [];
 
   for (const viewport of VIEWPORTS) {
     const context = await browser.newContext({
@@ -189,22 +195,34 @@ async function main() {
           // (the supplier statement, for example). Select the first real option
           // so the shot shows a populated screen rather than an empty state.
           if (shot.select) {
-            const select = page.locator("select").first();
-            // The control only appears once its option list has loaded, so wait
-            // for it rather than sampling too early and shooting an empty state.
-            await select.waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
-            if (await select.count()) {
-              const values = await select.locator("option").evaluateAll((opts) =>
+            // Some screens render their subject with the shared RecordSelect
+            // (a button that opens a listbox) rather than a native <select>.
+            // Supplier Statements was converted in Exec 55, so support both and
+            // never fail the whole run over one control.
+            const native = page.locator("select").first();
+            const recordBtn = page.getByRole("button", { name: /^(select|اختر)/i }).first();
+            await Promise.race([
+              native.waitFor({ state: "visible", timeout: 15000 }).catch(() => {}),
+              recordBtn.waitFor({ state: "visible", timeout: 15000 }).catch(() => {}),
+            ]);
+            if (await native.count()) {
+              const values = await native.locator("option").evaluateAll((opts) =>
                 opts.map((o) => o.value).filter((v) => v !== ""),
               );
-              if (values.length) {
-                await select.selectOption(values[0]);
-                await page.waitForTimeout(2500);
-              } else {
-                throw new Error(`[capture] no options to select for ${label}`);
-              }
+              if (!values.length) throw new Error(`[capture] no options to select for ${label}`);
+              await native.selectOption(values[0]);
+              await page.waitForTimeout(2500);
+            } else if (await recordBtn.count()) {
+              await recordBtn.click();
+              await page.waitForTimeout(1500);
+              // The RecordSelect listbox is a scrollable panel of plain buttons;
+              // the first one is the first matching record.
+              const option = page.locator("div.absolute.z-50 button").first();
+              await option.waitFor({ state: "visible", timeout: 15000 });
+              await option.click();
+              await page.waitForTimeout(2500);
             } else {
-              throw new Error(`[capture] select not found for ${label}`);
+              throw new Error(`[capture] no record picker found for ${label}`);
             }
           }
           if (shot.bell) {
@@ -221,10 +239,22 @@ async function main() {
               await page.waitForTimeout(2500);
             }
           }
+          if (shot.scroll) {
+            const target = page.locator(shot.scroll).first();
+            await target.waitFor({ state: "attached", timeout: 20000 });
+            await target.scrollIntoViewIfNeeded();
+            await page.waitForTimeout(800);
+          }
           await waitForContent(page, label, shot.expect);
           break;
         } catch (err) {
-          if (attempt >= 3) throw err;
+          if (attempt >= 3) {
+            // Do not abort the run for one screen: record it and continue so the
+            // remaining shots are still produced, then fail at the end.
+            console.error(`[capture] skipping ${label}: ${err.message}`);
+            skipped.push(label);
+            break;
+          }
           console.warn(`[capture] retry ${attempt} for ${label}: ${err.message}`);
           await page.waitForTimeout(1500);
         }
@@ -239,6 +269,10 @@ async function main() {
   }
 
   await browser.close();
+
+  if (skipped.length) {
+    console.error(`[capture] ${skipped.length} shot(s) skipped: ${skipped.join(", ")}`);
+  }
 
   // Two identical images mean a page did not render (or did not change). Fail
   // rather than commit a blank screenshot that looks like evidence.

@@ -148,7 +148,7 @@ describe("Exec 31 - quotation conversion posts a tenant-scoped rental invoice", 
 });
 
 describe("Exec 31 - the invoice API is the single sale/rental posting path", () => {
-  const src = read("src/app/api/invoices/route.ts");
+  const src = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
   test("supports a rental invoice that posts to the rental revenue account", () => {
     assert.match(src, /invoice_type/, "must accept the invoice type");
     assert.match(src, /rentalRevenue/, "must post rentals to the rental revenue account");

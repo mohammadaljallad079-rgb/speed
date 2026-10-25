@@ -637,7 +637,7 @@ describe("manual journal screen: reads stay in the browser, writes move to the s
 
 describe("Exec 36 - compensation must never delete a pre-existing posting", () => {
   test("/api/invoices only compensates a journal THIS call created", () => {
-    const src = read("src/app/api/invoices/route.ts");
+    const src = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
     assert.match(src, /if \(created\) createdJournalId = journalId/, "createdJournalId is set only when created");
     // The old unconditional assignment must be gone, or a retry could delete a
     // real posting in the catch block.

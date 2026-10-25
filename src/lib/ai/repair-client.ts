@@ -138,6 +138,12 @@ export function mapRepairError(status: number, body: unknown): RepairError {
     in_progress: { code: "in_progress", ar: "هذا الإجراء قيد التنفيذ بالفعل.", en: "This action is already in progress." },
     unresolved: { code: "unresolved", ar: "نتيجة التنفيذ السابق غير محسومة؛ يتطلب مراجعة بشرية.", en: "A previous execution is unresolved; human review is required." },
     key_reused: { code: "key_reused", ar: "أُعيد استخدام مفتاح منع التكرار لخطة مختلفة.", en: "The idempotency key was reused for a different plan." },
+    plan_upgrade_required: { code: "plan_upgrade_required", ar: "باقتك الحالية لا تشمل هذه القدرة؛ ترقية الباقة مطلوبة.", en: "Your package does not include this capability; a package upgrade is required." },
+    not_configured: { code: "not_configured", ar: "مسار الترحيل المالي غير مكوّن.", en: "The financial posting path is not configured." },
+    not_found: { code: "not_found", ar: "المستند غير موجود.", en: "The document was not found." },
+    not_posted: { code: "not_posted", ar: "لا يوجد قيد مرحّل لعكسه.", en: "There is no posted journal to reverse." },
+    save_failed: { code: "save_failed", ar: "تعذّر الحفظ.", en: "Could not save." },
+    posting_failed: { code: "posting_failed", ar: "فشل الترحيل المالي.", en: "The financial posting failed." },
     requires_verification: { code: "requires_verification", ar: "الأدلة غير كافية لتحديد المصدر؛ حدّد الوحدة/التقرير أو الفترة.", en: "Not enough evidence to pick a source; name the module/report or period." },
   };
   if (known[code]) return known[code];
@@ -169,7 +175,12 @@ export interface RepairController {
   setPrompt(prompt: string): void;
   loadActions(): Promise<void>;
   loadHistory(): Promise<void>;
-  propose(prompt: string, action?: string): Promise<void>;
+  /**
+   * Proposes an action. `params` carries the whitelisted, typed inputs a
+   * financial action needs (customerId, amount, ...). They are validated
+   * server-side; the controller never decides what is allowed.
+   */
+  propose(prompt: string, action?: string, params?: Record<string, unknown>): Promise<void>;
   approve(): void;
   execute(): Promise<void>;
   reset(): void;
@@ -234,12 +245,12 @@ export function createRepairController(fetchImpl: RepairFetch): RepairController
         // A history read failure must never surface as an execution result.
       }
     },
-    async propose(prompt, action) {
+    async propose(prompt, action, params) {
       if (state.busy) return;
       set({ busy: true, phase: "loading", error: null, proposal: null, result: null, approved: false, prompt });
       idempotencyKey = "";
       try {
-        const res = await post("propose", { prompt, ...(action ? { action } : {}) });
+        const res = await post("propose", { prompt, ...(action ? { action } : {}), ...(params ?? {}) });
         const json = (await res.json()) as { proposal?: RepairProposal; candidates?: RepairCandidate[] };
         if (!res.ok || !json.proposal) {
           set({ busy: false, phase: "error", error: mapRepairError(res.status, json) });

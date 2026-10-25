@@ -6,6 +6,7 @@ import Link from "next/link"
 
 import { supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/LanguageContext"
+import AiAssistantPanel from "@/components/ai/AiAssistantPanel"
 import {
   Building2,
   Users,
@@ -727,6 +728,8 @@ function AiTab({ ai, t }: { ai: AiOversight | null; t: (a: string, e: string) =>
         </ul>
       </div>
 
+      <AiAssistantPanel screen="super-admin" variant="super-admin" />
+
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="w-full text-sm">
           <thead className="bg-slate-900 text-slate-400">
@@ -770,21 +773,117 @@ function AiTab({ ai, t }: { ai: AiOversight | null; t: (a: string, e: string) =>
   )
 }
 
+/**
+ * Subscription packages.
+ *
+ * A package is a capability set stored per tenant (settings key `tenant_plan`),
+ * not a billing record. The operator assigns one here and the AI layer reads it
+ * server-side to decide whether a company may use the assistant, the agent and
+ * financial writes. Each row loads its own package from
+ * `/api/super-admin/tenants/:id/plan`, so the value shown is the stored one.
+ */
 function SubscriptionsTab({ overview, t }: { overview: Overview; t: (a: string, e: string) => string }) {
+  const [plans, setPlans] = useState<Record<string, string>>({})
+  const [packages, setPackages] = useState<Array<{ id: string; nameAr: string; nameEn: string; capabilities: Record<string, boolean> }>>([])
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadPlans = useCallback(async () => {
+    const entries = await Promise.all(
+      overview.tenants.map(async (x) => {
+        try {
+          const res = await fetch(`/api/super-admin/tenants/${x.id}/plan`, { cache: "no-store" })
+          if (!res.ok) return [x.id, "free"] as const
+          const json = await res.json()
+          if (json.packages) setPackages(json.packages)
+          return [x.id, String(json.plan ?? "free")] as const
+        } catch {
+          return [x.id, "free"] as const
+        }
+      }),
+    )
+    setPlans(Object.fromEntries(entries))
+  }, [overview.tenants])
+
+  useEffect(() => {
+    void loadPlans()
+  }, [loadPlans])
+
+  const assign = useCallback(
+    async (tenantId: string, plan: string) => {
+      setSavingId(tenantId)
+      setError(null)
+      try {
+        const res = await fetch(`/api/super-admin/tenants/${tenantId}/plan`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan }),
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok) {
+          setError(json?.error ?? t("تعذر تعيين الباقة.", "Could not assign the package."))
+          return
+        }
+        setPlans((prev) => ({ ...prev, [tenantId]: plan }))
+      } finally {
+        setSavingId(null)
+      }
+    },
+    [t],
+  )
+
+  const CAPS: Array<{ key: string; ar: string; en: string }> = [
+    { key: "aiAssistant", ar: "المساعد", en: "Assistant" },
+    { key: "aiAgent", ar: "الوكيل", en: "Agent" },
+    { key: "aiFinancialWrites", ar: "كتابة مالية", en: "Financial writes" },
+    { key: "imports", ar: "استيراد", en: "Import" },
+    { key: "exports", ar: "تصدير", en: "Export" },
+  ]
+
   return (
     <div className="space-y-6">
-      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+      <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-200">
         {t(
-          "الخطط المدفوعة غير مفعّلة في هذه النسخة. تُعرض حالة الاشتراك كـ «مجاني» بصدق، دون اختراع وظائف غير موجودة.",
-          "Paid plans are not implemented in this build. Subscription state is reported honestly as \"free\"; no capability is invented.",
+          "الباقة تحدد قدرات الذكاء الاصطناعي لكل شركة. تُقرأ من الخادم؛ لا يمكن للشركة منح نفسها قدرة.",
+          "The package decides each company's AI capabilities. It is read server-side; a company cannot grant itself a capability.",
         )}
       </div>
+
+      {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
+
+      {packages.length > 0 && (
+        <div className="overflow-x-auto rounded-xl border border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-900 text-slate-400">
+              <tr>
+                <th className="px-4 py-3 text-start">{t("الباقة", "Package")}</th>
+                {CAPS.map((c) => (
+                  <th key={c.key} className="px-4 py-3 text-start">{t(c.ar, c.en)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {packages.map((p) => (
+                <tr key={p.id}>
+                  <td className="px-4 py-3 font-semibold text-slate-200">{t(p.nameAr, p.nameEn)}</td>
+                  {CAPS.map((c) => (
+                    <td key={c.key} className="px-4 py-3">
+                      {p.capabilities[c.key] ? <CheckCircle2 className="h-4 w-4 text-emerald-400" /> : <XCircle className="h-4 w-4 text-slate-600" />}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="w-full text-sm">
           <thead className="bg-slate-900 text-slate-400">
             <tr>
               <th className="px-4 py-3 text-start">{t("الشركة", "Company")}</th>
-              <th className="px-4 py-3 text-start">{t("الخطة", "Plan")}</th>
+              <th className="px-4 py-3 text-start">{t("الباقة", "Package")}</th>
               <th className="px-4 py-3 text-start">{t("الحالة", "Status")}</th>
               <th className="px-4 py-3 text-start">{t("المستخدمون", "Users")}</th>
             </tr>
@@ -793,7 +892,18 @@ function SubscriptionsTab({ overview, t }: { overview: Overview; t: (a: string, 
             {overview.tenants.map((x) => (
               <tr key={x.id}>
                 <td className="px-4 py-3 text-slate-200">{x.name}</td>
-                <td className="px-4 py-3 text-slate-300">{x.plan}</td>
+                <td className="px-4 py-3">
+                  <select
+                    value={plans[x.id] ?? "free"}
+                    onChange={(e) => void assign(x.id, e.target.value)}
+                    disabled={savingId === x.id}
+                    className="rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-cyan-500 disabled:opacity-60"
+                  >
+                    {packages.map((p) => (
+                      <option key={p.id} value={p.id}>{t(p.nameAr, p.nameEn)}</option>
+                    ))}
+                  </select>
+                </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={x.status} t={t} />
                 </td>

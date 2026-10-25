@@ -163,7 +163,7 @@ describe("Exec 34 - the rental form no longer writes finance from the browser", 
 });
 
 describe("Exec 34 - the invoice API owns identity, tenant and idempotency", () => {
-  const route = read("src/app/api/invoices/route.ts");
+  const route = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
 
   test("authenticates and derives identity from the session", () => {
     assert.match(route, /requireContext\(request, \{ module: "sales", action: "create" \}/);
@@ -172,7 +172,7 @@ describe("Exec 34 - the invoice API owns identity, tenant and idempotency", () =
   });
 
   test("a rental is idempotent per contract", () => {
-    assert.match(route, /eq\("rental_contract_id", body\.rental_contract_id\)/);
+    assert.match(route, /eq\("rental_contract_id", (body|input)\.rental_contract_id\)/);
     assert.match(route, /idempotent:\s*true/, "a retry returns the existing invoice");
     assert.match(route, /invoice_type", "rental"/, "the guard is scoped to rental invoices");
   });

@@ -62,6 +62,9 @@ const ACTIVITY = [
   { id: "e3", action: "login", entity: "users", entity_id: "aaaaaaaa-1111-1111-1111-111111111111", user_email: "speedadmin@speed.local", tenant_id: TENANT_A, created_at: "2026-10-23T08:05:00Z", metadata: {} },
 ];
 
+/** Per-process sequence counters backing `generate_document_number`. */
+const SEQ = {};
+
 const TABLES = {
   tenants: TENANTS,
   users: USERS,
@@ -84,6 +87,12 @@ const TABLES = {
     { id: "ac2", code: "11002", name: "Bank", name_ar: "البنك", name_en: "Bank", type: "asset", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac3", code: "12001", name: "Accounts Receivable", name_ar: "ذمم مدينة", name_en: "Accounts Receivable", type: "asset", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac4", code: "21001", name: "Accounts Payable", name_ar: "ذمم دائنة", name_en: "Accounts Payable", type: "liability", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    // 41001 and 24001 are created by migrations 003/010 on a real install; the
+    // fixture must carry them or a rental/extension invoice is refused for a
+    // missing revenue account - a stub artefact, not a real posting failure.
+    { id: "ac12", code: "41001", name: "Rental Revenue", name_ar: "إيرادات الإيجار", name_en: "Rental Revenue", type: "revenue", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac13", code: "24001", name: "Input VAT", name_ar: "ضريبة المدخلات", name_en: "Input VAT", type: "asset", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
+    { id: "ac14", code: "41003", name: "Sales Returns", name_ar: "مردودات المبيعات", name_en: "Sales Returns", type: "revenue", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac5", code: "41002", name: "Sales Revenue", name_ar: "إيرادات المبيعات", name_en: "Sales Revenue", type: "revenue", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac6", code: "24000", name: "Output VAT", name_ar: "ضريبة المخرجات", name_en: "Output VAT", type: "liability", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
     { id: "ac7", code: "51001", name: "Rent Expense", name_ar: "مصروف الإيجار", name_en: "Rent Expense", type: "expense", level: 1, is_active: true, tenant_id: null, parent_code: null, balance: 0 },
@@ -175,6 +184,15 @@ function selectRows(table, searchParams) {
       rows = rows.filter((r) => r[key] != null && re.test(String(r[key])));
       continue;
     }
+    // PostgREST `in.(a,b,c)`. The sale posting resolves the chart by code with
+    // `.in("code", [...])`; without this the lookup returned zero rows and a
+    // perfectly valid invoice was refused with "revenue/AR/cash accounts
+    // missing" - a stub artefact that looked like a real posting failure.
+    if (value.startsWith("in.(") && value.endsWith(")")) {
+      const list = value.slice(4, -1).split(",").map((v) => v.replace(/^"|"$/g, ""));
+      rows = rows.filter((r) => list.includes(String(r[key])));
+      continue;
+    }
     // PostgREST range filters. A report that sends `entry_date=gte.…&lte=…`
     // would otherwise read zero rows and render an all-zero statement.
     if (value.startsWith("gte.") || value.startsWith("lte.") || value.startsWith("gt.") || value.startsWith("lt.")) {
@@ -206,29 +224,47 @@ function selectRows(table, searchParams) {
 const b64url = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
 const ACCESS_TOKEN = `${b64url({ alg: "HS256", typ: "JWT" })}.${b64url({ sub: SUPER_ADMIN.id, role: "service_role", exp: 2000000000 })}.localdevsignature`;
 
-function session() {
+const b64 = (obj) => Buffer.from(JSON.stringify(obj)).toString("base64url");
+const tokenFor = (user) =>
+  `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ sub: user.id, role: "service_role", exp: 2000000000 })}.localdevsignature`;
+
+/**
+ * Builds the session for the identity that actually signed in.
+ *
+ * The stub used to answer every sign-in with the super admin's session, so a
+ * tenant-scoped screen (whose data depends on `tenant_id`) could not be driven
+ * against it. Resolving the seeded user by email keeps the stub faithful: the
+ * app still runs its real sign-in -> `/api/me` -> role/tenant path.
+ */
+function sessionFor(email) {
+  const match = USERS.find((u) => u.email === String(email ?? "").toLowerCase());
+  const user = match ?? SUPER_ADMIN;
   return {
-    access_token: ACCESS_TOKEN,
+    access_token: tokenFor(user),
     token_type: "bearer",
     expires_in: 3600,
     expires_at: Math.floor(Date.now() / 1000) + 3600,
     refresh_token: "local-dev-refresh",
     user: {
-      id: SUPER_ADMIN.id,
+      id: user.id,
       aud: "authenticated",
       role: "authenticated",
-      email: SUPER_ADMIN.email,
+      email: user.email,
       email_confirmed_at: "2026-07-01T08:00:00Z",
       phone: "",
       confirmed_at: "2026-07-01T08:00:00Z",
       last_sign_in_at: new Date().toISOString(),
       app_metadata: { provider: "email", providers: ["email"] },
-      user_metadata: { full_name: SUPER_ADMIN.full_name },
+      user_metadata: { full_name: user.full_name },
       identities: [],
-      created_at: "2026-07-01T08:00:00Z",
+      created_at: user.created_at ?? "2026-07-01T08:00:00Z",
       updated_at: new Date().toISOString(),
     },
   };
+}
+
+function session() {
+  return sessionFor(SUPER_ADMIN.email);
 }
 
 function send(res, status, body, headers = {}) {
@@ -248,12 +284,34 @@ const server = http.createServer(async (req, res) => {
   const path = url.pathname;
 
   if (req.method === "OPTIONS") return send(res, 204, undefined);
+  if (process.env.STUB_LOG) console.log(`[stub] ${req.method} ${url.pathname}${url.search}`);
 
   if (path === "/auth/v1/token") {
-    return send(res, 200, session());
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    let email = SUPER_ADMIN.email;
+    try {
+      email = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}").email ?? email;
+    } catch {
+      // A malformed body falls back to the operator session.
+    }
+    return send(res, 200, sessionFor(email));
   }
   if (path === "/auth/v1/user") {
-    return send(res, 200, session().user);
+    // The server-side client resolves the session from the bearer token, so the
+    // token's subject - not a hard-coded operator - decides the identity. Without
+    // this every signed-in user resolved as the super admin and a tenant-scoped
+    // screen could not be exercised.
+    const auth = String(req.headers.authorization ?? "");
+    const raw = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    let sub = "";
+    try {
+      sub = JSON.parse(Buffer.from(raw.split(".")[1] ?? "", "base64url").toString("utf8")).sub ?? "";
+    } catch {
+      // An unparseable token falls back to the operator below.
+    }
+    const owner = USERS.find((u) => u.id === sub);
+    return send(res, 200, owner ? sessionFor(owner.email).user : session().user);
   }
   if (path === "/auth/v1/logout") {
     return send(res, 204, undefined);
@@ -271,6 +329,48 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const rows = Array.isArray(body) ? body : [body];
       TABLES[table] = TABLES[table] ?? [];
+      // The durable AI-repair ledger relies on its UNIQUE (tenant_id,
+      // idempotency_key) index to make the idempotency claim atomic (migration
+      // 006). A stub that accepted every insert would let a replayed key post a
+      // SECOND financial document, so the constraint is enforced here too - the
+      // same 23505 the app's `createSupabaseRepairStore` looks for.
+      if (table === "ai_repair_executions") {
+        for (const r of rows) {
+          const clash = TABLES[table].some(
+            (e) => (e.tenant_id ?? null) === (r.tenant_id ?? null) && e.idempotency_key === r.idempotency_key,
+          );
+          if (clash) {
+            return send(res, 409, {
+              code: "23505",
+              message: `duplicate key value violates unique constraint "ai_repair_executions_tenant_key_uidx"`,
+            });
+          }
+        }
+      }
+      // PostgREST `POST` with `Prefer: resolution=merge-duplicates` is an UPSERT
+      // (`on_conflict=<cols>`). Without this the stub appended a second row for
+      // every save, so a `maybeSingle()` read then failed with PGRST116
+      // ("multiple rows") and the app silently fell back to its default - which
+      // is how a package assignment looked like it had not been saved.
+      const conflict = url.searchParams.get("on_conflict");
+      const merge = /merge-duplicates/.test(String(req.headers.prefer ?? ""));
+      if (merge && conflict) {
+        const cols = conflict.split(",").map((c) => c.trim());
+        const created = rows.map((r) => {
+          const hit = TABLES[table].find((e) => cols.every((c) => (e[c] ?? null) === (r[c] ?? null)));
+          if (hit) {
+            Object.assign(hit, r);
+            return hit;
+          }
+          const n = TABLES[table].length + 1;
+          const prefix = Buffer.from(table).toString("hex").slice(0, 8).padEnd(8, "0");
+          const row = { id: `${prefix}-0000-4000-8000-${String(n).padStart(12, "0")}`, ...r };
+          TABLES[table].push(row);
+          return row;
+        });
+        const wantsObject = String(req.headers.accept ?? "").includes("pgrst.object");
+        return send(res, 201, wantsObject ? created[0] : created);
+      }
       const created = rows.map((r, i) => {
         // A real Supabase id is a UUID. Emitting a short slug here made an id
         // that a UUID-validating route (e.g. the Super Admin user PATCH) would
@@ -310,6 +410,76 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, rows[0] ?? null, { "content-range": rows.length ? `0-0/${rows.length}` : "*/0" });
     }
     return send(res, 200, rows, { "content-range": rows.length ? `0-${rows.length - 1}/${rows.length}` : "*/0" });
+  }
+
+  // ---- RPC ---------------------------------------------------------------
+  // The app posts every journal through the `post_journal_entry` RPC (migration
+  // 011) and numbers documents through `generate_document_number`. Serving them
+  // here means the browser exercises the SAME atomic posting path production
+  // uses, instead of the two-request fallback, so a screenshot/QA run proves the
+  // real code path rather than a degraded one.
+  const rpc = /^\/rest\/v1\/rpc\/([A-Za-z_]+)$/.exec(path);
+  if (rpc && req.method === "POST") {
+    const name = rpc[1];
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    let args = {};
+    try {
+      args = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    } catch {
+      args = {};
+    }
+
+    if (name === "generate_document_number") {
+      const docType = String(args.p_doc_type ?? "document");
+      SEQ[docType] = (SEQ[docType] ?? 0) + 1;
+      const prefix = String(args.p_prefix ?? docType.toUpperCase().slice(0, 3));
+      return send(res, 200, `${prefix}-${String(SEQ[docType]).padStart(5, "0")}`);
+    }
+
+    if (name === "post_journal_entry") {
+      const header = args.p_header ?? {};
+      const lines = Array.isArray(args.p_lines) ? args.p_lines : [];
+      // Mirror the migration's invariants so a bad journal is refused here too.
+      if (!lines.length) return send(res, 400, { message: "post_journal_entry: a journal must have at least one line", code: "23514" });
+      let debit = 0;
+      let credit = 0;
+      for (const l of lines) {
+        const d = Number(l.debit ?? 0);
+        const c = Number(l.credit ?? 0);
+        if (!l.account_id) return send(res, 400, { message: "post_journal_entry: line has no account_id", code: "23502" });
+        if ((d === 0 && c === 0) || (d !== 0 && c !== 0)) {
+          return send(res, 400, { message: "post_journal_entry: line must have exactly one of debit/credit set", code: "23514" });
+        }
+        debit += d;
+        credit += c;
+      }
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+        return send(res, 400, { message: `post_journal_entry: journal does not balance (debit ${debit} vs credit ${credit})`, code: "23514" });
+      }
+      TABLES.journal_entries = TABLES.journal_entries ?? [];
+      TABLES.journal_lines = TABLES.journal_lines ?? [];
+      const n = TABLES.journal_entries.length + 1;
+      const id = `6a6a6a6a-0000-4000-8000-${String(n).padStart(12, "0")}`;
+      TABLES.journal_entries.push({ id, ...header, total_debit: debit, total_credit: credit, is_balanced: true });
+      for (const [i, l] of lines.entries()) {
+        TABLES.journal_lines.push({ id: `${id}-l${i}`, journal_entry_id: id, ...l });
+      }
+      return send(res, 200, id);
+    }
+
+    if (name === "update_account_balance") {
+      const acc = (TABLES.accounts ?? []).find((a) => a.id === args.account_id);
+      if (acc) acc.balance = Number(acc.balance ?? 0) + Number(args.amount ?? 0);
+      return send(res, 200, null);
+    }
+
+    if (name === "get_next_contract_number") {
+      SEQ.contract = (SEQ.contract ?? 0) + 1;
+      return send(res, 200, `RC-${String(SEQ.contract).padStart(5, "0")}`);
+    }
+
+    return send(res, 404, { message: `stub: no rpc ${name}`, code: "PGRST202" });
   }
 
   send(res, 404, { message: `stub: no route for ${req.method} ${path}` });

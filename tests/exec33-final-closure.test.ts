@@ -84,7 +84,7 @@ describe("Exec 33 Item 5/10 - a customer receipt always posts to the ledger", ()
 });
 
 describe("Exec 33 Item 1/4 - the invoice API stores the subtotal readers expect", () => {
-  const route = read("src/app/api/invoices/route.ts");
+  const route = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
 
   test("the invoice row carries the pre-VAT `amount` subtotal", () => {
     // The print page, the detail form and the Excel export read `invoice.amount`.

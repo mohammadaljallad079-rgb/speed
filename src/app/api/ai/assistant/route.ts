@@ -7,6 +7,8 @@ import { answerQuestion } from "@/lib/ai/assistant";
 import { loadAiSettings } from "@/lib/ai/settings";
 import { makeComplete } from "@/lib/ai/server";
 import { detectWriteIntent, redactSecrets } from "@/lib/ai/policy";
+import { loadTenantPlan } from "@/lib/saas/tenant-plan";
+import { planGrants } from "@/lib/saas/entitlements";
 
 /**
  * In-ERP assistant endpoint.
@@ -24,6 +26,16 @@ const MAX_PROMPT = 2000;
 export async function POST(request: Request) {
   try {
     const context = await requireContext(request, { module: "reports", action: "view" });
+
+    // The subscription package decides whether the company may use the assistant
+    // at all. A super admin is the platform operator and is never gated.
+    const plan = context.isSuperAdmin ? "enterprise" : await loadTenantPlan(supabaseAdmin as never, context.tenantId);
+    if (!planGrants(plan, "aiAssistant")) {
+      return NextResponse.json(
+        { error: "Your subscription package does not include the AI assistant", code: "plan_upgrade_required", plan },
+        { status: 403 },
+      );
+    }
 
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const prompt = String(body.prompt ?? "").slice(0, MAX_PROMPT).trim();

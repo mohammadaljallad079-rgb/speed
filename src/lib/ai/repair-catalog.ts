@@ -23,8 +23,14 @@ import type { ReportKind } from "@/lib/reporting/types";
 
 export type RepairRisk = "low" | "medium" | "high";
 
-/** Read-only (no persisted change) vs. settings-changing (needs approval). */
-export type RepairEffect = "read" | "settings";
+/**
+ * Read-only (no persisted change), settings-changing, or a financial write.
+ *
+ * `financial` is deliberately separate from `settings`: it is the only effect
+ * that changes accounting data, it always requires approval, and it may only be
+ * applied through the existing posting services (never a new posting path).
+ */
+export type RepairEffect = "read" | "settings" | "financial";
 
 export type RepairActionId =
   | "report_format_preview"
@@ -34,7 +40,10 @@ export type RepairActionId =
   | "save_report_format_template"
   | "document_template_preview"
   | "save_document_template"
-  | "restore_document_template";
+  | "restore_document_template"
+  | "invoice_issue"
+  | "invoice_reverse"
+  | "contract_extend";
 
 export interface RepairActionSpec {
   id: RepairActionId;
@@ -159,6 +168,54 @@ export const REPAIR_ACTIONS: RepairActionSpec[] = [
     descriptionAr: "يعيد الإصدار السابق من قالب المستند كإصدار جديد (سجل الإصدارات).",
     descriptionEn: "Restores the previous version of a document template as a new version (version history).",
   },
+  {
+    id: "invoice_issue",
+    titleAr: "إصدار فاتورة مبيعات/إيجار",
+    titleEn: "Issue a sale / rental invoice",
+    modules: ["invoices", "sales", "rentals"],
+    effect: "financial",
+    permission: { module: "invoices", action: "create" },
+    risk: "high",
+    requiresApproval: true,
+    inputSchema: {
+      ar: "معرّف العميل، المبلغ، ضريبة، خصم، تاريخ، طريقة الدفع، ونوع الفاتورة",
+      en: "customer id, amount, VAT, discount, date, payment method, invoice type",
+    },
+    descriptionAr:
+      "يصدر فاتورة عبر خدمة المبيعات الوحيدة (issueInvoice) التي تُرحّل القيد المتوازن ذريًّا مع الفاتورة. يتطلب موافقة صريحة ويُتحقق منه بعد التنفيذ.",
+    descriptionEn:
+      "Issues an invoice through the single sales service (issueInvoice), which posts the balanced journal atomically with the invoice. Requires explicit approval and is verified after execution.",
+  },
+  {
+    id: "invoice_reverse",
+    titleAr: "عكس فاتورة مرحّلة",
+    titleEn: "Reverse a posted invoice",
+    modules: ["invoices", "sales"],
+    effect: "financial",
+    permission: { module: "invoices", action: "edit" },
+    risk: "high",
+    requiresApproval: true,
+    inputSchema: { ar: "رقم الفاتورة", en: "invoice number" },
+    descriptionAr:
+      "يعكس فاتورة مرحّلة بقيد عكسي متوازن بدل التعديل أو الحذف، وهو المسار الوحيد المسموح لتصحيح فاتورة مرحّلة.",
+    descriptionEn:
+      "Reverses a posted invoice with a balanced mirror journal instead of editing or deleting it — the only permitted correction for a posted invoice.",
+  },
+  {
+    id: "contract_extend",
+    titleAr: "تمديد عقد إيجار",
+    titleEn: "Extend a rental contract",
+    modules: ["rentals", "invoices"],
+    effect: "financial",
+    permission: { module: "rentals", action: "edit" },
+    risk: "high",
+    requiresApproval: true,
+    inputSchema: { ar: "معرّف العقد، تاريخ الانتهاء الجديد", en: "contract id, new end date" },
+    descriptionAr:
+      "يمدّد العقد ويصدر فاتورة التمديد عبر خدمة المبيعات الوحيدة، مع التحقق من التاريخ داخل السنة المالية المفتوحة.",
+    descriptionEn:
+      "Extends the contract and issues the extension invoice through the single sales service, validating the date inside the open financial year.",
+  },
 ];
 
 const BY_ID = new Map<string, RepairActionSpec>(REPAIR_ACTIONS.map((a) => [a.id, a]));
@@ -222,6 +279,10 @@ export function selectRepairActions(context: AuthContext, prompt: string): Repai
   const kind = inferReportKind(prompt) ?? defaultKindFor(diagnosis.module);
   const candidates: RepairCandidate[] = [];
 
+  // A request that asks to ISSUE/REVERSE/EXTEND routes to the financial actions
+  // first. It is never the model's decision: the wording must name the action.
+  for (const c of selectFinancialActions(context, prompt)) candidates.push(c);
+
   // A revenue/dashboard complaint routes first to the revenue reconciliation.
   const revenueish = diagnosis.module === "revenue" || diagnosis.module === "dashboard" || /dashboard|لوحة|إيراد|ايراد|revenue/i.test(prompt);
   if (revenueish && canRunRepairAction(context, "dashboard_revenue_reconciliation")) {
@@ -270,6 +331,49 @@ export function selectRepairActions(context: AuthContext, prompt: string): Repai
     });
   }
   return candidates;
+}
+
+/**
+ * Candidate financial actions for a request that asks to change a document.
+ *
+ * Deterministic and permission-filtered: the wording must name the operation
+ * ("issue/create an invoice", "reverse/void an invoice", "extend a contract").
+ * A financial action is only ever *offered* here; it still requires an explicit
+ * approval and is re-checked at execution time.
+ */
+export function selectFinancialActions(context: AuthContext, prompt: string): RepairCandidate[] {
+  const out: RepairCandidate[] = [];
+  const issueWord = /(أصدر|اصدر|أنشئ|انشئ|إصدار|اصدار|issue|create|raise|new)/i.test(prompt);
+  const invoiceWord = /(invoice|فاتورة)/i.test(prompt);
+  const reverseWord = /(reverse|void|cancel|credit\s*note|عكس|إلغاء|الغاء|اشعار\s*دائن|إشعار\s*دائن)/i.test(prompt);
+  const contractWord = /(contract|عقد|إيجار|ايجار|rental)/i.test(prompt);
+  const extendWord = /(extend|extension|تمديد|مدد)/i.test(prompt);
+
+  if (invoiceWord && reverseWord && canRunRepairAction(context, "invoice_reverse")) {
+    out.push({
+      action: "invoice_reverse",
+      kind: "sales_report",
+      reasonAr: "عكس الفاتورة المرحّلة بقيد عكسي هو التصحيح الوحيد المسموح.",
+      reasonEn: "Reversing a posted invoice with a mirror journal is the only permitted correction.",
+    });
+  }
+  if (contractWord && extendWord && canRunRepairAction(context, "contract_extend")) {
+    out.push({
+      action: "contract_extend",
+      kind: "sales_report",
+      reasonAr: "تمديد العقد يصدر فاتورة التمديد عبر خدمة المبيعات الوحيدة.",
+      reasonEn: "A contract extension issues its invoice through the single sales service.",
+    });
+  }
+  if (invoiceWord && issueWord && !reverseWord && canRunRepairAction(context, "invoice_issue")) {
+    out.push({
+      action: "invoice_issue",
+      kind: "sales_report",
+      reasonAr: "إصدار الفاتورة يمرّ عبر خدمة المبيعات الوحيدة ويُرحّل قيدًا متوازنًا.",
+      reasonEn: "Issuing an invoice goes through the single sales service and posts a balanced journal.",
+    });
+  }
+  return out;
 }
 
 /**
@@ -340,6 +444,18 @@ export interface RepairPlan {
     name?: string;
     from?: string | null;
     to?: string | null;
+    // Financial-write inputs. Every one is validated/normalised in
+    // `validateRepairInput` before it can reach a posting service: the model
+    // never supplies SQL, an account, a journal, or an unvalidated number.
+    customerId?: string;
+    contractId?: string;
+    amount?: number;
+    vat?: number;
+    discount?: number;
+    paymentMethod?: string;
+    invoiceType?: "sale" | "rental";
+    invoiceNumber?: string;
+    newEndDate?: string;
   };
   effect: RepairEffect;
   requiresApproval: boolean;
@@ -352,6 +468,16 @@ export interface RepairInput {
   to?: unknown;
   /** Document kind for the document-template actions. */
   documentKind?: unknown;
+  /** Financial-write inputs (raw, validated below). */
+  customerId?: unknown;
+  contractId?: unknown;
+  amount?: unknown;
+  vat?: unknown;
+  discount?: unknown;
+  paymentMethod?: string;
+  invoiceType?: unknown;
+  invoiceNumber?: unknown;
+  newEndDate?: unknown;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -381,6 +507,80 @@ export function validateRepairInput(action: string, input: RepairInput): Validat
   const prompt = typeof input.prompt === "string" ? input.prompt.trim().slice(0, MAX_PROMPT) : "";
   const from = cleanRange(input.from);
   const to = cleanRange(input.to);
+
+  // Financial-write actions: validated here, executed only through the existing
+  // posting services. The model supplies values, never an account, a journal or
+  // SQL; every field is re-validated at execution time too.
+  const isFinancialAction =
+    spec.id === "invoice_issue" || spec.id === "invoice_reverse" || spec.id === "contract_extend";
+
+  if (isFinancialAction) {
+    const params: RepairPlan["params"] = { from, to };
+    const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    const positive = (v: unknown) => {
+      const n = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+      return Number.isFinite(n) && n >= 0 ? Math.round(n * 1000) / 1000 : null;
+    };
+
+    if (spec.id === "invoice_reverse") {
+      const invoiceNumber = str(input.invoiceNumber).slice(0, MAX_NAME);
+      if (!invoiceNumber) {
+        return { ok: false, error: { code: "bad_request", ar: "رقم الفاتورة مطلوب.", en: "An invoice number is required." } };
+      }
+      params.invoiceNumber = invoiceNumber;
+      return { ok: true, plan: { action: spec.id, params, effect: spec.effect, requiresApproval: true } };
+    }
+
+    if (spec.id === "contract_extend") {
+      const contractId = str(input.contractId).slice(0, 64);
+      const newEndDate = str(input.newEndDate);
+      if (!contractId) {
+        return { ok: false, error: { code: "bad_request", ar: "معرّف العقد مطلوب.", en: "A contract id is required." } };
+      }
+      if (!DATE_RE.test(newEndDate)) {
+        return { ok: false, error: { code: "bad_request", ar: "تاريخ انتهاء جديد صالح مطلوب (YYYY-MM-DD).", en: "A valid new end date is required (YYYY-MM-DD)." } };
+      }
+      params.contractId = contractId;
+      params.newEndDate = newEndDate;
+      return { ok: true, plan: { action: spec.id, params, effect: spec.effect, requiresApproval: true } };
+    }
+
+    // invoice_issue
+    const customerId = str(input.customerId).slice(0, 64);
+    if (!customerId) {
+      return { ok: false, error: { code: "bad_request", ar: "معرّف العميل مطلوب.", en: "A customer id is required." } };
+    }
+    const amount = positive(input.amount);
+    if (amount === null || amount <= 0) {
+      return { ok: false, error: { code: "bad_request", ar: "المبلغ يجب أن يكون أكبر من صفر.", en: "The amount must be greater than zero." } };
+    }
+    // An omitted VAT/discount is zero, not an error: only a value that is present
+    // and unparseable (or negative) is rejected.
+    const optional = (v: unknown): number | null => {
+      if (v === undefined || v === null || v === "") return 0;
+      return positive(v);
+    };
+    const vat = optional(input.vat);
+    const discount = optional(input.discount);
+    if (vat === null || discount === null) {
+      return { ok: false, error: { code: "bad_request", ar: "قيم الضريبة/الخصم غير صالحة.", en: "The VAT/discount value is invalid." } };
+    }
+    const invoiceType = str(input.invoiceType) === "rental" ? "rental" : "sale";
+    params.customerId = customerId;
+    params.amount = amount;
+    params.vat = vat;
+    params.discount = discount;
+    params.paymentMethod = str(input.paymentMethod) || "cash";
+    params.invoiceType = invoiceType;
+    if (invoiceType === "rental") {
+      const contractId = str(input.contractId).slice(0, 64);
+      if (!contractId) {
+        return { ok: false, error: { code: "bad_request", ar: "فاتورة الإيجار تتطلب معرّف العقد.", en: "A rental invoice requires a contract id." } };
+      }
+      params.contractId = contractId;
+    }
+    return { ok: true, plan: { action: spec.id, params, effect: spec.effect, requiresApproval: true } };
+  }
 
   // Document-template actions: the kind is a DocumentKind, never a ReportKind.
   const isDocAction =

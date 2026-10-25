@@ -281,7 +281,9 @@ describe("Exec29 Item 4 - reverseSaleInvoice", () => {
 });
 
 describe("Exec29 - route + page wiring (source assertions)", () => {
-  const invoicesRoute = read("src/app/api/invoices/route.ts");
+  // The posting invariants moved from the route into the shared service that the
+  // route and the AI agent both call; assert over the whole path.
+  const invoicesRoute = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
   const reverseRoute = read("src/app/api/invoices/[id]/reverse/route.ts");
   const newPage = read("src/app/invoices/new/page.tsx");
   const editPage = read("src/app/invoices/[id]/page.tsx");

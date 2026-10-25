@@ -22,6 +22,7 @@ import {
   type RepairProposal,
 } from "../src/lib/ai/repair-workflow.ts";
 import { classifyRepairRequest } from "../src/lib/ai/policy.ts";
+import { PERMISSION_MODULES } from "../src/lib/auth/permissions.ts";
 import type { AuthContext } from "../src/lib/auth/types.ts";
 import type { ReportingDb, ReportingQuery } from "../src/lib/reporting/data.ts";
 import type { FormatTemplate } from "../src/lib/reporting/plan.ts";
@@ -158,9 +159,21 @@ describe("Exec21 — action catalogue", () => {
 
   test("every catalogue action reuses an existing permission and declares its effect", () => {
     for (const a of REPAIR_ACTIONS) {
-      assert.ok(["read", "settings"].includes(a.effect));
+      assert.ok(["read", "settings", "financial"].includes(a.effect));
       assert.ok(typeof a.permission.module === "string" && a.permission.module.length > 0);
-      assert.equal(a.requiresApproval, a.effect === "settings");
+      // Every non-read effect changes persisted state and must be approved.
+      assert.equal(a.requiresApproval, a.effect !== "read");
+      // A financial write is the highest risk and must declare a high risk.
+      if (a.effect === "financial") assert.equal(a.risk, "high");
+    }
+  });
+
+  test("a financial action targets a real permission module and needs approval", () => {
+    const financial = REPAIR_ACTIONS.filter((a) => a.effect === "financial");
+    assert.ok(financial.length >= 3, "invoice/contract actions must exist");
+    for (const a of financial) {
+      assert.ok(PERMISSION_MODULES.includes(a.permission.module as never), `${a.id} must use a real module`);
+      assert.equal(a.requiresApproval, true, `${a.id} must require approval`);
     }
   });
 

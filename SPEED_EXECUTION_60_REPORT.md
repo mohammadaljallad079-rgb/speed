@@ -19,9 +19,9 @@ repository state was confirmed against GitHub:
 | Working branch | `feat/final-hardening-round5` |
 | `c536858` (Exec 41, "last pushed") | **is an ancestor of HEAD** — `merge-base --is-ancestor` → YES |
 | Remote `origin/feat/final-hardening-round5` | `9ea45b5` (Exec 58) — **stale** |
-| Local commits ahead of remote | **17** (Exec 56 → Exec 60) |
+| Local commits ahead of remote | **20** (Exec 56 → Exec 60), later pushed |
 
-So the branch had accumulated seventeen local commits beyond the last pushed tip
+So the branch had accumulated twenty local commits beyond the last pushed tip
 and none had reached GitHub. That is the reason the Super Admin console was
 reported missing in production: **the release was never published**, not a code
 defect. Publishing is a fast-forward and is listed as an owner step in §7.
@@ -278,21 +278,25 @@ AGENTS.md is stale for this branch.
 - **Not deployed.** No production contact, no live DDL, no live financial data
   touched. Screenshots and acceptance runs are against the local dev stack
   (Next.js :3099 + the PostgREST stub).
-- **The branch is not published, and I could not publish it.** Seventeen commits
-  (Exec 56 → 60) exist only locally. Until they are pushed, production will not
-  contain the Super Admin console or anything in this report. **The push was
-  attempted and blocked: the `GITHUB_TOKEN` available to this sandbox is
-  rejected by GitHub** — `curl -H "Authorization: Bearer $GITHUB_TOKEN"
-  https://api.github.com/user` returns `401 Bad credentials`, and `gh auth
-  status` reports "The token in GITHUB_TOKEN is invalid". No other credential is
-  configured (no `credential.helper`, no token in `.git/config`). The working
-  tree is clean, so publishing is a **fast-forward** once a valid token is
-  supplied:
-
-  ```bash
-  git push origin feat/final-hardening-round5
-  ```
-
+- **The branch IS published (after a retry).** The first push attempt was refused
+  (`401 Bad credentials` — the sandbox `GITHUB_TOKEN` had not yet been refreshed);
+  a retry succeeded. `origin/feat/final-hardening-round5` is now
+  `677e91234ec9ccec9e6a40c0f2ba1317d7000a2e`, confirmed both by the push output
+  and by the GitHub API. All 20 commits (Exec 56 → 60) are on GitHub, and
+  `c536858` remains an ancestor.
+- **`main` is behind the branch, and that is expected.** `origin/main` is
+  `757eab2` — the merge of **PR #1** (an older release-hardening merge of this same
+  branch). The branch is **27 ahead / 1 behind**: the single "behind" commit is
+  that merge commit itself, which lives only on `main`. Nothing has been lost, but
+  promoting the current release to `main` is still an owner step — a second merge
+  or a fast-forward — and is deliberately **not** done here.
+- **A local fetch-refspec gap made the push look like a failure.** `remote.origin.fetch`
+  was scoped to `+refs/heads/main:…` only, so `origin/feat/final-hardening-round5`
+  never advanced locally and `rev-list --left-right --count` kept reporting the
+  branch as unpushed. The remote-tracking state was corrected
+  (`+refs/heads/*:refs/remotes/origin/*`); the push itself had already succeeded.
+  Verify a push with `git ls-remote origin <branch>` or the API, not with a
+  stale remote-tracking ref.
 - **Migrations 001–012 are not applied to the live database.** The notification
   dedupe index this execution relies on is migration 012's; the import
   entitlement needs no migration. Applying DDL remains an operator step.

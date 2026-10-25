@@ -1751,6 +1751,21 @@ that applies the filters it is given and returns only affected rows.
   can sit many commits behind the local branch; a "missing in production" report
   is often an unpublished fast-forward, not a defect. Check
   `git rev-list --left-right --count origin/<branch>...HEAD` before debugging.
+- **Verify a push against the remote, not a remote-tracking ref.** This clone's
+  `remote.origin.fetch` was scoped to `+refs/heads/main:…`, so
+  `origin/feat/final-hardening-round5` never advanced locally and the branch
+  looked unpushed long after the push had succeeded. Use
+  `git ls-remote origin <branch>` or the GitHub API; and widen the refspec
+  (`git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`) so the
+  tracking refs are real.
+- **A push that reports `401 Bad credentials` may simply be a stale token.**
+  Retry before concluding it is a permission problem; the sandbox refreshes
+  `GITHUB_TOKEN` periodically. Push with `GIT_ASKPASS` + `GIT_TERMINAL_PROMPT=0`
+  so no credential is written to `.git/config` or the shell history.
+- **`main` may be behind the branch by a merge commit, not ahead.** After PR #1
+  was merged, `origin/main` (`757eab2`) holds that merge while the branch does
+  not, so `compare` reports "1 behind" — the branch is still 27 ahead in content.
+  Promoting the current release is a separate, owner-authorised step.
 - Exec 60 baseline: 1231 tests / 1225 pass / 0 fail / 6 skipped; **typecheck 0
   errors** (the 129 baseline in older notes is stale for this branch); lint clean;
   build green. Browser: Excel export 43/43, forms/SaaS/notifications 18/18,

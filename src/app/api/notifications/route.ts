@@ -3,16 +3,11 @@ import { NextResponse } from "next/server";
 import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import {
-  bookingCancelled,
-  bookingConfirmed,
-  bookingCreated,
   dueDateNotifications,
-  extensionDecided,
-  extensionRequested,
   NOTIFICATION_LABELS,
   sortByUrgency,
-  type NotificationInput,
 } from "@/lib/notifications/notifications";
+import { emitContractEvent, isContractEvent, type ContractReader } from "@/lib/notifications/emit";
 import {
   insertNotifications,
   listNotifications,
@@ -122,59 +117,39 @@ export async function POST(request: Request) {
       // an extension was requested/decided). The body names the event and the
       // contract; the notification CONTENT is rebuilt from the contract row the
       // server reads, tenant-scoped - the client cannot inject a title, a tenant
-      // or a recipient.
+      // or a recipient. The logic lives in `@/lib/notifications/emit` so the
+      // customer booking route and this endpoint share one rule.
       const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      const event = typeof body.event === "string" ? body.event : "";
+      const event = body.event;
       const contractId = typeof body.contractId === "string" ? body.contractId : "";
-      const allowed = ["booking_new", "booking_confirmed", "booking_cancelled", "extension_requested", "extension_decided"];
-      if (!allowed.includes(event) || !contractId) {
+      if (!isContractEvent(event) || !contractId) {
         return NextResponse.json({ success: false, error: "event and contractId are required", code: "bad_request" }, { status: 400 });
       }
 
-      const contractQuery = supabaseAdmin
-        .from("rental_contracts")
-        .select("id, contract_number, status, start_date, end_date, customers(full_name), cars(make, model, plate_number)")
-        .eq("id", contractId);
-      const contractRes = context.tenantId ? await contractQuery.eq("tenant_id", context.tenantId) : await contractQuery;
-      const row = (contractRes.data ?? [])[0] as Record<string, unknown> | undefined;
-      if (!row) {
-        return NextResponse.json({ success: false, error: "Contract not found", code: "not_found" }, { status: 404 });
-      }
+      const result = await emitContractEvent(
+        db,
+        supabaseAdmin as unknown as ContractReader,
+        context.tenantId,
+        {
+          event,
+          contractId,
+          newEndDate: typeof body.newEndDate === "string" ? body.newEndDate : null,
+          approved: body.approved === true,
+        },
+      );
 
-      const number = String(row.contract_number ?? contractId.slice(0, 8));
-      const customer = (row.customers as { full_name?: string } | null)?.full_name ?? "";
-      const car = (row.cars as { make?: string; model?: string; plate_number?: string } | null) ?? {};
-      const carLabel = [car.make, car.model].filter(Boolean).join(" ") || car.plate_number || "";
-      const startDate = String(row.start_date ?? "");
-      const endDate = String(row.end_date ?? "");
-
-      let item: NotificationInput;
-      if (event === "booking_new") {
-        item = bookingCreated({ contractId, contractNumber: number, customerName: customer, carLabel, startDate });
-      } else if (event === "booking_confirmed") {
-        item = bookingConfirmed({ contractId, contractNumber: number });
-      } else if (event === "booking_cancelled") {
-        item = bookingCancelled({ contractId, contractNumber: number });
-      } else if (event === "extension_requested") {
-        const newEnd = typeof body.newEndDate === "string" ? body.newEndDate : endDate;
-        item = extensionRequested({ contractId, contractNumber: number, newEndDate: newEnd });
-      } else {
-        item = extensionDecided({ contractId, contractNumber: number, approved: body.approved === true, newEndDate: endDate });
-      }
-
-      const inserted = await insertNotifications(db, context.tenantId, null, [item]);
       await logAudit(context, {
         action: "create",
         entity: "notifications",
         entityId: contractId,
-        metadata: { event, inserted: inserted.inserted, skipped: inserted.skipped, reason: inserted.error ?? null },
+        metadata: { event, inserted: result.inserted, skipped: result.skipped, reason: result.error },
       });
       return NextResponse.json({
-        success: true,
-        available: inserted.ok || inserted.inserted > 0,
-        inserted: inserted.inserted,
-        skipped: inserted.skipped,
-        reason: inserted.error ?? null,
+        success: result.ok,
+        available: result.ok,
+        inserted: result.inserted,
+        skipped: result.skipped,
+        reason: result.error,
       });
     }
 

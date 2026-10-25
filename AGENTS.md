@@ -1707,3 +1707,51 @@ that applies the filters it is given and returns only affected rows.
   the workflow or the finance port.
 - **Evidence:** `docs/screenshots/super-admin-ai-agent-{desktop,mobile}.png` show
   the agent rendered on the global console, listed in `MANIFEST.json`.
+
+## Execution 60 invariants (final gap closure — forms, Excel, notifications)
+
+- **The (+) create lives beside the label, so a picker without a `label` has no
+  (+) create.** `RecordSelect` renders the create button inside the `{label && (…)}`
+  block — visible without opening the dropdown, which is the point. Four pickers
+  (HR attendance check-in/check-out, and the expense-row account pickers on
+  `cars/new` and `rentals/new`) omitted `label` and silently lost the affordance.
+  `tests/exec60-record-picker-labels.test.ts` scans every `<RecordSelect>` in
+  `src/app` and `src/components` and fails on any creatable picker (i.e. not
+  `createMode="none"`) without a label. A test that only counts `kind="employee"`
+  occurrences cannot see a missing prop — do not weaken this guard back to a count.
+- **One branded exporter for every report.** `src/lib/reporting/export.ts` is the
+  only workbook writer; a report screen adds one `<ExcelExportButton />` and a
+  descriptor. `tests/exec60-export-wiring.test.ts` asserts each report calls it.
+- **Export is proven by download, not by unit test.** A wiring test cannot catch a
+  broken handler or a client/server buffer mismatch.
+  `scripts/dev/e2e-excel-export.mjs` (`npm run e2e:excel-export`) clicks the real
+  button, captures the download and **re-opens the bytes with ExcelJS**, asserting
+  each report's own title, its own headers and real `SUM` formulas over the data
+  range (43/43). The General Ledger export is context-sensitive by design — its
+  statement when an account is open, else the trial-balance list — so the check
+  accepts either shape.
+- **Notifications have one emit path.** `src/lib/notifications/emit.ts` owns
+  `buildContractEvent`/`emitContractEvent` over a closed `ContractEvent` set
+  (booking_new/confirmed/cancelled, extension_requested/decided). A duplicate is
+  refused by migration 012's dedupe unique index, not by a read-then-write check;
+  `skipped` is a **count**, not a boolean.
+- **Entitlements are enforced where the capability is declared.** `/api/me`
+  reports the plan capabilities the UI hides controls with, and each capability's
+  route re-checks it server-side. Hiding a button is not enforcement.
+- **The dev stub must mirror the migrations that back a guarantee.** It enforces
+  migration 012's dedupe unique index (returning the `23505` the app looks for),
+  so "never duplicate" is tested against a constraint instead of a stub that
+  happily appends. Its `like.` filter no longer throws on a malformed pattern — an
+  unhandled `RegExp` error killed the stub process and every later request then
+  looked like an app failure.
+- **Never run `npm run build` against a live `next dev`.** It overwrites `.next`
+  and the dev server then fails every page with `Cannot find module './NNNN.js'`.
+  Restart the dev stack (`bash scripts/dev/run-dev.sh 3099`) after a build.
+- **The release must actually be pushed.** `origin/feat/final-hardening-round5`
+  can sit many commits behind the local branch; a "missing in production" report
+  is often an unpublished fast-forward, not a defect. Check
+  `git rev-list --left-right --count origin/<branch>...HEAD` before debugging.
+- Exec 60 baseline: 1231 tests / 1225 pass / 0 fail / 6 skipped; **typecheck 0
+  errors** (the 129 baseline in older notes is stale for this branch); lint clean;
+  build green. Browser: Excel export 43/43, forms/SaaS/notifications 18/18,
+  AI financial writes 28/28. Report: `SPEED_EXECUTION_60_REPORT.md`.

@@ -2,8 +2,8 @@
 ## Final gap closure — AI Agent, SaaS, Smart Forms, Excel, Notifications
 
 **Branch:** `feat/final-hardening-round5`
-**Tip commit:** `e4d57ccaa31823305ce3aaf39539081ae31ff6ec`
-**Commit URL:** https://github.com/mohammadaljallad079-rgb/speed/commit/e4d57ccaa31823305ce3aaf39539081ae31ff6ec
+**Last functional commit:** `2b94c68a156544ee8656713858abb92b80c3a315` (this report is a docs-only commit on top)
+**Commit URL:** https://github.com/mohammadaljallad079-rgb/speed/commit/2b94c68a156544ee8656713858abb92b80c3a315
 **Base (last confirmed pushed):** `c536858a6e629c495b4d3b6b294cfa54c1424bd0` (Exec 41)
 **Date:** 2026-10-24
 
@@ -286,8 +286,8 @@ AGENTS.md is stale for this branch.
   https://api.github.com/user` returns `401 Bad credentials`, and `gh auth
   status` reports "The token in GITHUB_TOKEN is invalid". No other credential is
   configured (no `credential.helper`, no token in `.git/config`). The working
-  tree is clean at `a60f326`, so publishing is a **fast-forward** once a valid
-  token is supplied:
+  tree is clean, so publishing is a **fast-forward** once a valid token is
+  supplied:
 
   ```bash
   git push origin feat/final-hardening-round5
@@ -309,9 +309,9 @@ AGENTS.md is stale for this branch.
 |---|---|
 | `9b4846f` | `test(exec60): prove the Excel export in a real browser; commit the screens` |
 | `2b94c68` | `fix(exec60): restore the inline (+) create on four Smart Form pickers` |
-| `e4d57cc` | `docs(exec60): closure report + the invariants the four missing labels taught` |
+| `2b94c68`+ | `docs(exec60)`: this report and the AGENTS.md invariants |
 
-Full Exec 60 range since the last pushed base: `c536858..e4d57cc` (17 commits,
+Full Exec 60 range since the last pushed base: `c536858..HEAD` (17 commits,
 Exec 56 → 60).
 
 ---

@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect, useRef } from 'react'
 import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { supabase } from '@/lib/supabase'
 import { summarizeVatSources, type VatSourceBreakdown } from '@/lib/reporting/vat'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 import { formatCurrency, formatDateTime } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -163,93 +164,48 @@ useEffect(() => {
     setTimeout(() => printWindow.print(), 250)
   }
 
+  /**
+   * Branded export through the shared engine (Exec 60, Section 6). The report
+   * has two blocks - the source breakdown and the monthly breakdown - so both
+   * are emitted into one sheet under a `Section` column, keeping the taxable
+   * base and the VAT in separate columns (the VAT return needs both) and the
+   * source VAT out of the Output/Input columns so the totals cannot double-count.
+   */
   async function handleExport() {
     setExporting(true)
     try {
-      const ExcelJS = (await import('exceljs')).default
-      const workbook = new ExcelJS.Workbook()
-      workbook.creator = 'Harbour Consultancies'
-      workbook.created = new Date()
-      const sheet = workbook.addWorksheet(isRTL ? 'ضريبة القيمة المضافة' : 'VAT Report', {
-        views: [{ rightToLeft: isRTL, showGridLines: false }]
-      })
-      sheet.columns = [{ key: 'month', width: 24 }, { key: 'output', width: 18 }, { key: 'input', width: 18 }, { key: 'net', width: 18 }]
-      const navy = 'FF0F172A'
-      const white = 'FFFFFFFF'
-      const numFmt = '#,##0.000'
-      sheet.mergeCells('A1:D1')
-      sheet.getCell('A1').value = isRTL ? 'تقرير ضريبة القيمة المضافة' : 'VAT Report'
-      sheet.getCell('A1').font = { bold: true, size: 14, color: { argb: navy } }
-      sheet.getCell('A1').alignment = { horizontal: 'center' }
-      sheet.addRow([])
-
-      // Source breakdown: taxable base and VAT per source, matching the screen.
-      // The taxable base is never omitted — it is the column the VAT return needs.
-      const breakdownHeader = sheet.addRow([
-        isRTL ? 'المصدر' : 'Source',
-        isRTL ? 'الوعاء الضريبي' : 'Taxable Base',
-        isRTL ? 'الضريبة' : 'VAT',
-        ''
-      ])
-      breakdownHeader.eachCell(cell => {
-        cell.font = { bold: true, color: { argb: white } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-        cell.alignment = { horizontal: 'center' }
-      })
-      const breakdownRows: [string, number, number][] = [
-        [isRTL ? 'فواتير المبيعات (Output)' : 'Sales invoices (output)', breakdown.sales.taxable, breakdown.sales.vat],
-        [isRTL ? 'فواتير المشتريات (Input)' : 'Purchase invoices (input)', breakdown.purchases.taxable, breakdown.purchases.vat],
-        [isRTL ? 'المصاريف (Input)' : 'Expenses (input)', breakdown.expenses.taxable, breakdown.expenses.vat],
+      const rows: Record<string, unknown>[] = [
+        { section: isRTL ? 'المصادر' : 'Sources', item: isRTL ? 'فواتير المبيعات' : 'Sales invoices (output)', base: breakdown.sales.taxable, vat: breakdown.sales.vat },
+        { section: isRTL ? 'المصادر' : 'Sources', item: isRTL ? 'فواتير المشتريات' : 'Purchase invoices (input)', base: breakdown.purchases.taxable, vat: breakdown.purchases.vat },
+        { section: isRTL ? 'المصادر' : 'Sources', item: isRTL ? 'المصاريف' : 'Expenses (input)', base: breakdown.expenses.taxable, vat: breakdown.expenses.vat },
       ]
-      breakdownRows.forEach(([label, base, vat]) => {
-        const row = sheet.addRow([label, base, vat, ''])
-        row.getCell(2).numFmt = numFmt
-        row.getCell(3).numFmt = numFmt
-      })
-      const breakdownTotal = sheet.addRow([
-        isRTL ? 'إجمالي المصادر' : 'Total (sources)',
-        breakdown.sales.taxable + breakdown.purchases.taxable + breakdown.expenses.taxable,
-        totalOutput + totalInput,
-        ''
-      ])
-      breakdownTotal.eachCell(cell => { cell.font = { bold: true } })
-      breakdownTotal.getCell(2).numFmt = numFmt
-      breakdownTotal.getCell(3).numFmt = numFmt
-      sheet.addRow([])
-
-      const headerRow = sheet.addRow([
-        isRTL ? 'الشهر' : 'Month',
-        isRTL ? 'ضريبة المبيعات' : 'Output VAT',
-        isRTL ? 'ضريبة المدخلات' : 'Input VAT',
-        isRTL ? 'الصافي' : 'Net'
-      ])
-      headerRow.eachCell(cell => {
-        cell.font = { bold: true, color: { argb: white } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-        cell.alignment = { horizontal: 'center' }
-      })
-      monthRows.forEach(r => {
-        const row = sheet.addRow([formatMonthLabel(r.month), r.outputVat, r.inputVat, r.net])
-        row.getCell(2).numFmt = numFmt
-        row.getCell(3).numFmt = numFmt
-        row.getCell(4).numFmt = numFmt
-      })
-      sheet.addRow([])
-      const totalRow = sheet.addRow([isRTL ? 'الإجمالي' : 'Total', totalOutput, totalInput, netVat])
-      totalRow.eachCell(cell => { cell.font = { bold: true } })
-      totalRow.getCell(2).numFmt = numFmt
-      totalRow.getCell(3).numFmt = numFmt
-      totalRow.getCell(4).numFmt = numFmt
-      const buffer = await workbook.xlsx.writeBuffer()
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `VAT_${dateFrom || 'all'}_${dateTo || 'today'}.xlsx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      for (const r of monthRows) {
+        rows.push({ section: isRTL ? 'شهري' : 'Monthly', item: formatMonthLabel(r.month), outputVat: r.outputVat, inputVat: r.inputVat, net: r.net })
+      }
+      const spec = {
+        titleAr: 'تقرير ضريبة القيمة المضافة',
+        titleEn: 'VAT Report',
+        periodLabel: `${dateFrom || (isRTL ? 'البداية' : 'All')} — ${dateTo || (isRTL ? 'اليوم' : 'Today')}`,
+        rtl: isRTL,
+        columns: [
+          { key: 'section', labelAr: 'القسم', labelEn: 'Section', type: 'text' as const, width: 14 },
+          { key: 'item', labelAr: 'البند', labelEn: 'Item', type: 'text' as const, width: 34 },
+          { key: 'base', labelAr: 'الوعاء الضريبي', labelEn: 'Taxable base', type: 'currency' as const },
+          { key: 'vat', labelAr: 'الضريبة', labelEn: 'VAT', type: 'currency' as const },
+          { key: 'outputVat', labelAr: 'ضريبة المبيعات', labelEn: 'Output VAT', type: 'currency' as const },
+          { key: 'inputVat', labelAr: 'ضريبة المدخلات', labelEn: 'Input VAT', type: 'currency' as const },
+          { key: 'net', labelAr: 'الصافي', labelEn: 'Net', type: 'currency' as const },
+        ],
+        rows,
+        totals: [
+          { labelAr: 'إجمالي الوعاء الضريبي', labelEn: 'Total taxable base', columnKey: 'base', value: breakdown.sales.taxable + breakdown.purchases.taxable + breakdown.expenses.taxable },
+          { labelAr: 'إجمالي ضريبة المبيعات', labelEn: 'Total output VAT', columnKey: 'outputVat', value: totalOutput },
+          { labelAr: 'إجمالي ضريبة المدخلات', labelEn: 'Total input VAT', columnKey: 'inputVat', value: totalInput },
+          { labelAr: 'صافي الضريبة المستحقة', labelEn: 'Net VAT payable', columnKey: 'net', value: netVat },
+        ],
+      }
+      const buffer = await buildReportWorkbook(spec)
+      downloadWorkbook(buffer, exportFilename('vat-report', `${dateFrom || 'all'}_${dateTo || 'today'}`))
     } catch (error) {
       console.error('Excel export error:', error)
     }

@@ -5,6 +5,7 @@ import { useReportRefresh } from '@/lib/hooks/use-report-refresh'
 import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 import { formatCurrency, formatDateTime } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -323,157 +324,51 @@ useEffect(() => {
     setTimeout(() => printWindow.print(), 250)
   }
 
-  // ---------- Professional Excel Export (ExcelJS) ----------
+  /**
+   * Branded export through the shared engine (Exec 60, Section 6). A P&L is not
+   * a flat table, so the sections are flattened into one sheet with a `Section`
+   * column and each section's total is emitted as a real SUM row - the same
+   * shape the on-screen statement shows.
+   */
   async function handleExport() {
     setExporting(true)
     try {
-      const ExcelJS = (await import('exceljs')).default
-      const workbook = new ExcelJS.Workbook()
-      workbook.creator = 'Harbour Consultancies'
-      workbook.created = new Date()
-
-      const sheet = workbook.addWorksheet(isRTL ? 'الأرباح والخسائر' : 'Profit and Loss', {
-        views: [{ rightToLeft: isRTL, showGridLines: false }],
-        pageSetup: { orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 }
-      })
-
-      sheet.columns = [
-        { key: 'code', width: 12 },
-        { key: 'name', width: 46 },
-        { key: 'amount', width: 20 }
-      ]
-
-      const navy = 'FF0F172A'
-      const colorMap: Record<string, string> = {
-        emerald: 'FF059669',
-        amber: 'FFD97706',
-        red: 'FFDC2626'
-      }
-      const lightGray = 'FFF8FAFC'
-      const white = 'FFFFFFFF'
-
-      // Title block
-      sheet.mergeCells('A1:C1')
-      sheet.getCell('A1').value = isRTL ? 'شركة هاربور للاستشارات' : 'Harbour Consultancies'
-      sheet.getCell('A1').font = { bold: true, size: 16, color: { argb: navy } }
-      sheet.getCell('A1').alignment = { horizontal: 'center' }
-
-      sheet.mergeCells('A2:C2')
-      sheet.getCell('A2').value = isRTL ? 'قائمة الدخل (الأرباح والخسائر)' : 'Profit & Loss Statement'
-      sheet.getCell('A2').font = { bold: true, size: 13, color: { argb: 'FF334155' } }
-      sheet.getCell('A2').alignment = { horizontal: 'center' }
-
-      sheet.mergeCells('A3:C3')
-      const periodLabel = `${dateFrom || (isRTL ? 'بداية الحسابات' : 'All time')} - ${dateTo || (isRTL ? 'اليوم' : 'Today')}`
-      sheet.getCell('A3').value = (isRTL ? 'الفترة: ' : 'Period: ') + periodLabel
-      sheet.getCell('A3').font = { italic: true, size: 10, color: { argb: 'FF64748B' } }
-      sheet.getCell('A3').alignment = { horizontal: 'center' }
-
-      sheet.addRow([])
-
-      // Header row
-      const headerRow = sheet.addRow([
-        isRTL ? 'الرمز' : 'Code',
-        isRTL ? 'الحساب' : 'Account',
-        isRTL ? 'المبلغ (د.ب)' : 'Amount (BHD)'
-      ])
-      headerRow.eachCell(cell => {
-        cell.font = { bold: true, color: { argb: white }, size: 11 }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: navy } }
-        cell.alignment = { horizontal: 'center', vertical: 'middle' }
-        cell.border = {
-          top: { style: 'thin' }, bottom: { style: 'thin' },
-          left: { style: 'thin' }, right: { style: 'thin' }
-        }
-      })
-      headerRow.height = 22
-
-      sections.forEach(sec => {
-        const secRow = sheet.addRow([
-          '', isRTL ? sec.titleAr : sec.title, '' 
-        ])
-        sheet.mergeCells(`B${secRow.number}:B${secRow.number}`)
-        secRow.eachCell((cell, colNumber) => {
-          cell.font = { bold: true, color: { argb: white }, size: 11 }
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: colorMap[sec.color] || navy } }
-          cell.alignment = { horizontal: colNumber === 2 ? (isRTL ? 'right' : 'left') : 'center', vertical: 'middle' }
-        })
-        secRow.height = 20
-
-        sec.items.forEach(item => {
-          const row = sheet.addRow([
-            item.code,
-            (item.isSubAccount ? '   ' : '') + (isRTL ? item.name : item.name_en),
-            Math.abs(item.balance)
-          ])
-          row.getCell(1).font = { size: 9, color: { argb: 'FF64748B' } }
-          row.getCell(1).alignment = { horizontal: 'center' }
-          row.getCell(2).font = { size: 10, color: item.isSubAccount ? { argb: 'FF64748B' } : { argb: 'FF1E293B' } }
-          row.getCell(2).alignment = { horizontal: isRTL ? 'right' : 'left', indent: item.isSubAccount ? 2 : 0 }
-          row.getCell(3).numFmt = '#,##0.000'
-          row.getCell(3).font = { size: 10 }
-          row.getCell(3).alignment = { horizontal: isRTL ? 'left' : 'right' }
-          row.eachCell(cell => {
-            cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } }
+      const rows: Record<string, unknown>[] = []
+      sections.forEach((sec) => {
+        for (const item of sec.items) {
+          rows.push({
+            section: isRTL ? sec.titleAr : sec.title,
+            code: item.code,
+            name: (item.isSubAccount ? '   ' : '') + (isRTL ? item.name : item.name_en),
+            amount: Math.abs(item.balance),
           })
-        })
-
-        const totalRow = sheet.addRow([
-          '', (isRTL ? 'إجمالي ' : 'Total ') + (isRTL ? sec.titleAr : sec.title), sec.total
-        ])
-        totalRow.getCell(2).font = { bold: true, size: 10 }
-        totalRow.getCell(2).alignment = { horizontal: isRTL ? 'right' : 'left' }
-        totalRow.getCell(3).font = { bold: true, size: 10 }
-        totalRow.getCell(3).numFmt = '#,##0.000'
-        totalRow.getCell(3).alignment = { horizontal: isRTL ? 'left' : 'right' }
-        totalRow.eachCell(cell => {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: lightGray } }
-          cell.border = { top: { style: 'medium', color: { argb: navy } } }
-        })
-
-        sheet.addRow([])
-      })
-
-      // Gross profit
-      const gpRow = sheet.addRow(['', isRTL ? 'إجمالي الربح' : 'Gross Profit', grossProfit])
-      gpRow.eachCell(cell => {
-        cell.font = { bold: true, size: 12, color: { argb: grossProfit >= 0 ? 'FF059669' : 'FFDC2626' } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: grossProfit >= 0 ? 'FFECFDF5' : 'FFFEF2F2' } }
-        cell.border = { top: { style: 'thin' }, bottom: { style: 'thin' } }
-      })
-      gpRow.getCell(2).alignment = { horizontal: isRTL ? 'right' : 'left' }
-      gpRow.getCell(3).numFmt = '#,##0.000'
-      gpRow.getCell(3).alignment = { horizontal: isRTL ? 'left' : 'right' }
-
-      sheet.addRow([])
-
-      // Net profit
-      const npRow = sheet.addRow(['', isRTL ? 'صافي الربح / الخسارة' : 'Net Profit / Loss', netProfit])
-      npRow.eachCell(cell => {
-        cell.font = { bold: true, size: 14, color: { argb: netProfit >= 0 ? 'FF059669' : 'FFDC2626' } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: netProfit >= 0 ? 'FFD1FAE5' : 'FFFEE2E2' } }
-        cell.border = {
-          top: { style: 'medium' }, bottom: { style: 'medium' },
-          left: { style: 'medium' }, right: { style: 'medium' }
         }
       })
-      npRow.getCell(2).alignment = { horizontal: isRTL ? 'right' : 'left' }
-      npRow.getCell(3).numFmt = '#,##0.000'
-      npRow.getCell(3).alignment = { horizontal: isRTL ? 'left' : 'right' }
-      npRow.height = 26
-
-      sheet.pageSetup.printArea = `A1:C${npRow.number}`
-
-      const buffer = await workbook.xlsx.writeBuffer()
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `PL_${dateFrom || 'all'}_${dateTo || 'today'}.xlsx`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
+      const spec = {
+        titleAr: 'قائمة الدخل (الأرباح والخسائر)',
+        titleEn: 'Profit & Loss Statement',
+        periodLabel: `${dateFrom || (isRTL ? 'بداية الحسابات' : 'All time')} — ${dateTo || (isRTL ? 'اليوم' : 'Today')}`,
+        rtl: isRTL,
+        columns: [
+          { key: 'section', labelAr: 'القسم', labelEn: 'Section', type: 'text' as const, width: 18 },
+          { key: 'code', labelAr: 'الرمز', labelEn: 'Code', type: 'text' as const, width: 12 },
+          { key: 'name', labelAr: 'الحساب', labelEn: 'Account', type: 'text' as const, width: 46 },
+          { key: 'amount', labelAr: 'المبلغ (د.ب)', labelEn: 'Amount (BHD)', type: 'currency' as const },
+        ],
+        rows,
+        totals: [
+          ...sections.map((sec) => ({
+            labelAr: `إجمالي ${sec.titleAr}`,
+            labelEn: `Total ${sec.title}`,
+            columnKey: 'amount',
+            value: sec.total,
+          })),
+          { labelAr: 'إجمالي الربح', labelEn: 'Gross profit', columnKey: 'amount', value: grossProfit },
+          { labelAr: 'صافي الربح / الخسارة', labelEn: 'Net profit / loss', columnKey: 'amount', value: netProfit },
+        ],
+      }
+      const buffer = await buildReportWorkbook(spec)
+      downloadWorkbook(buffer, exportFilename('profit-loss', `${dateFrom || 'all'}_${dateTo || 'today'}`))
     } catch (error) {
       console.error('Excel export error:', error)
     }

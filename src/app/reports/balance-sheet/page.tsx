@@ -28,7 +28,7 @@ import {
   TrendingDown
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
-import ExcelJS from 'exceljs'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 
 interface BSRow {
   id: string
@@ -310,108 +310,40 @@ useEffect(() => {
 
   const todayStr = new Date().toLocaleDateString(isRTL ? 'ar-BH' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
 
+  /**
+   * One branded exporter for every report (Exec 60, Section 6). The rows come
+   * from the already-scoped state, so the file can never contain another
+   * tenant's accounts. A balance sheet is not a flat table, so the sections are
+   * flattened into one sheet with a `Section` column and each section's total is
+   * emitted as a real SUM row - the same shape the on-screen report shows.
+   */
   async function exportExcel() {
-    const wb = new ExcelJS.Workbook()
-    const ws = wb.addWorksheet('Balance Sheet')
-    ws.columns = [{ width: 12 }, { width: 45 }, { width: 20 }]
-
-    const navy = 'FF0F172A'
-    const white = 'FFFFFFFF'
-
-    function styleRow(row: ExcelJS.Row, opts: {
-      bg?: string, color?: string, bold?: boolean, size?: number,
-      align?: 'left' | 'right' | 'center', border?: boolean, numFmt?: string
-    }) {
-      row.eachCell({ includeEmpty: true }, (cell) => {
-        cell.font = { bold: !!opts.bold, size: opts.size || 10, name: 'Arial', color: { argb: opts.color || 'FF1E293B' } }
-        if (opts.bg) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } }
-        cell.alignment = { horizontal: opts.align || 'left', vertical: 'middle' }
-        if (opts.numFmt) cell.numFmt = opts.numFmt
-        if (opts.border) {
-          cell.border = {
-            top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
-          }
-        }
-      })
+    const rows: Record<string, unknown>[] = []
+    for (const [label, section] of [['Assets', assets], ['Liabilities', liabilities], ['Equity', equity]] as const) {
+      for (const r of section) {
+        rows.push({ section: label, code: r.code, name: isRTL ? r.name_ar : r.name, amount: r.closing })
+      }
     }
-
-    ws.mergeCells('A1:C1')
-    ws.getCell('A1').value = 'BALANCE SHEET'
-    styleRow(ws.getRow(1), { bg: navy, color: white, bold: true, size: 20, align: 'center' })
-    ws.getRow(1).height = 28
-
-    ws.mergeCells('A2:C2')
-    ws.getCell('A2').value = 'Harbour Consultancies W.L.L'
-    styleRow(ws.getRow(2), { bold: true, size: 13, align: 'center' })
-
-    ws.mergeCells('A3:C3')
-    ws.getCell('A3').value = 'As at: ' + toDate
-    styleRow(ws.getRow(3), { size: 10, color: 'FF64748B', align: 'center' })
-
-    ws.addRow([])
-
-    const headerRow = ws.addRow(['Code', 'Account Name', 'Amount (BHD)'])
-    styleRow(headerRow, { bg: 'FF1E40AF', color: white, bold: true, align: 'center', border: true })
-
-    function sectionRow(label: string, bg: string, color: string) {
-      const row = ws.addRow([label, '', ''])
-      styleRow(row, { bg, color, bold: true, size: 12, border: true })
+    const spec = {
+      titleAr: 'الميزانية العمومية',
+      titleEn: 'Balance Sheet',
+      periodLabel: isRTL ? `كما في ${toDate}` : `As at ${toDate}`,
+      rtl: isRTL,
+      columns: [
+        { key: 'section', labelAr: 'القسم', labelEn: 'Section', type: 'text' as const, width: 16 },
+        { key: 'code', labelAr: 'الرمز', labelEn: 'Code', type: 'text' as const, width: 14 },
+        { key: 'name', labelAr: 'الحساب', labelEn: 'Account', type: 'text' as const, width: 45 },
+        { key: 'amount', labelAr: 'المبلغ', labelEn: 'Amount (BHD)', type: 'currency' as const },
+      ],
+      rows,
+      totals: [
+        { labelAr: 'إجمالي الأصول', labelEn: 'Total assets', columnKey: 'amount', value: totalAssets },
+        { labelAr: 'إجمالي الخصوم', labelEn: 'Total liabilities', columnKey: 'amount', value: totalLiabilities },
+        { labelAr: 'إجمالي حقوق الملكية', labelEn: 'Total equity', columnKey: 'amount', value: totalEquity },
+      ],
     }
-    function dataRow(code: string, name: string, amount: number, idx: number) {
-      const row = ws.addRow([code, '    ' + name, Math.abs(amount)])
-      const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC'
-      styleRow(row, { bg, border: true })
-      row.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' }
-      row.getCell(3).numFmt = '#,##0.000'
-      row.getCell(1).font = { ...row.getCell(1).font, name: 'monospace', size: 9, color: { argb: 'FF64748B' } }
-    }
-    function totalRow(label: string, amount: number, bg: string, color: string) {
-      const row = ws.addRow(['', label, Math.abs(amount)])
-      styleRow(row, { bg, color, bold: true, size: 12, border: true })
-      row.getCell(3).alignment = { horizontal: 'right', vertical: 'middle' }
-      row.getCell(3).numFmt = '#,##0.000'
-    }
-
-    let idx = 0
-
-    // ASSETS
-    sectionRow('ASSETS', 'FFDBEAFE', 'FF1E40AF')
-    assets.forEach(r => { dataRow(r.code, isRTL ? r.name_ar : r.name, r.closing, idx); idx++ })
-    totalRow('Total Assets', totalAssets, 'FFBFDBFE', 'FF1E40AF')
-
-    ws.addRow([])
-
-    // LIABILITIES
-    sectionRow('LIABILITIES', 'FFFEF3C7', 'FF92400E')
-    liabilities.forEach(r => { dataRow(r.code, isRTL ? r.name_ar : r.name, r.closing, idx); idx++ })
-    totalRow('Total Liabilities', totalLiabilities, 'FFFDE68A', 'FF92400E')
-
-    ws.addRow([])
-
-    // EQUITY
-    sectionRow('EQUITY', 'FFD1FAE5', 'FF065F46')
-    equity.forEach(r => { dataRow(r.code, isRTL ? r.name_ar : r.name, r.closing, idx); idx++ })
-    totalRow('Total Equity', totalEquity, 'FFBBF7D0', 'FF065F46')
-
-    ws.addRow([])
-
-    // GRAND TOTAL
-    const isBalanced = Math.abs(totalAssets - totalLiabEquity) < 0.001
-    const netColor = isBalanced ? 'FF065F46' : 'FF991B1B'
-    const netBg = isBalanced ? 'FFBBF7D0' : 'FFFECACA'
-    totalRow('TOTAL LIABILITIES + EQUITY', totalLiabEquity, netBg, netColor)
-
-    const buffer = await wb.xlsx.writeBuffer()
-    const blob = new Blob([buffer], { type: 'application/octet-stream' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'Balance_Sheet_' + toDate + '.xlsx'
-    a.click()
-    window.URL.revokeObjectURL(url)
+    const buffer = await buildReportWorkbook(spec)
+    downloadWorkbook(buffer, exportFilename('balance-sheet', toDate))
   }
 
   const renderRow = (r: BSRow, amountColor: string) => (

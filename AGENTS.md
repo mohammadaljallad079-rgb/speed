@@ -1856,3 +1856,61 @@ that applies the filters it is given and returns only affected rows.
   screenshots that silently capture the wrong tab. One dev server per `.next`.
 - Exec 64 Stage 1 baseline: **1358 tests / 1352 pass / 0 fail / 6 skipped**;
   typecheck 0; lint clean; build green; migration 014 harness 36/36.
+
+## Execution 66 invariants (atomic customer receipt + strict account integrity)
+
+- **A customer receipt is ONE server-side transaction.** `POST /api/receipts`
+  (`src/app/api/receipts/route.ts`) -> `recordReceipt`
+  (`src/lib/sales/receipt-service.ts`) -> `post_customer_receipt` (migration 015)
+  writes the `payments` row, its journal and the invoice settlement in a single
+  database call. The three browser pages (`rentals/[id]`, `rentals`,
+  `payments/new`) used to do all three themselves with the anon client, with the
+  journal call wrapped in a `try/catch` that only raised an `alert` - so a failed
+  posting left a receipt with NO accounting entry while the page still said
+  "Payment recorded successfully". Never re-add a browser-side receipt write.
+- **The browser sends no identity.** The pages call `submitReceipt`
+  (`src/lib/sales/receipt-client.ts`) and send no `tenant_id`, no `role` and no
+  journal; the server resolves all of them from the session. `submitReceipt`
+  only reports success when the response carries BOTH a `payment_id` and a
+  `journal_id`; anything else raises.
+- **A refused receipt writes nothing.** `post_customer_receipt` validates before
+  it writes, so a receipt whose journal would be rejected (foreign/inactive/
+  non-postable account, unbalanced) leaves no payment row, no journal and no
+  settlement. `tests/exec66-receipt-workflow.test.ts` asserts exactly this.
+- **`post_journal_entry` is hardened by 015.** For a TENANTED journal every line's
+  account must exist, be `is_active` and `is_postable`, and be usable by that
+  company (own tenant or the shared NULL-tenant chart). A NULL-tenant (legacy
+  single-tenant) journal keeps the previous behaviour, so the existing install is
+  untouched. `supabase/tests/015_harness/run.sh` proves all of it on a real
+  PostgreSQL 17: **28/28**.
+- **Receipt numbering is unique per company, not globally.** 015 adds
+  `payments_tenant_receipt_uidx` (tenant) and `payments_null_tenant_receipt_uidx`
+  (NULL tenant) - a plain UNIQUE treats NULLs as distinct, so both are needed.
+- **Idempotency lookups are TENANT-SCOPED.** `findPostedManualJournal`
+  (`manual-posting.ts`) and `findPostedJournal` (`sales-posting.ts`) filter by
+  `tenant_id` (or `is null`), applied in the query. Without it a retry in company
+  B could match company A's journal for the same reference and skip its own
+  posting - a silently lost financial entry.
+- **`writeJournal` refuses a foreign tenant instead of overwriting it.** If a
+  caller already stamped a different `tenant_id` on the header or a line, the
+  write is refused. It still STAMPS the session company when the field is absent.
+- **The pre-011 fallback is kept deliberately.** `writeJournal` prefers the atomic
+  `post_journal_entry`; when that RPC is absent it falls back to the two-request
+  write with compensation. The fallback is NOT replaced by a hard failure: the
+  app ships before the operator applies a migration, and refusing to post would
+  turn "one rare orphaned header after a crash" into "no document can be
+  recorded at all" on an un-migrated database.
+- **`nextDocumentNumber` tolerates a client with no `rpc`** (returns the
+  collision-safe local fallback) instead of throwing, so numbering never blocks a
+  write on a database the migration has not reached.
+- **Migration 015 rollback is non-destructive and partial by design.** It drops
+  the receipt function and indexes; restoring the previous `post_journal_entry`
+  is a separate, deliberate re-run of 011, because doing it automatically would
+  silently re-open the account-ownership hole 015 closes.
+- **Exec 66 baseline: 1380 tests / 1374 pass / 0 fail / 6 skipped**; typecheck 0;
+  lint clean; build green; migration 015 harness 28/28.
+- **The live migration level could NOT be verified from this environment.** The
+  `.env.local` Supabase credentials are placeholders (`placeholder-...`), so the
+  anon/service probes return 401. 015 is authored, harness-verified and shipped as
+  a file; whether 011-014 are applied in production is an operator question, not
+  something this environment can assert.

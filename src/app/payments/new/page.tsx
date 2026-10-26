@@ -6,8 +6,7 @@ import { useState, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
-import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
-import { useTenantId } from '@/lib/hooks/use-tenant-id'
+import { submitReceipt } from '@/lib/sales/receipt-client'
 import RecordSelect from '@/components/records/RecordSelect'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -21,9 +20,8 @@ import Link from 'next/link'
 
 function NewPaymentPageContent() {
   const { t, isRTL } = useLanguage()
-  // The chart is per-company (migration 014); the posting company comes from the
-  // session, never a form field.
-  const { tenantId } = useTenantId()
+  // The posting company is resolved SERVER-side from the session by
+  // `/api/receipts`; the page no longer performs a financial write.
   const router = useRouter()
   const searchParams = useSearchParams()
   const [mounted, setMounted] = useState(false)
@@ -130,7 +128,11 @@ function NewPaymentPageContent() {
     }
     setLoading(true)
     try {
-      const { error } = await supabase.from('payments').insert([{
+      // ONE server-side transaction. A receipt is a payment row AND its ledger
+      // posting AND the invoice settlement; the browser used to write those
+      // separately, so a failure left a saved receipt with no accounting entry
+      // while the page navigated away as if it had succeeded.
+      await submitReceipt({
         receipt_number: form.receipt_number,
         customer_id: form.customer_id,
         invoice_id: form.invoice_id || null,
@@ -140,49 +142,14 @@ function NewPaymentPageContent() {
         payment_date: form.payment_date,
         car_plate: form.car_plate || null,
         notes: form.notes || null,
-        status: 'completed',
-      }])
-      if (error) throw error
-
-      if (form.invoice_id) {
-        const invoice = invoices.find((inv: any) => inv.id === form.invoice_id)
-        if (invoice) {
-          const newPaid = (invoice.paid_amount || 0) + parseFloat(form.amount)
-          const newStatus = newPaid >= invoice.total_amount ? 'paid' : 'pending'
-          await supabase.from('invoices').update({ paid_amount: newPaid, status: newStatus }).eq('id', form.invoice_id)
-        }
-      }
-
-      // Post the GL entry. Recording a receipt without a journal would leave the
-      // ledger and the cash/AR balances disagreeing with the payments list
-      // (Exec 33, Item 5/10). A receipt settles the receivable: Dr Cash/Bank,
-      // Cr AR (12001). It must never credit revenue - revenue was recognised
-      // when the invoice was issued.
-      if (form.payment_type === 'receipt') {
-        try {
-          const journalNumber = await nextDocumentNumber(supabase as never, 'journal_entry', 'JV')
-          await postCustomerReceipt(supabase as never, {
-            journalNumber,
-            receiptNumber: form.receipt_number,
-            amount: parseFloat(form.amount),
-            paymentDate: form.payment_date,
-            paymentMethod: form.payment_method,
-            description: isRTL
-              ? 'قبض دفعة - ' + form.receipt_number
-              : 'Payment received - ' + form.receipt_number,
-            tenantId,
-          })
-        } catch (postErr: any) {
-          // The receipt row is already saved; surface the failure instead of
-          // pretending the ledger is consistent.
-          alert(isRTL ? 'تم حفظ الإيصال لكن فشل الترحيل المحاسبي: ' + (postErr?.message || '') : 'Receipt saved but the GL posting failed: ' + (postErr?.message || ''))
-        }
-      }
+      })
 
       notifyDataChanged()
       router.push('/payments')
     } catch (err: any) {
-      alert(err.message || 'Error saving receipt')
+      console.error('Receipt error:', err)
+      // The server refused, so nothing was written: stay on the form and say so.
+      alert(err.message || (isRTL ? 'تعذر تسجيل الإيصال' : 'Error saving receipt'))
     } finally {
       setLoading(false)
     }

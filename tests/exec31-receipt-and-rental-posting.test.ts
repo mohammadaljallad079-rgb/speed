@@ -132,12 +132,18 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
   });
 });
 
-describe("Exec 31 - rental receipt pages use the AR posting (no revenue double-count)", () => {
+describe("Exec 31/66 - rental receipt pages settle AR through the server, never revenue", () => {
+  // The pages used to post the receipt journal themselves, client-side, with the
+  // posting failure swallowed by a try/catch - so a receipt could be recorded
+  // with no accounting entry. They now call `/api/receipts`, which performs the
+  // payment + journal + settlement in ONE server-side transaction.
   for (const f of ["src/app/rentals/page.tsx", "src/app/rentals/[id]/page.tsx"]) {
-    test(`${f} posts receipts through postCustomerReceipt`, () => {
+    test(`${f} records the receipt through the server API`, () => {
       const src = read(f);
-      assert.match(src, /postCustomerReceipt\(/, `${f} must use the receipt posting service`);
+      assert.match(src, /submitReceipt\(/, `${f} must record the receipt through the server`);
+      assert.doesNotMatch(src, /postCustomerReceipt\(/, `${f} must not post the receipt journal itself`);
       assert.doesNotMatch(src, /from\(["']journal_entries["']\)\.insert/, `${f} must not write journal headers directly`);
+      assert.doesNotMatch(src, /from\(["']payments["']\)\.insert/, `${f} must not insert the payment row itself`);
       assert.doesNotMatch(src, /entry_number:/, `${f} must not use the non-canonical entry_number column`);
     });
   }

@@ -59,17 +59,25 @@ describe("Exec 33 Item 2/10 - booking & rental approvals use the single server p
   });
 });
 
-describe("Exec 33 Item 5/10 - a customer receipt always posts to the ledger", () => {
+describe("Exec 33/66 Item 5/10 - a customer receipt always posts to the ledger", () => {
   const paymentsNew = read("src/app/payments/new/page.tsx");
+  const receiptService = read("src/lib/sales/receipt-service.ts");
 
-  test("payments/new posts the receipt through postCustomerReceipt", () => {
-    assert.match(paymentsNew, /postCustomerReceipt\(/, "a saved receipt must settle the receivable in the GL");
-    assert.match(paymentsNew, /import\s*\{[^}]*postCustomerReceipt[^}]*\}/, "the posting service must be imported");
+  test("payments/new records the receipt through the server API", () => {
+    // The page no longer posts the journal itself: it calls `/api/receipts`,
+    // which writes the payment, its journal and the settlement in ONE
+    // server-side transaction. A page that posts its own journal can be
+    // interrupted between the payment insert and the posting - the defect.
+    assert.match(paymentsNew, /submitReceipt\(/, "a saved receipt must go through the server workflow");
+    assert.doesNotMatch(paymentsNew, /postCustomerReceipt\(/, "the page must not post the journal itself");
   });
 
-  test("payments/new numbers the receipt and its journal through the RPC", () => {
-    assert.match(paymentsNew, /nextDocumentNumber\([\s\S]*?['"]receipt['"]/, "receipt number from the RPC");
-    assert.match(paymentsNew, /nextDocumentNumber\([\s\S]*?['"]journal_entry['"]/, "journal number from the RPC");
+  test("the receipt number and journal number come from the numbering RPC", () => {
+    // Numbering moved to the server with the workflow, so it is the service that
+    // must number both documents (never a count-based `REC-<n>`).
+    assert.match(receiptService, /nextDocumentNumber\([\s\S]*?['"]receipt['"]/, "receipt number from the RPC");
+    assert.match(receiptService, /nextDocumentNumber\([\s\S]*?['"]journal_entry['"]/, "journal number from the RPC");
+    assert.doesNotMatch(receiptService, /'REC-'\s*\$\{num\}|`REC-\$\{num\}`/, "must not use a count-based REC number");
     assert.doesNotMatch(paymentsNew, /'REC-'\s*\$\{num\}|`REC-\$\{num\}`/, "must not use the count-based REC number");
   });
 

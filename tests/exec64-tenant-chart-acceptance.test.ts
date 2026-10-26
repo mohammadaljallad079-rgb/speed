@@ -209,7 +209,25 @@ function makeDb(accounts: AccountRow[] = seedAccounts()) {
     }
   }
 
-  return { client: { from: (t: string) => new Q(t) }, accounts, entries, lines };
+  // The production database has migration 011 applied: the atomic
+  // `post_journal_entry` RPC exists and a tenanted journal requires it.
+  const lines_0 = lines;
+  const rpc = async (fn: string, args: Record<string, any> = {}) => {
+    if (fn !== "post_journal_entry") return { data: null, error: { message: `unknown rpc ${fn}` } };
+    const header = args.p_header ?? {};
+    const lines = (args.p_lines ?? []) as any[];
+    const debit = lines.reduce((n, l) => n + (Number(l.debit) || 0), 0);
+    const credit = lines.reduce((n, l) => n + (Number(l.credit) || 0), 0);
+    if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+      return { data: null, error: { code: "23514", message: "journal does not balance" } };
+    }
+    const entry = { id: `je-${++seq}`, status: "posted", ...header };
+    entries.push(entry);
+    lines.forEach((l) => lines_0.push({ id: `jl-${++seq}`, ...l, journal_entry_id: entry.id }));
+    return { data: entry.id, error: null };
+  };
+
+  return { client: { from: (t: string) => new Q(t), rpc }, accounts, entries, lines };
 }
 
 // ---------------------------------------------------------------------------
@@ -690,7 +708,11 @@ describe("exec64 no posting path resolves an account by code alone", () => {
   test("the shared writer stamps the company on the journal it writes", () => {
     const src = read("src/lib/accounting/manual-posting.ts");
     assert.match(src, /tenantId\?: string \| null/);
-    assert.match(src, /tenant_id: journal\.header\.tenant_id \?\? tenantId/);
+    // The writer STAMPS the session company on the header and on every line.
+    assert.match(src, /header: \{ \.\.\.journal\.header, tenant_id: tenantId \}/);
+    // ...and it REFUSES a caller that already stamped a different company,
+    // rather than silently overwriting a foreign tenant.
+    assert.match(src, /belongs to another company/);
   });
 
   test("the direct route writers pass the session tenant", () => {
@@ -704,11 +726,16 @@ describe("exec64 no posting path resolves an account by code alone", () => {
     }
   });
 
-  test("the browser receipt callers take the tenant from the session, not a form", () => {
+  test("the browser receipt callers delegate identity to the server, not a form", () => {
+    // The three pages used to resolve the tenant client-side and post the journal
+    // themselves. They now call `/api/receipts`, which takes tenant + permission
+    // from the session, so the page must NOT pass a tenant at all.
     for (const f of ["src/app/payments/new/page.tsx", "src/app/rentals/page.tsx", "src/app/rentals/[id]/page.tsx"]) {
       const src = read(f);
-      assert.match(src, /useTenantId\(\)/, `${f} does not resolve the tenant from the session`);
-      assert.match(src, /tenantId,/, `${f} does not pass the tenant to the receipt`);
+      assert.match(src, /submitReceipt\(/, `${f} must record the receipt through the server`);
+      assert.doesNotMatch(src, /useTenantId/, `${f} must not resolve a tenant for a financial write`);
+      assert.doesNotMatch(src, /tenantId,/, `${f} must not send a tenant to the server`);
+      assert.doesNotMatch(src, /postCustomerReceipt\(/, `${f} must not post the receipt journal itself`);
     }
   });
 });

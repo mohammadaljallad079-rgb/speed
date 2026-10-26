@@ -45,7 +45,7 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
 type Row = Record<string, any>;
 
-function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; failLines?: boolean } = {}) {
+function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; failLines?: boolean; noRpc?: boolean } = {}) {
   const tables: Record<string, Row[]> = seed.tables ?? {};
   const written = { journal_entries: [] as Row[], journal_lines: [] as Row[], deletes: [] as Row[] };
   let seq = 0;
@@ -149,7 +149,28 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     }
   }
 
-  return { client: { from: (t: string) => new Q(t) } as unknown as PostingClient, written };
+  // The production database has migration 011 applied, so the client exposes the
+  // atomic `post_journal_entry` RPC. A tenanted journal now REQUIRES it: the
+  // two-request fallback is closed for a company (Exec 66). Modelling the real
+  // database here is what makes the shape assertions meaningful.
+  const rpc = async (fn: string, args: Record<string, any> = {}) => {
+    if (fn !== "post_journal_entry") return { data: null, error: { message: `unknown rpc ${fn}` } };
+    const header = args.p_header ?? {};
+    const lines = (args.p_lines ?? []) as Row[];
+    const debit = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+    const credit = lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+    if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+      return { data: null, error: { code: "23514", message: "journal does not balance" } };
+    }
+    const entry = { id: `je-${++seq}`, status: "posted", ...header };
+    written.journal_entries.push(entry);
+    lines.forEach((l) => written.journal_lines.push({ ...l, journal_entry_id: entry.id }));
+    return { data: entry.id, error: null };
+  };
+
+  const base = { from: (t: string) => new Q(t) };
+  const client = (seed.noRpc ? base : { ...base, rpc }) as unknown as PostingClient;
+  return { client, written };
 }
 
 const ACCOUNTS: Row[] = [
@@ -302,8 +323,9 @@ describe("resolveAccountIds (tenant-scoped chart)", () => {
 });
 
 describe("writeJournal compensation", () => {
-  test("a failed line insert removes the orphan header", async () => {
-    const { client, written } = makeStub({ failLines: true });
+  // The two-request fallback covers the window before migration 011 is applied.
+  test("a failed line insert removes the orphan header (pre-011 fallback)", async () => {
+    const { client, written } = makeStub({ failLines: true, noRpc: true });
     await assert.rejects(() => writeJournal(client, {
       header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 1, total_credit: 1, is_balanced: true },
       lines: [
@@ -314,6 +336,19 @@ describe("writeJournal compensation", () => {
     assert.equal(written.journal_entries.length, 1);
     assert.equal(written.deletes.length, 1);
     assert.equal(written.deletes[0].table, "journal_entries");
+  });
+
+  test("the fallback still stamps the company on a pre-011 database", async () => {
+    const { client, written } = makeStub({ noRpc: true });
+    await writeJournal(client, {
+      header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 1, total_credit: 1, is_balanced: true },
+      lines: [
+        { account_id: "a", debit: 1, credit: 0, description: "x" },
+        { account_id: "b", debit: 0, credit: 1, description: "x" },
+      ],
+    }, "t1");
+    assert.equal(written.journal_entries[0].tenant_id, "t1");
+    assert.deepEqual(written.journal_lines.map((l) => l.tenant_id), ["t1", "t1"]);
   });
 
   test("refuses an unbalanced journal before writing anything", async () => {
@@ -332,7 +367,7 @@ describe("writeJournal compensation", () => {
 describe("idempotency", () => {
   test("bank transfer with an existing reference does not post again", async () => {
     const { client, written } = makeStub({
-      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-REF" }] },
+      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-REF", tenant_id: "t1" }] },
     });
     const res = await postBankTransfer(client, {
       journalNumber: "BT-1", tenantId: "t1", date: "d", description: "x",
@@ -343,18 +378,29 @@ describe("idempotency", () => {
     assert.equal(written.journal_entries.length, 0);
   });
 
-  test("findPostedManualJournal matches on entry_type + reference", async () => {
+  test("findPostedManualJournal matches on entry_type + reference, within the tenant", async () => {
     const { client } = makeStub({
-      tables: { journal_entries: [{ id: "j1", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01" }] },
+      tables: { journal_entries: [{ id: "j1", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01", tenant_id: "t1" }] },
     });
-    const found = await findPostedManualJournal(client, "payroll", "PAYROLL-2026-02-01");
+    const found = await findPostedManualJournal(client, "payroll", "PAYROLL-2026-02-01", "t1");
     assert.equal(found?.id, "j1");
-    assert.equal(await findPostedManualJournal(client, "payroll", "nope"), null);
+    assert.equal(await findPostedManualJournal(client, "payroll", "nope", "t1"), null);
+  });
+
+  test("another company's journal for the SAME reference is not seen as ours", async () => {
+    // A reference is unique within a company, not across companies. Without the
+    // tenant filter a retry in t2 would find t1's journal and skip its own
+    // posting - a silently lost financial entry.
+    const { client } = makeStub({
+      tables: { journal_entries: [{ id: "other", entry_type: "payroll", reference_number: "PAYROLL-X", tenant_id: "t1" }] },
+    });
+    assert.equal(await findPostedManualJournal(client, "payroll", "PAYROLL-X", "t2"), null);
+    assert.equal((await findPostedManualJournal(client, "payroll", "PAYROLL-X", "t1"))?.id, "other");
   });
 
   test("a retried transfer writes nothing and does not move the cache", async () => {
     const { client, written } = makeStub({
-      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-RETRY" }] },
+      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-RETRY", tenant_id: "t1" }] },
     });
     const first = await postBankTransfer(client, {
       journalNumber: "BT-1", tenantId: "t1", date: "d", description: "x",
@@ -431,7 +477,7 @@ describe("service shapes", () => {
 
   test("a retry of the same payroll reference is idempotent", async () => {
     const { client, written } = makeStub({
-      tables: { journal_entries: [{ id: "existing", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01-aaaa" }] },
+      tables: { journal_entries: [{ id: "existing", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01-aaaa", tenant_id: "t1" }] },
     });
     const again = await postPayroll(client, {
       tenantId: "t1", date: "2026-02-01", description: "x", journalNumber: "PAY-3",

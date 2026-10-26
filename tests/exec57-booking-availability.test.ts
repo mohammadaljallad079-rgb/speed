@@ -221,9 +221,13 @@ describe("a terminal contract transition releases the car", () => {
   });
 
   test("the rental screens call the helper instead of leaving the flag stuck", () => {
-    const list = read("src/app/rentals/page.tsx");
-    assert.match(list, /from\(['"]cars['"]\)\.update\(\{\s*status:\s*['"]available['"]\s*\}\)/);
-    const detail = read("src/app/rentals/[id]/page.tsx");
-    assert.match(detail, /carStatusForContractChange/);
+    // Both screens derive the released status from the ONE helper rather than
+    // hard-coding a literal, so a future change to the terminal-status list
+    // cannot leave one screen behind.
+    for (const f of ["src/app/rentals/page.tsx", "src/app/rentals/[id]/page.tsx"]) {
+      const src = read(f);
+      assert.match(src, /carStatusForContractChange/, `${f} must derive the release through the helper`);
+      assert.match(src, /from\(['"]cars['"]\)\.update\(\{\s*status:\s*releaseStatus\s*\}\)/, `${f} must apply the helper's result`);
+    }
   });
 });

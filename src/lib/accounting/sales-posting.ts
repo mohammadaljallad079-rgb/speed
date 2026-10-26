@@ -219,6 +219,7 @@ type QueryResult = { data: unknown; error: unknown };
 type Builder = {
   select: (cols?: string) => Builder;
   eq: (col: string, val: unknown) => Builder;
+  is: (col: string, val: unknown) => Builder;
   in: (col: string, vals: unknown[]) => Builder;
   insert: (row: unknown) => Builder;
   delete: () => Builder;
@@ -280,15 +281,19 @@ export async function findPostedJournal(
   client: PostingClient,
   entryType: SaleEntryType,
   referenceNumber: string,
+  tenantId?: string | null,
 ): Promise<{ id: string } | null> {
   if (!referenceNumber) return null;
-  const { data, error } = await client
+  // TENANT-SCOPED. An invoice number is unique within a company, not across
+  // companies: without the tenant filter, a retry in one company could match
+  // another company's journal for the same number and skip its own posting.
+  let query = client
     .from("journal_entries")
     .select("id")
     .eq("entry_type", entryType)
-    .eq("reference_number", referenceNumber)
-    .limit(1)
-    .maybeSingle();
+    .eq("reference_number", referenceNumber);
+  query = tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+  const { data, error } = await query.limit(1).maybeSingle();
   if (error || !data) return null;
   return data as { id: string };
 }
@@ -328,7 +333,7 @@ export async function postSaleInvoice(
   },
 ): Promise<{ journalId: string; created: boolean }> {
   const entryType = input.entryType ?? "sale_invoice";
-  const existing = await findPostedJournal(client, entryType, input.invoiceNumber);
+  const existing = await findPostedJournal(client, entryType, input.invoiceNumber, input.tenantId ?? null);
   if (existing) return { journalId: existing.id, created: false };
 
   const accounts = await resolveSaleAccounts(
@@ -367,10 +372,10 @@ export async function reverseSaleInvoice(
 ): Promise<{ journalId: string; created: boolean } | null> {
   const reversalType = input.entryType ?? "sale_reversal";
   const originalType: SaleEntryType = reversalType === "rental_reversal" ? "rental_invoice" : "sale_invoice";
-  const already = await findPostedJournal(client, reversalType, input.invoiceNumber);
+  const already = await findPostedJournal(client, reversalType, input.invoiceNumber, input.tenantId ?? null);
   if (already) return { journalId: already.id, created: false };
 
-  const posted = await findPostedJournal(client, originalType, input.invoiceNumber);
+  const posted = await findPostedJournal(client, originalType, input.invoiceNumber, input.tenantId ?? null);
   if (!posted) return null;
 
   const accounts = await resolveSaleAccounts(

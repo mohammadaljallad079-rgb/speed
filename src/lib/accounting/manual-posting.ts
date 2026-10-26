@@ -140,14 +140,23 @@ function isRpcUnavailable(error: unknown): boolean {
 /**
  * Write a built journal.
  *
- * Preferred path: `post_journal_entry` (migration 011), which writes the header
- * and its lines in ONE database transaction. That closes the orphan-header
- * window: there is no moment at which a journal exists without its lines.
+ * Preferred path: `post_journal_entry` (migration 011, hardened by 015), which
+ * writes the header and its lines in ONE database transaction. That closes the
+ * orphan-header window: there is no moment at which a journal exists without its
+ * lines.
  *
  * Fallback path (RPC not deployed yet): the two-request write with compensation.
- * A failed line insert removes the orphan header. This is correct but not atomic
- * - a process death between the two requests would leave the header behind - so
- * it is a fallback, not the design.
+ * A failed line insert removes the orphan header. This is correct but NOT atomic
+ * - a process death between the two requests would leave the header behind.
+ *
+ * The fallback is deliberately kept rather than replaced by a hard failure. The
+ * app ships BEFORE the operator applies a migration (the deploy-order property
+ * pinned by `exec64-tenant-chart-acceptance`), and the live migration level
+ * cannot be verified from this environment. Refusing to post a company journal
+ * whenever the RPC is absent would turn "one rare orphaned header after a crash"
+ * into "no financial document can be recorded at all" on an un-migrated
+ * database. The atomic path is taken whenever it exists, which is the normal
+ * case; the fallback only covers the window before 011 is applied.
  *
  * Throws on failure so the caller can compensate the document row it created.
  */
@@ -165,11 +174,24 @@ export async function writeJournal(
 ): Promise<string> {
   if (!isPostableJournalBalanced(journal)) throw new Error("Refusing to post an unbalanced journal.");
 
-  // The journal, and every line in it, belong to one company.
+  // The journal, and every line in it, belong to ONE company. A caller that
+  // already stamped a different tenant on the header or a line is a bug (or an
+  // attack) - it is refused rather than silently overwritten, because a silent
+  // overwrite would move a journal out of the company that built it.
   if (tenantId) {
+    const headerTenant = journal.header.tenant_id;
+    if (headerTenant !== undefined && headerTenant !== null && headerTenant !== tenantId) {
+      throw new Error("Refusing to post: the journal header belongs to another company.");
+    }
+    for (const line of journal.lines) {
+      const lineTenant = (line as { tenant_id?: string | null }).tenant_id;
+      if (lineTenant !== undefined && lineTenant !== null && lineTenant !== tenantId) {
+        throw new Error("Refusing to post: a journal line belongs to another company.");
+      }
+    }
     journal = {
-      header: { ...journal.header, tenant_id: journal.header.tenant_id ?? tenantId },
-      lines: journal.lines.map((l) => ({ ...l, tenant_id: (l as { tenant_id?: string }).tenant_id ?? tenantId })),
+      header: { ...journal.header, tenant_id: tenantId },
+      lines: journal.lines.map((l) => ({ ...l, tenant_id: tenantId })),
     };
   }
 
@@ -182,7 +204,8 @@ export async function writeJournal(
     if (!isRpcUnavailable(error)) {
       throw new Error("Could not post the journal atomically: " + msg(error));
     }
-    // else: fall through to the two-request path below.
+    // else: the RPC is genuinely not deployed - fall through to the two-request
+    // path, which compensates a failed line write by deleting the orphan header.
   }
 
   const { data: header, error: headerErr } = await client
@@ -203,20 +226,30 @@ export async function writeJournal(
   return journalId;
 }
 
-/** The posted journal for a (entry_type, reference) pair, or null. */
+/**
+ * The posted journal for a (entry_type, reference) pair, or null.
+ *
+ * TENANT-SCOPED. A reference alone is not unique across companies: two companies
+ * can each hold a receipt `REC-0001`, and matching on the reference without the
+ * tenant would let one company's retry see the other company's journal and skip
+ * its own posting - a silent loss of a real financial entry. The tenant filter is
+ * applied in the query, never as a post-fetch comparison, so it cannot be widened
+ * by a crafted reference.
+ */
 export async function findPostedManualJournal(
   client: PostingClient,
   entryType: string,
   reference: string,
+  tenantId?: string | null,
 ): Promise<{ id: string } | null> {
   if (!reference) return null;
-  const { data, error } = await client
+  let query = client
     .from("journal_entries")
     .select("id")
     .eq("entry_type", entryType)
-    .eq("reference_number", reference)
-    .limit(1)
-    .maybeSingle();
+    .eq("reference_number", reference);
+  query = tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+  const { data, error } = await query.limit(1).maybeSingle();
   if (error || !data) return null;
   return data as { id: string };
 }
@@ -242,7 +275,7 @@ export async function postBankTransfer(
   },
 ): Promise<ManualPostResult> {
   if (params.reference) {
-    const existing = await findPostedManualJournal(client, "bank_transfer", params.reference);
+    const existing = await findPostedManualJournal(client, "bank_transfer", params.reference, params.tenantId);
     if (existing) return { journalId: existing.id, created: false };
   }
   const journal = buildBankTransferJournal(params);
@@ -290,7 +323,7 @@ export async function postPayroll(
   },
 ): Promise<ManualPostResult> {
   if (params.reference) {
-    const existing = await findPostedManualJournal(client, "payroll", params.reference);
+    const existing = await findPostedManualJournal(client, "payroll", params.reference, params.tenantId);
     if (existing) return { journalId: existing.id, created: false };
   }
   const journal = buildPayrollJournal(params);
@@ -314,7 +347,7 @@ export async function postDepositRefund(
   },
 ): Promise<ManualPostResult> {
   if (params.reference) {
-    const existing = await findPostedManualJournal(client, "deposit_refund", params.reference);
+    const existing = await findPostedManualJournal(client, "deposit_refund", params.reference, params.tenantId);
     if (existing) return { journalId: existing.id, created: false };
   }
   const journal = buildDepositRefundJournal(params);

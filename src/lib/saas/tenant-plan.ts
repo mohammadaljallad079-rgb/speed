@@ -1,3 +1,4 @@
+import { scopeToTenantColumn } from "@/lib/auth/policy";
 import { isPlanId, PLANS, type PlanId } from "./entitlements";
 
 /**
@@ -26,8 +27,7 @@ export interface TenantPlanDb {
 /** The plan id stored for a tenant, or `free` when absent/unreadable. */
 export async function loadTenantPlan(db: TenantPlanDb, tenantId: string | null): Promise<PlanId> {
   try {
-    let query = db.from("settings").select("value").eq("key", TENANT_PLAN_KEY);
-    if (tenantId) query = query.eq("tenant_id", tenantId);
+    const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", TENANT_PLAN_KEY), tenantId);
     const { data, error } = await query.maybeSingle();
     if (error || !data?.value) return "free";
     const raw = data.value as { plan?: unknown } | string;

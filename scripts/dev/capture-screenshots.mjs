@@ -86,6 +86,14 @@ const SHOTS = [
   // shared record picker (with inline create), not a read-only dropdown.
   { name: "hr-attendance-smartform", path: "/hr/attendance", auth: true, expect: "Attendance" },
   { name: "hr-payroll-smartform", path: "/hr/payroll", auth: true, expect: "Employees" },
+  // Execution 62: platform vs tenant identity. The homepage is the SPEED
+  // platform's own website, so it must render the platform brand — not a
+  // subscriber's company name (which is what an unscoped `settings` read
+  // produced: "Jameel- TESTING opening account 3 OCT" appeared here on
+  // production). `expect: "SPEED"` would pass on a leaked name too, so the
+  // capture asserts the platform's own tagline instead.
+  { name: "exec62-public-home-platform-brand", path: "/", auth: false, expect: "Car Rental" },
+  { name: "exec62-public-contact-platform-brand", path: "/contact", auth: false, expect: "SPEED" },
 ];
 
 const VIEWPORTS = [

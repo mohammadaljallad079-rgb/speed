@@ -1,3 +1,4 @@
+import { scopeToTenantColumn } from "@/lib/auth/policy";
 import {
   isDocumentKind,
   sanitizeTemplate,
@@ -51,8 +52,7 @@ function coerce(raw: unknown): StoredShape {
 
 /** Reads the tenant's stored templates, sanitising every entry. */
 export async function loadDocumentTemplates(db: TemplateDb, tenantId: string | null): Promise<Record<string, DocumentTemplate>> {
-  let query = db.from("settings").select("value").eq("key", DOCUMENT_TEMPLATES_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", DOCUMENT_TEMPLATES_KEY), tenantId);
   const { data, error } = await query.maybeSingle();
   if (error || !data?.value) return {};
   const store = coerce(data.value);
@@ -71,8 +71,7 @@ export async function getDocumentTemplate(db: TemplateDb, tenantId: string | nul
 }
 
 export async function loadTemplateHistory(db: TemplateDb, tenantId: string | null, kind: DocumentKind): Promise<DocumentTemplate[]> {
-  let query = db.from("settings").select("value").eq("key", DOCUMENT_TEMPLATES_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", DOCUMENT_TEMPLATES_KEY), tenantId);
   const { data, error } = await query.maybeSingle();
   if (error || !data?.value) return [];
   const store = coerce(data.value);
@@ -100,8 +99,7 @@ export async function saveDocumentTemplate(
   const clean = sanitizeTemplate(input);
   if (!clean) return { ok: false, template: null, error: "invalid_template" };
 
-  let query = db.from("settings").select("value").eq("key", DOCUMENT_TEMPLATES_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", DOCUMENT_TEMPLATES_KEY), tenantId);
   const { data } = await query.maybeSingle();
   const store = coerce(data?.value);
 

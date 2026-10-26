@@ -4,8 +4,10 @@ import { } from 'react'
 export const dynamic = "force-dynamic"
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import DashboardLayout from '@/components/DashboardLayout'
+import { supabase } from '@/lib/supabase'
+import { readScopedSetting, writeScopedSetting, type ScopedSettingsClient } from '@/lib/branding/settings-client'
+import { useTenantId } from '@/lib/hooks/use-tenant-id'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -14,6 +16,7 @@ import { Cloud } from 'lucide-react'
 
 function ZohoIntegrationPageContent() {
   const { t, isRTL } = useLanguage()
+  const { tenantId, ready: tenantReady } = useTenantId()
   const [mounted, setMounted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saved, setSaved] = useState(false)
@@ -29,35 +32,37 @@ function ZohoIntegrationPageContent() {
 
   useEffect(() => {
     setMounted(true)
-    fetchSettings()
   }, [])
 
-  async function fetchSettings() {
-    setLoading(true)
-    const { data } = await supabase.from('settings').select('*').eq('key', 'zoho_integration').maybeSingle()
-    if (data?.value) {
-      setForm({
-        clientId: data.value.clientId || '',
-        clientSecret: data.value.clientSecret || '',
-        refreshToken: data.value.refreshToken || '',
-        crmOrgId: data.value.crmOrgId || '',
-        inventoryOrgId: data.value.inventoryOrgId || '',
-        accountingOrgId: data.value.accountingOrgId || '',
-        syncFiles: data.value.syncFiles || false,
-      })
+  useEffect(() => {
+    if (!tenantReady) return
+    let cancelled = false
+    async function fetchSettings() {
+      setLoading(true)
+      const value = (await readScopedSetting(
+        supabase as unknown as ScopedSettingsClient,
+        tenantId,
+        'zoho_integration',
+      )) as Record<string, string | boolean> | null
+      if (!cancelled && value) {
+        setForm({
+          clientId: (value.clientId as string) || '',
+          clientSecret: (value.clientSecret as string) || '',
+          refreshToken: (value.refreshToken as string) || '',
+          crmOrgId: (value.crmOrgId as string) || '',
+          inventoryOrgId: (value.inventoryOrgId as string) || '',
+          accountingOrgId: (value.accountingOrgId as string) || '',
+          syncFiles: Boolean(value.syncFiles),
+        })
+      }
+      if (!cancelled) setLoading(false)
     }
-    setLoading(false)
-  }
+    fetchSettings()
+    return () => { cancelled = true }
+  }, [tenantReady, tenantId])
 
   const handleSave = async () => {
-    await supabase.from('settings').upsert(
-      {
-        key: 'zoho_integration',
-        value: form,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'key' }
-    )
+    await writeScopedSetting(supabase as unknown as ScopedSettingsClient, tenantId, 'zoho_integration', form)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }

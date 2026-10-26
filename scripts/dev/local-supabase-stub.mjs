@@ -71,7 +71,15 @@ const TABLES = {
   branches: BRANCHES,
   activity_logs: ACTIVITY,
   profiles: [],
-  settings: [],
+  // Execution 62: a company profile per tenant. The `company_profile` key is
+  // tenant-owned, so this fixture is what makes the isolation visible: the SPEED
+  // homepage must render the platform brand while each company's own dashboard
+  // renders its own name. The two names differ deliberately — a fixture where
+  // they matched could not tell a leak from correct behaviour.
+  settings: [
+    { id: "st-a", key: "company_profile", tenant_id: TENANT_A, value: { name: "SPEED Rentals", nameEn: "SPEED Rentals W.L.L.", phone: "+97317000001", email: "ops@speed-rentals.bh", address: "Manama, Bahrain", crNumber: "CR-1001" } },
+    { id: "st-b", key: "company_profile", tenant_id: TENANT_B, value: { name: "Harbour Motors", nameEn: "Harbour Motors W.L.L.", phone: "+97317000002", email: "ops@harbour.bh", address: "Muharraq, Bahrain", crNumber: "CR-2002" } },
+  ],
   financial_years: [],
   ai_dev_requests: [],
   customers: [

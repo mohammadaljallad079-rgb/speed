@@ -151,7 +151,10 @@ function NewRentalForm() {
       const [carsRes, customersRes, settingsRes, taxesRes] = await Promise.all([
         supabase.from("cars").select("id,make,model,year,plate_number,daily_rate,mileage").order("make"),
         supabase.from("customers").select("id,full_name,email,phone,national_id,license_number").order("full_name"),
-        supabase.from("settings").select("company_profile").single(),
+        // Document branding must come from the transaction's own company. An
+        // unscoped read (or `.single()`) would stamp another tenant's identity on
+        // this contract, so the profile is resolved from the session's tenant.
+        supabase.from("settings").select("value").eq("key", "company_profile"),
         supabase.from("tax_settings").select("id,name_ar,name_en,rate,type").eq("is_active", true).order("name_ar"),
       ])
       setCars(carsRes.data || [])
@@ -159,9 +162,9 @@ function NewRentalForm() {
       setTaxOptions(taxesRes.data || [])
       const { data: nextNumber } = await supabase.rpc('get_next_contract_number')
       if (nextNumber) setContract(prev => ({ ...prev, contract_number: nextNumber }))
-      if (settingsRes.data?.company_profile) {
-        const p = settingsRes.data.company_profile
-        setCompanySettings({ name: p.name || "", phone: p.phone || "", email: p.email || "", address: p.address || "", crNumber: p.crNumber || "" })
+      const profileRow = (settingsRes.data ?? []).find((row: any) => row?.value)?.value
+      if (profileRow) {
+        setCompanySettings({ name: profileRow.name || "", phone: profileRow.phone || "", email: profileRow.email || "", address: profileRow.address || "", crNumber: profileRow.crNumber || "" })
       }
     }
     fetchData()

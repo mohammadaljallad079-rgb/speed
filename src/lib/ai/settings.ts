@@ -1,3 +1,4 @@
+import { scopeToTenantColumn } from "@/lib/auth/policy";
 import { DEFAULT_MODELS, resolveModel, type RouteEntry } from "./providers";
 import type { AiProviderId, AiSettings, AiTaskKind } from "./types";
 
@@ -74,8 +75,7 @@ export async function loadAiSettings(
   db: AiSettingsDb,
   tenantId: string | null,
 ): Promise<AiSettings> {
-  let query = db.from("settings").select("value").eq("key", AI_SETTINGS_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", AI_SETTINGS_KEY), tenantId);
   const { data, error } = await query.maybeSingle();
   if (error || !data?.value) return { ...DEFAULT_AI_SETTINGS };
   return normalizeSettings(data.value);

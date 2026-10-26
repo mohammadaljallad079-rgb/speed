@@ -1,3 +1,4 @@
+import { scopeToTenantColumn } from "@/lib/auth/policy";
 import type { FormatTemplate } from "./plan";
 import { isReportKind } from "./definitions";
 
@@ -48,8 +49,7 @@ interface SettingsQuery extends PromiseLike<{ data: { value?: unknown } | null; 
 
 /** Reads the tenant's templates; a malformed store yields an empty list. */
 export async function loadTemplates(db: SettingsDb, tenantId: string | null): Promise<FormatTemplate[]> {
-  let query = db.from("settings").select("value").eq("key", TEMPLATES_SETTING_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", TEMPLATES_SETTING_KEY), tenantId);
   const { data, error } = await query.maybeSingle();
   if (error || !data?.value) return [];
   const raw = data.value;
@@ -113,8 +113,7 @@ export interface SavedDefinition {
 }
 
 async function readDefinitions(db: SettingsDb, tenantId: string | null): Promise<SavedDefinition[]> {
-  let query = db.from("settings").select("value").eq("key", DEFINITIONS_SETTING_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", DEFINITIONS_SETTING_KEY), tenantId);
   const { data, error } = await query.maybeSingle();
   if (error || !data?.value) return [];
   const raw = data.value;

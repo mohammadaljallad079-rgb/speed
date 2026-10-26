@@ -4,8 +4,10 @@ import { } from 'react'
 export const dynamic = "force-dynamic"
 
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
 import DashboardLayout from '@/components/DashboardLayout'
+import { supabase } from '@/lib/supabase'
+import { readScopedSetting, writeScopedSetting, type ScopedSettingsClient } from '@/lib/branding/settings-client'
+import { useTenantId } from '@/lib/hooks/use-tenant-id'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -14,6 +16,7 @@ import { MessageCircle } from 'lucide-react'
 
 function WhatsAppIntegrationPageContent() {
   const { t, isRTL } = useLanguage()
+  const { tenantId, ready: tenantReady } = useTenantId()
   const [mounted, setMounted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saved, setSaved] = useState(false)
@@ -28,34 +31,36 @@ function WhatsAppIntegrationPageContent() {
 
   useEffect(() => {
     setMounted(true)
-    fetchSettings()
   }, [])
 
-  async function fetchSettings() {
-    setLoading(true)
-    const { data } = await supabase.from('settings').select('*').eq('key', 'whatsapp_business').maybeSingle()
-    if (data?.value) {
-      setForm({
-        apiUrl: data.value.apiUrl || '',
-        accessToken: data.value.accessToken || '',
-        phoneNumberId: data.value.phoneNumberId || '',
-        businessAccountId: data.value.businessAccountId || '',
-        webhookVerifyToken: data.value.webhookVerifyToken || '',
-        senderName: data.value.senderName || '',
-      })
+  useEffect(() => {
+    if (!tenantReady) return
+    let cancelled = false
+    async function fetchSettings() {
+      setLoading(true)
+      const value = (await readScopedSetting(
+        supabase as unknown as ScopedSettingsClient,
+        tenantId,
+        'whatsapp_business',
+      )) as Record<string, string> | null
+      if (!cancelled && value) {
+        setForm({
+          apiUrl: value.apiUrl || '',
+          accessToken: value.accessToken || '',
+          phoneNumberId: value.phoneNumberId || '',
+          businessAccountId: value.businessAccountId || '',
+          webhookVerifyToken: value.webhookVerifyToken || '',
+          senderName: value.senderName || '',
+        })
+      }
+      if (!cancelled) setLoading(false)
     }
-    setLoading(false)
-  }
+    fetchSettings()
+    return () => { cancelled = true }
+  }, [tenantReady, tenantId])
 
   const handleSave = async () => {
-    await supabase.from('settings').upsert(
-      {
-        key: 'whatsapp_business',
-        value: form,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'key' }
-    )
+    await writeScopedSetting(supabase as unknown as ScopedSettingsClient, tenantId, 'whatsapp_business', form)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }

@@ -41,6 +41,7 @@ import { Button } from '@/components/ui/button'
 import { useLanguage } from '@/lib/LanguageContext'
 import NotificationBell from '@/components/notifications/NotificationBell'
 import { supabase } from '@/lib/supabase'
+import { readScopedSetting, type ScopedSettingsClient } from '@/lib/branding/settings-client'
 
 
 
@@ -326,6 +327,10 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [pendingCount, setPendingCount] = useState(0)
   const [menuItems, setMenuItems] = useState<SidebarItemData[]>(DEFAULT_ITEMS)
   const [menuLoading, setMenuLoading] = useState(true)
+  // The company identity this dashboard belongs to. Resolved server-side from
+  // the session by /api/branding/company; it is never read from a cookie,
+  // localStorage or a URL parameter.
+  const [brand, setBrand] = useState<{ name: string; logoUrl: string | null } | null>(null)
 
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -345,11 +350,16 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function fetchSidebarConfig() {
       try {
-        const { data } = await supabase
-          .from('settings')
-          .select('*')
-          .eq('key', 'sidebar_menu_v2')
-          .single()
+        // `settings` is tenant-owned: an unscoped read returns whichever tenant's
+        // row the database hands back first, so one company would render another
+        // company's sidebar. The tenant comes from the session via /api/me.
+        const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null)).catch(() => null)
+        const value = await readScopedSetting(
+          supabase as unknown as ScopedSettingsClient,
+          me?.tenantId ?? null,
+          'sidebar_menu_v2',
+        )
+        const data = value ? { value: value as SidebarItemData[] } : null
 
         if (data?.value && Array.isArray(data.value)) {
           // Merge with defaults to ensure all fields exist
@@ -382,6 +392,18 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       }
     }
     fetchSidebarConfig()
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/branding/company')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!active || !json?.data?.name) return
+        setBrand({ name: json.data.name, logoUrl: json.data.logoUrl ?? null })
+      })
+      .catch(() => {})
+    return () => { active = false }
   }, [])
 
   const isRouteActive = (href?: string) => {
@@ -506,10 +528,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <div className="flex items-center justify-between h-20 px-6 border-b border-slate-100">
           {sidebarOpen && (
             <Link href="/dashboard" className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center shadow-lg shadow-red-600/20">
-                <CarIcon className="w-6 h-6 text-white" />
-              </div>
-              <span className="font-bold text-slate-900 text-xl tracking-tight">{t.appName}</span>
+              {brand?.logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={brand.logoUrl} alt={brand.name} className="w-10 h-10 rounded-xl object-contain" />
+              ) : (
+                <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center shadow-lg shadow-red-600/20">
+                  <CarIcon className="w-6 h-6 text-white" />
+                </div>
+              )}
+              <span className="font-bold text-slate-900 text-xl tracking-tight">{brand?.name || t.appName}</span>
             </Link>
           )}
           <button
@@ -566,10 +593,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-slate-100" dir={isRTL ? 'rtl' : 'ltr'}>
         <div className="flex items-center justify-between h-16 px-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center">
-              <CarIcon className="w-6 h-6 text-white" />
-            </div>
-            <span className="font-bold text-slate-900">{t.appName}</span>
+            {brand?.logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brand.logoUrl} alt={brand.name} className="w-10 h-10 rounded-xl object-contain" />
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center">
+                <CarIcon className="w-6 h-6 text-white" />
+              </div>
+            )}
+            <span className="font-bold text-slate-900">{brand?.name || t.appName}</span>
           </div>
           <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 rounded-lg text-slate-400">
             {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}

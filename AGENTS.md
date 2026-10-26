@@ -1770,3 +1770,52 @@ that applies the filters it is given and returns only affected rows.
   errors** (the 129 baseline in older notes is stale for this branch); lint clean;
   build green. Browser: Excel export 43/43, forms/SaaS/notifications 18/18,
   AI financial writes 28/28. Report: `SPEED_EXECUTION_60_REPORT.md`.
+
+
+## Execution 62 invariants (platform vs tenant / white-label identity)
+
+- **The platform's own identity is a CONSTANT, never a database row.**
+  `PLATFORM_BRANDING` in `src/lib/branding/platform.ts` is what the marketing
+  homepage, `PublicNavbar`, `contact` and `/erp` render. It is deliberately
+  dependency-free (asserted by test) so client components can import it without
+  pulling `server-only` into the browser bundle. The production defect was an
+  unscoped `settings` read (`.eq("key","company_profile").maybeSingle()` with no
+  tenant) rendering a subscriber's name (`Jameel- TESTING …`) as the SPEED brand.
+- **`settings` is tenant-owned; every read and write carries a tenant.** A write
+  must never use `onConflict: "key"` — that lets one tenant overwrite another's
+  row. For a NULL tenant do an explicit find-then-write: PostgreSQL treats NULLs
+  as distinct, so `onConflict: "tenant_id,key"` cannot replace a NULL-tenant row
+  (it inserts duplicates instead). `readScopedSetting`/`writeScopedSetting`
+  (`src/lib/branding/settings-client.ts`) implement exactly this.
+- **One fail-closed predicate: `scopeToTenantColumn` (`src/lib/auth/policy.ts`).**
+  A tenant-less caller is scoped to `IS NULL` (the single-tenant install's own
+  rows), never left unfiltered. `scopeToCompany`, `applyTenantScope` and the five
+  settings stores all delegate to it. Never reintroduce
+  `if (tenantId) query = query.eq("tenant_id", tenantId)` — that guard leaves a
+  NULL-tenant caller reading every tenant's rows, and it was reachable
+  (`/api/ai/settings`, `/api/import` pass a possibly-null `context.tenantId`).
+- **A browser page learns its tenant only from `/api/me`** via `useTenantId()`
+  (`src/lib/hooks/use-tenant-id.ts`) — never from a form field, cookie or
+  localStorage. `ready` distinguishes "still resolving" from "resolved to no
+  tenant"; conflating the two either renders another tenant's data or blocks the
+  single-tenant install.
+- **`/api/public/company-profile` takes an explicit tenant and has no "first row"
+  fallback.** A missing or unknown tenant yields `{ data: null }`. Do not re-add a
+  `.limit(1)`-with-no-filter path. A public route must not echo a driver error
+  (it can name a table, column or host) — return a neutral code.
+- **Tenant branding writes go through `/api/branding/company`** (`requireContext`
+  + `logAudit`, action `settings_change`, entity `company_branding`). A global
+  super admin has no company and is refused by `brandingTenantForWrite`.
+- **Two opposite test constraints are both real** and satisfied by the route
+  owning its literal `.eq("key","company_profile")` while the helper applies the
+  tenant column: `tests/public-api-routes.test.ts` forbids `tenant_id` appearing
+  in that route, and requires the literal key filter.
+- **Browser-proof harness:** `scripts/dev/e2e-exec62-branding.mjs` (17/17) drives
+  two real tenants against the stub, which seeds two DIFFERENT company names
+  (`SPEED Rentals`, `Harbour Motors`) — a fixture with matching names could not
+  distinguish a leak from correct behaviour. Sign in with `waitUntil:"networkidle"`
+  (a submit before hydration is silently dropped); a dashboard polls
+  notifications, so navigate it on `domcontentloaded` and wait for the brand text
+  rather than `networkidle`.
+- Exec 62 baseline: **1261 tests / 1255 pass / 0 fail / 6 skipped**; typecheck 0
+  errors; lint clean; build green. Report: `SPEED_EXECUTION_62_REPORT.md`.

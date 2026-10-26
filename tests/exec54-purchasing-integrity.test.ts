@@ -15,6 +15,12 @@ import {
   cashBankCodeForMethod,
 } from "../src/lib/accounting/payment-posting.ts";
 import {
+  buildPurchaseJournal,
+} from "../src/lib/accounting/purchase-posting.ts";
+import {
+  buildTrialBalance,
+} from "../src/lib/reporting/ledger.ts";
+import {
   buildCashFlowStatement,
   classifyCashFlowSection,
   isCashAccount,
@@ -685,5 +691,133 @@ describe("purchasing account provisioning", () => {
     const sql = read("supabase/migrations/010_purchasing_accounts_rollback.sql");
     assert.match(sql, /delete from public\.document_sequences/);
     assert.match(sql, /journal_lines/, "the rollback refuses to orphan a posted line");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A full purchasing cycle, end to end, through the real services.
+// ---------------------------------------------------------------------------
+
+describe("the purchasing cycle reconciles end to end", () => {
+  test("bill -> payment -> debit note leaves AP at zero and input VAT claimed", async () => {
+    // A bill of 300.000 + 10% VAT = 330.000, bought on credit, then paid in
+    // full, then partly credited by a debit note of 55.000 (50 + 5 VAT).
+    const bill = buildPurchaseJournal({
+      journalNumber: "JV-P1",
+      invoiceNumber: "BILL-001",
+      date: "2026-06-01",
+      description: "Supplier bill",
+      grandTotal: 330,
+      advancePayment: 0,
+      remainingAmount: 330,
+      expenseAccountId: "acc-exp",
+      cashAccountId: "acc-cash",
+      payableAccountId: "acc-ap",
+      vatAmount: 30,
+      vatAccountId: "acc-invat",
+    })!;
+    assert.ok(bill, "a VAT-inclusive credit bill must post");
+    assert.deepEqual(
+      bill.lines.map((l) => [l.account_id, l.debit, l.credit]).sort(),
+      [
+        ["acc-exp", 300, 0],
+        ["acc-invat", 30, 0],
+        ["acc-ap", 0, 330],
+      ].sort(),
+      "the bill must debit the expense NET of VAT and split the input VAT out",
+    );
+
+    // Without an input-VAT account the bill still posts, whole amount to expense.
+    const noVat = buildPurchaseJournal({
+      journalNumber: "JV-P1b",
+      invoiceNumber: "BILL-001b",
+      date: "2026-06-01",
+      description: "Supplier bill, no VAT account",
+      grandTotal: 330,
+      advancePayment: 0,
+      remainingAmount: 330,
+      expenseAccountId: "acc-exp",
+      cashAccountId: "acc-cash",
+      payableAccountId: "acc-ap",
+      vatAmount: 30,
+      vatAccountId: null,
+    })!;
+    assert.deepEqual(
+      noVat.lines.map((l) => [l.account_id, l.debit, l.credit]).sort(),
+      [
+        ["acc-exp", 330, 0],
+        ["acc-ap", 0, 330],
+      ].sort(),
+      "with no input-VAT account the bill capitalises the whole amount",
+    );
+
+    // Pay the bill: Dr AP 330 / Cr Cash 330.
+    const payment = buildSupplierPaymentJournal({
+      journalNumber: "JV-P2",
+      paymentNumber: "PAY-001",
+      supplierId: "sup-1",
+      paymentDate: "2026-06-05",
+      description: "Supplier payment",
+      amount: 330,
+      cashAccountId: "acc-cash",
+      apAccountId: "acc-ap",
+    })!;
+    assert.deepEqual(
+      payment.lines.map((l) => [l.account_id, l.debit, l.credit]).sort(),
+      [
+        ["acc-ap", 330, 0],
+        ["acc-cash", 0, 330],
+      ].sort(),
+      "a payment debits AP and never touches the expense",
+    );
+
+    // Debit note of 55.000: Dr AP 55 / Cr expense 50 / Cr input VAT 5.
+    const note = buildDebitNoteJournal({
+      journalNumber: "JV-P3",
+      noteNumber: "DN-001",
+      date: "2026-06-10",
+      description: "Debit note",
+      amount: 55,
+      vatAmount: 5,
+      payableAccountId: "acc-ap",
+      expenseAccountId: "acc-exp",
+      vatAccountId: "acc-invat",
+    })!;
+    assert.ok(note, "a debit note must post");
+
+    // Reconcile every journal through the ledger engine.
+    const entries = [
+      { id: "p1", entry_date: "2026-06-01", journal_number: "JV-P1", status: "posted" },
+      { id: "p2", entry_date: "2026-06-05", journal_number: "JV-P2", status: "posted" },
+      { id: "p3", entry_date: "2026-06-10", journal_number: "JV-P3", status: "posted" },
+    ];
+    const lines = [
+      ...bill.lines.map((l, i) => ({ id: `b${i}`, journal_entry_id: "p1", ...l })),
+      ...payment.lines.map((l, i) => ({ id: `y${i}`, journal_entry_id: "p2", ...l })),
+      ...note.lines.map((l, i) => ({ id: `n${i}`, journal_entry_id: "p3", ...l })),
+    ];
+    const accounts = [
+      { id: "acc-cash", code: "11001", name_en: "Cash", name_ar: "الصندوق", type: "asset" },
+      { id: "acc-ap", code: "21001", name_en: "Accounts Payable", name_ar: "ذمم دائنة", type: "liability" },
+      { id: "acc-invat", code: "24001", name_en: "Input VAT", name_ar: "ضريبة المدخلات", type: "asset" },
+      { id: "acc-exp", code: "51001", name_en: "Expense", name_ar: "مصروف", type: "expense" },
+    ];
+    const tb = buildTrialBalance(accounts as never, entries as never, lines as never, {
+      from: "2026-06-01",
+      to: "2026-06-30",
+    });
+    const byCode = (c: string) => tb.rows.find((r) => r.code === c)!;
+
+    // AP: +330 (bill) - 330 (payment) - 55 (debit note) = -55, i.e. the supplier
+    // now owes the company 55.000 (the debit note was not applied to a bill that
+    // was already settled in full).
+    assert.equal(byCode("21001").closingBalance, -55, "AP reflects bill, payment and debit note");
+    // Cash: -330 paid.
+    assert.equal(byCode("11001").closingBalance, -330, "cash shows the payment");
+    // Expense: 300 (bill, net) - 50 (debit note) = 250.
+    assert.equal(byCode("51001").closingBalance, 250, "the expense is net of VAT and the debit note");
+    // Input VAT: 30 (bill) - 5 (debit note) = 25.
+    assert.equal(byCode("24001").closingBalance, 25, "input VAT is the bill less the credit");
+    assert.equal(tb.balanced, true, "the purchasing cycle must leave a balanced ledger");
   });
 });

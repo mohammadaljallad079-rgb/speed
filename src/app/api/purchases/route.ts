@@ -182,7 +182,7 @@ export async function POST(request: Request) {
 
     const expenseCode = expenseCodeFor(body.expense_category);
     const cashCode = cashBankCodeForMethod(body.payment_type || "cash");
-    const accountCodes = [expenseCode, cashCode, PURCHASE_ACCOUNT_CODES.payable];
+    const accountCodes = [expenseCode, cashCode, PURCHASE_ACCOUNT_CODES.payable, PURCHASE_ACCOUNT_CODES.inputVat];
     let accountQuery = supabaseAdmin.from("accounts").select("id,code,tenant_id").in("code", accountCodes);
     accountQuery = context.tenantId
       ? accountQuery.or(`tenant_id.eq.${context.tenantId},tenant_id.is.null`)
@@ -203,6 +203,11 @@ export async function POST(request: Request) {
       expenseAccountId: byCode(expenseCode),
       cashAccountId: byCode(cashCode),
       payableAccountId: byCode(PURCHASE_ACCOUNT_CODES.payable),
+      // Recoverable VAT goes to the input-VAT account, not capitalised into the
+      // expense. `byCode` returns undefined when 24001 is absent, and the
+      // builder then keeps the whole amount on the expense.
+      vatAmount: vat,
+      vatAccountId: byCode(PURCHASE_ACCOUNT_CODES.inputVat) ?? null,
     });
     if (!journal) throw new Error("Cannot post a purchase without a positive total and resolvable accounts.");
     createdJournalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);

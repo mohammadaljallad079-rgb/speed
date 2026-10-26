@@ -51,7 +51,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const entryDate = new Date().toISOString().slice(0, 10);
 
     // Idempotency: if the mirror entry already exists, the work is done.
-    const existing = await findPostedManualJournal(supabaseAdmin as never, "supplier_payment_reversal", paymentNumber);
+    //
+    // TENANT-SCOPED. The reference alone is not unique across companies: two
+    // companies can each hold a payment `PAY-0001`, so matching on the number
+    // without the tenant let this route see ANOTHER company's reversal, skip its
+    // own posting, and then restore the bill balance and cancel the payment
+    // anyway - an unposted reversal with no mirror journal, and a real ledger
+    // left describing a settlement that the document no longer claimed. The
+    // tenant filter is applied in the query, never as a post-fetch comparison.
+    const existing = await findPostedManualJournal(
+      supabaseAdmin as never,
+      "supplier_payment_reversal",
+      paymentNumber,
+      context.tenantId,
+    );
 
     let journalId: string | null = existing?.id ?? null;
     if (!existing) {

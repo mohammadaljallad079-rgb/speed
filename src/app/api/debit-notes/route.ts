@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { nextDocumentNumber } from "@/lib/numbering";
-import { postDebitNote } from "@/lib/accounting/debit-note-posting";
+import {
+  buildDebitNoteReversalJournal,
+  findPostedDebitNoteJournal,
+  postDebitNote,
+  type DebitNoteJournal,
+} from "@/lib/accounting/debit-note-posting";
+import { writeJournal } from "@/lib/accounting/manual-posting";
 import {
   assertDateInOpenFinancialYear,
   assertReferences,
@@ -198,3 +204,4 @@ export async function POST(request: Request) {
     return NextResponse.json(body, { status });
   }
 }
+

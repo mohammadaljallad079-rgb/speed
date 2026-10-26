@@ -115,16 +115,20 @@ function DebitNotesPageContent() {
   }
 
   async function handleDelete(id: string) {
-    // A posted note is not deleted: its journal would be orphaned. It is
-    // cancelled (status 'cancelled') so the audit trail keeps the document.
+    // A posted note is not deleted and not silently cancelled: the SERVER
+    // mirrors its journal so the payable and the ledger stay in step. Setting
+    // `status = 'cancelled'` from the browser used to leave the note's journal
+    // in place, so the supplier balance and the books disagreed.
     if (!confirm(isRTL ? 'هل أنت متأكد من إلغاء الإشعار؟' : 'Are you sure you want to cancel this note?')) return
-    const { error } = await supabase.from('debit_notes').update({ status: 'cancelled' }).eq('id', id)
-    if (error) {
+    try {
+      const res = await fetch(`/api/debit-notes/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not cancel the note')
+      notifyDataChanged()
+      fetchNotes()
+    } catch (error: any) {
       alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
-      return
     }
-    notifyDataChanged()
-    fetchNotes()
   }
 
   const filtered = notes.filter(n => {

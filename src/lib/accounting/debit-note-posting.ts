@@ -112,17 +112,56 @@ export function buildDebitNoteJournal(params: {
 export async function findPostedDebitNoteJournal(
   client: PostingClient,
   noteNumber: string,
+  tenantId?: string | null,
 ): Promise<{ id: string } | null> {
   if (!noteNumber) return null;
-  const { data, error } = await client
+  let query = client
     .from("journal_entries")
     .select("id")
     .eq("entry_type", "debit_note")
-    .eq("reference_number", noteNumber)
-    .limit(1)
-    .maybeSingle();
+    .eq("reference_number", noteNumber);
+  query = tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+  const { data, error } = await query.limit(1).maybeSingle();
   if (error || !data) return null;
   return data as { id: string };
+}
+
+/**
+ * Build the mirror of a debit note's journal: every line's debit and credit
+ * swapped, so the reversal cancels the note exactly.
+ *
+ * Returns null when the source journal is missing or unbalanced - a reversal
+ * must never be invented, it must mirror something real.
+ */
+export function buildDebitNoteReversalJournal(
+  original: DebitNoteJournal,
+  params: { journalNumber: string; date: string; description: string },
+): DebitNoteJournal | null {
+  if (!params.journalNumber || !original?.lines?.length) return null;
+  const lines = original.lines.map((l) => ({
+    account_id: l.account_id,
+    debit: round3(l.credit),
+    credit: round3(l.debit),
+    description: params.description,
+  }));
+  const debit = round3(lines.reduce((s, l) => s + l.debit, 0));
+  const credit = round3(lines.reduce((s, l) => s + l.credit, 0));
+  if (debit !== credit || debit <= 0) return null;
+
+  return {
+    header: {
+      journal_number: params.journalNumber,
+      entry_date: params.date,
+      reference_number: original.header.reference_number,
+      description: params.description,
+      total_debit: debit,
+      total_credit: credit,
+      is_balanced: true,
+      status: "posted",
+      entry_type: "debit_note_reversal",
+    },
+    lines,
+  };
 }
 
 /**

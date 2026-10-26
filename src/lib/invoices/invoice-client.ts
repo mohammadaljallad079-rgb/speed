@@ -59,3 +59,30 @@ export async function reverseInvoice(invoiceId: string): Promise<void> {
     );
   }
 }
+
+/**
+ * Edit an invoice through the guarded endpoint. Throws on a refusal.
+ *
+ * Sends NO tenant, NO role and NO `total_amount`: the server resolves the
+ * identity from the session, verifies the invoice may still be edited, and
+ * derives the total itself. The edit screen used to write the row directly.
+ */
+export async function updateInvoice(
+  invoiceId: string,
+  patch: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(`/api/invoices/${encodeURIComponent(invoiceId)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const body = await readBody(response);
+  if (!response.ok) {
+    throw new InvoiceRequestError(
+      String(body.code ?? `http_${response.status}`),
+      String(body.error ?? `The invoice could not be saved (HTTP ${response.status}).`),
+      response.status,
+    );
+  }
+  return body;
+}

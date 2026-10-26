@@ -303,12 +303,39 @@ export async function decideInvoiceDeletion(
   client: DecisionClient,
   params: { id: string; invoiceNumber: string; tenantId: string | null },
 ): Promise<DeletionDecision> {
+  return decideInvoiceChange(client, params, "delete");
+}
+
+/**
+ * Decide whether a sales invoice may be EDITED. Fails closed.
+ *
+ * The same two facts that make an invoice undeletable make it uneditable, for
+ * the same reasons: a posted invoice's journal describes amounts the edit would
+ * contradict, and an invoice with receipts or returns would stop matching the
+ * rows that reference it. The edit screen used to enforce both in the browser
+ * only - so a caller who skipped the screen could rewrite a posted invoice's
+ * `total_amount` straight from the client while its journal kept the old figure,
+ * leaving the ledger and the document permanently disagreeing.
+ */
+export async function decideInvoiceEdit(
+  client: DecisionClient,
+  params: { id: string; invoiceNumber: string; tenantId: string | null },
+): Promise<DeletionDecision> {
+  return decideInvoiceChange(client, params, "edit");
+}
+
+async function decideInvoiceChange(
+  client: DecisionClient,
+  params: { id: string; invoiceNumber: string; tenantId: string | null },
+  verb: "delete" | "edit",
+): Promise<DeletionDecision> {
+  const gerund = verb === "delete" ? "deleted" : "edited";
   const journal = await lookupPostedJournal(client, "sale_invoice", params.invoiceNumber, params.tenantId);
   if (journal.state === "found") {
     return {
       allowed: false,
       code: "posted",
-      message: "A posted invoice cannot be deleted; reverse it instead.",
+      message: `A posted invoice cannot be ${gerund}; reverse it instead.`,
     };
   }
   if (journal.state === "unknown") {
@@ -328,8 +355,20 @@ export async function decideInvoiceDeletion(
     };
   }
   const { payments, returns } = dependents.value;
-  if (payments > 0) return { allowed: false, code: "dependents", message: attachedMessage(`${payments} payment(s)`) };
-  if (returns > 0) return { allowed: false, code: "dependents", message: attachedMessage(`${returns} return(s)`) };
+  if (payments > 0) {
+    return {
+      allowed: false,
+      code: "dependents",
+      message: `This invoice has ${payments} payment(s) attached and cannot be ${gerund}; cancel or reverse it instead.`,
+    };
+  }
+  if (returns > 0) {
+    return {
+      allowed: false,
+      code: "dependents",
+      message: `This invoice has ${returns} return(s) attached and cannot be ${gerund}; cancel or reverse it instead.`,
+    };
+  }
 
   return { allowed: true };
 }

@@ -295,7 +295,15 @@ describe("debit-note posting", () => {
     assert.match(src, /fetch\('\/api\/debit-notes'/, "must POST to the route");
     assert.doesNotMatch(src, /from\('debit_notes'\)\.insert/, "the browser must not insert the note");
     assert.doesNotMatch(src, /from\('debit_notes'\)\.delete/, "a posted note is never hard-deleted");
-    assert.match(src, /status: 'cancelled'/, "cancellation replaces deletion");
+    // Exec 67: the cancellation moved to the server too. Flipping the status in
+    // the browser left the note's journal in place, so the payable and the ledger
+    // disagreed. The page now DELETEs the guarded route, which reverses the note.
+    assert.doesNotMatch(src, /from\('debit_notes'\)\.update/, "the browser must not write the status");
+    assert.match(
+      src,
+      /fetch\(`\/api\/debit-notes\/\$\{encodeURIComponent\(id\)\}`/,
+      "cancellation goes through the server, which reverses the journal",
+    );
   });
 
   test("the debit-notes route posts the journal and is tenant-scoped", () => {

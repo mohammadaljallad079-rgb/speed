@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { nextDocumentNumber } from "@/lib/numbering";
+import { postExpense } from "@/lib/accounting/expense-posting";
 import {
   assertDateInOpenFinancialYear,
   assertReferences,
@@ -21,7 +23,14 @@ import {
  *     caller's tenant (no cross-tenant foreign keys);
  *   - the tenant/branch columns cannot be forged from the request body;
  *   - the expense date falls inside the active financial year, when one exists.
+ *
+ * Exec 67: the expense and its balanced journal are now written together. The
+ * route used to insert the row and post NOTHING, so every report derived from
+ * the ledger (P&L, trial balance, balance sheet, cash flow) omitted every
+ * expense while the expense list showed the money leaving.
  */
+
+const round3 = (n: unknown) => Math.round((Number(n) || 0) * 1000) / 1000;
 
 const ALLOWED_FIELDS = [
   "date",
@@ -46,6 +55,8 @@ const ALLOWED_FIELDS = [
 ] as const;
 
 export async function POST(request: Request) {
+  let createdExpenseId: string | null = null;
+  let createdJournalId: string | null = null;
   try {
     const context = await requireContext(request, { module: "expenses", action: "create" });
     const body = (await request.json()) ?? {};
@@ -79,22 +90,55 @@ export async function POST(request: Request) {
       .single();
 
     if (error) throw error;
+    createdExpenseId = (data as { id: string } | null)?.id ?? null;
+
+    // The expense must reach the ledger, or every report derived from the
+    // journal (P&L, trial balance, balance sheet, cash flow) omits it while the
+    // expense list shows the money leaving. The row and its journal are written
+    // together: a posting failure removes the row rather than leave an expense
+    // with no accounting effect.
+    const amount = round3(payload.total ?? payload.amount);
+    if (createdExpenseId && amount > 0) {
+      const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "journal_entry", "JV");
+      const posted = await postExpense(supabaseAdmin as never, {
+        journalNumber,
+        referenceNumber: createdExpenseId,
+        date: String(expenseDate ?? new Date().toISOString().slice(0, 10)),
+        description: String(payload.description ?? `Expense ${createdExpenseId}`),
+        amount,
+        vatAmount: round3(payload.vat_amount),
+        expenseAccountId: String(payload.expense_account_id),
+        paymentMethod: (payload.payment_method as string | null) ?? null,
+        paymentTerm: (payload.payment_term as string | null) ?? null,
+        tenantId,
+      });
+      if (posted.created) createdJournalId = posted.journalId;
+    }
 
     await logAudit(context, {
       action: "create",
       entity: "expenses",
-      entityId: data?.id ?? null,
+      entityId: createdExpenseId,
       metadata: {
         supplier_id: payload.supplier_id,
         expense_account_id: payload.expense_account_id,
         amount: payload.amount ?? null,
         total: payload.total ?? null,
         branch: payload.branch ?? null,
+        journal_id: createdJournalId,
       },
     });
 
     return NextResponse.json(data);
   } catch (error) {
+    // An expense with no ledger effect is worse than no expense: remove it.
+    if (createdExpenseId && !createdJournalId) {
+      try {
+        await supabaseAdmin.from("expenses").delete().eq("id", createdExpenseId);
+      } catch {
+        /* best effort */
+      }
+    }
     const { status, body } = toErrorResponse(error);
     return NextResponse.json(body, { status });
   }

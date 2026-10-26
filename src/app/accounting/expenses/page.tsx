@@ -283,9 +283,24 @@ function ExpensesPageContent() {
         }
 
         if (editingExpense) {
-          await supabase.from("expenses").update(payload).eq("id", editingExpense.id)
+          // The SERVER writes the row and its balanced journal together. A
+          // browser insert used to leave the expense out of the ledger entirely,
+          // so P&L, trial balance and balance sheet never saw the money leave.
+          const res = await fetch(`/api/expenses/${encodeURIComponent(editingExpense.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+          const err = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(err?.error || "Could not save the expense")
         } else {
-          await supabase.from("expenses").insert([payload])
+          const res = await fetch("/api/expenses", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+          const err = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(err?.error || "Could not create the expense")
         }
       }
       setShowForm(false)
@@ -322,7 +337,15 @@ function ExpensesPageContent() {
 
   async function handleDelete(id: string) {
     if (!confirm("Are you sure you want to delete this expense?")) return
-    await supabase.from("expenses").delete().eq("id", id)
+    // Deleting the row alone would orphan its journal and leave the ledger
+    // describing money the expense list no longer shows. The server reverses the
+    // journal and removes the row together.
+    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "DELETE" })
+    const err = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      alert(err?.error || "Could not delete the expense")
+      return
+    }
     fetchData()
   }
 

@@ -2023,3 +2023,55 @@ that applies the filters it is given and returns only affected rows.
   per company). It never deletes an account.
 - Exec 66 baseline after this fix: **1419 tests / 1413 pass / 0 fail / 6
   skipped**; typecheck 0; lint clean; build green.
+
+
+## Execution 67 invariants (server-authoritative financial writes)
+
+- **Every financial mutation goes through a guarded route.** A page must never
+  `insert`/`update`/`delete` a financial table (`invoices`, `payments`,
+  `journal_entries`, `journal_lines`, `supplier_payments`, `purchase_invoices`,
+  `sales_returns`, `debit_notes`, `expenses`, `accounts`) with the browser
+  client. `tests/exec67-tenant-scoped-writes.test.ts` walks every `.tsx` under
+  `src/app` and fails on a direct write; add a table to its list when a new
+  financial table appears.
+- **A document and its journal are written together, or neither is.** The four
+  paths that were fixed each had the same shape: the row was written and the
+  ledger was not, so every ledger-derived report (P&L, trial balance, balance
+  sheet, cash flow) disagreed with the document list.
+  - `src/lib/accounting/expense-posting.ts` (`buildExpenseJournal`,
+    `postExpense`, `buildExpenseReversalJournal`, `reverseExpense`) — an expense
+    posts `Dr expense [+ Dr input VAT] / Cr cash | bank | AP`. A credit purchase
+    credits the payable, not cash. `POST /api/expenses` compensates by deleting
+    the row if the posting fails; `PUT`/`DELETE /api/expenses/[id]` reverse and
+    re-post rather than editing the ledger in place.
+  - `src/lib/accounting/sales-return-posting.ts` +
+    `src/lib/sales/return-service.ts` + `POST /api/sales-returns` — a return
+    restores AR, reverses revenue and settles the invoice in one transaction.
+  - `DELETE /api/debit-notes/[id]` mirrors the note's own journal (read from
+    `journal_lines`), and is idempotent.
+  - `PUT /api/invoices/[id]` decides server-side via `decideInvoiceEdit`;
+    `paid_amount`/`status`/`tenant_id` are not writable and `total_amount` is
+    derived.
+- **An account a live install may legitimately lack must not block a document.**
+  `resolveOptionalAccountIds` (`account-resolution.ts`) resolves 41003 (seeded
+  only by migration 003) and the VAT accounts tolerantly: absence falls back to
+  a required account the caller already holds. A cross-tenant or ambiguous row
+  is still an error — that is a configuration fault, not absence. Resolving
+  41003 as required would have made the new sales-return endpoint fail on every
+  return in production while passing a parse-only review.
+- **Idempotency is checked before any business guard.** `createSalesReturn`
+  looked up an existing return only AFTER the "amount exceeds what was paid"
+  check; a retry arrives with the invoice already reduced, so the retry was
+  refused as an overpayment instead of returning the existing document.
+- **`assertReference`/`assertReferenceList` take an injectable client**
+  (defaulting to `supabaseAdmin`). A hard-wired singleton makes a tenant-scoped
+  reference check impossible to exercise against two tenants — which is exactly
+  the check that needs it.
+- **The chart of accounts is server-authoritative.** `POST /api/accounts` and
+  `PUT /api/accounts/[id]` stamp the tenant from the session, require the parent
+  to be the caller's own account or the shared chart, refuse a self-parent, and
+  refuse a duplicate code (a duplicate code is `ambiguous` to
+  `resolveAccountIdsForTenant`, which refuses it — silently breaking posting for
+  every module that uses that code).
+- **Baseline after Exec 67:** 1469 tests / 1463 pass / 0 fail / 6 skipped;
+  typecheck 0 errors; lint clean; production build green.

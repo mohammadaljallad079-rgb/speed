@@ -1914,3 +1914,37 @@ that applies the filters it is given and returns only affected rows.
   anon/service probes return 401. 015 is authored, harness-verified and shipped as
   a file; whether 011-014 are applied in production is an operator question, not
   something this environment can assert.
+
+### Exec 66 follow-up: a collected receipt is REVERSED, never deleted
+
+- **`payments` had no reversal path at all, and the payments list deleted rows
+  with no guard.** Deleting a receipt row leaves the ledger describing a
+  collection that no longer exists - the cash is still debited and the receivable
+  still settled, with no document behind them. `POST /api/receipts?op=reverse`
+  (`reverseReceipt` -> `post_customer_receipt_reversal`, migration 015) is now the
+  only way to undo a receipt: it mirrors the journal (Dr AR / Cr Cash-Bank),
+  restores the invoice's outstanding balance and marks the payment `cancelled`,
+  in ONE transaction. The payments list offers "Reverse", not "Delete".
+- **The reversal takes no amount and no account from the caller.** Both are read
+  from the stored `payments` row under the caller's tenant scope, so a crafted
+  body cannot reverse a different value or move the money to another account. The
+  only input is the payment id. A payment id belonging to another company is a
+  `404` (the lookup is tenant-scoped).
+- **Reversal needs `edit`, not `create`.** The route resolves the operation
+  BEFORE `requireContext`, so a caller who may collect money but not amend the
+  ledger is refused. (Resolving `create` first would also have blocked a
+  legitimate `edit`-only caller.)
+- **Idempotent and bounded.** An already-cancelled payment returns
+  `already_cancelled: true` and writes nothing, so a retry cannot un-settle the
+  invoice twice. The un-settlement uses `greatest(paid - amount, 0)`: a receipt
+  larger than the recorded `paid_amount` must never produce a negative receivable.
+- **`src/app/rentals/[id]/payment/page.tsx` was an orphan posting path.** It
+  inserted a `payments` row with NO journal at all (and a non-existent
+  `contract_id` column). It now goes through `submitReceipt` like the other three
+  pages. Every page that records a customer receipt uses the one workflow.
+- Verified by execution: `supabase/tests/015_harness/run.sh` now asserts the
+  reversal semantics too - **41/41** on PostgreSQL 17 (mirror written once, AR
+  restored, invoice back to pending, second attempt a no-op, a refused mirror
+  leaves receipt+invoice untouched, a wrong-company id finds nothing).
+- Exec 66 final baseline: **1390 tests / 1384 pass / 0 fail / 6 skipped**;
+  typecheck 0; lint clean; build green; 015 harness 41/41.

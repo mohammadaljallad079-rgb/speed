@@ -3,6 +3,7 @@ import { Suspense } from 'react'
 import { useState, useEffect, useMemo } from 'react'
 import { supabase, Payment } from '@/lib/supabase'
 import { formatCurrency } from '@/lib/utils'
+import { submitReceiptReversal } from '@/lib/sales/receipt-client'
 import {
   CreditCard,
   Plus,
@@ -301,14 +302,25 @@ function PaymentsPageContent() {
                           </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={async () => {
-                              if (!confirm(isRTL ? 'هل أنت متأكد من الحذف؟' : 'Are you sure?')) return
-                              await supabase.from('payments').delete().eq('id', payment.id)
-                              window.location.reload()
+                              // A collected receipt is REVERSED, never deleted:
+                              // deleting the row leaves the ledger describing a
+                              // collection that no longer exists. The server
+                              // mirrors the journal, restores the invoice
+                              // balance and marks the payment cancelled, all in
+                              // one transaction, and takes the amount and the
+                              // company from the stored row and the session.
+                              if (!confirm(isRTL ? 'سيتم عكس الدفعة وإلغاء تسوية الفاتورة. متابعة؟' : 'This will reverse the receipt and un-settle its invoice. Continue?')) return
+                              try {
+                                await submitReceiptReversal(payment.id)
+                                window.location.reload()
+                              } catch (err: any) {
+                                alert(err?.message || (isRTL ? 'تعذر عكس الدفعة' : 'Could not reverse the receipt'))
+                              }
                             }}
                             className="flex items-center gap-2 text-red-600 cursor-pointer focus:text-red-600 text-xs"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
-                            <span>{isRTL ? 'حذف' : 'Delete'}</span>
+                            <span>{isRTL ? 'عكس' : 'Reverse'}</span>
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>

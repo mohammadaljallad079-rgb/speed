@@ -81,3 +81,52 @@ export async function submitReceipt(payload: ReceiptRequest): Promise<ReceiptRes
   }
   return result;
 }
+
+export type ReverseReceiptResponse = {
+  payment_id: string;
+  journal_id: string | null;
+  already_cancelled: boolean;
+  invoice_paid_amount: number | null;
+  invoice_status: string | null;
+};
+
+/**
+ * Reverse a collected receipt through the server.
+ *
+ * The browser sends ONLY the payment id. The amount, the invoice and the company
+ * are read server-side from the stored row and the session, so a crafted request
+ * cannot reverse a different value. Use this instead of deleting a payment: a
+ * hard delete leaves the ledger describing a collection that no longer exists.
+ */
+export async function submitReceiptReversal(paymentId: string): Promise<ReverseReceiptResponse> {
+  const response = await fetch("/api/receipts?op=reverse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ payment_id: paymentId }),
+  });
+
+  let body: Record<string, unknown> = {};
+  try {
+    body = (await response.json()) ?? {};
+  } catch {
+    /* a non-JSON body is treated as a bare failure below */
+  }
+
+  if (!response.ok) {
+    throw new ReceiptRequestError(
+      String(body.code ?? `http_${response.status}`),
+      String(body.error ?? `The receipt could not be reversed (HTTP ${response.status}).`),
+    );
+  }
+
+  const result = body as unknown as ReverseReceiptResponse;
+  // Success means the server wrote the mirror journal, or told us the receipt
+  // was already cancelled. Anything else is not a success.
+  if (!result.already_cancelled && !result.journal_id) {
+    throw new ReceiptRequestError(
+      "incomplete_posting",
+      "The reversal was not fully recorded: no ledger mirror was confirmed.",
+    );
+  }
+  return result;
+}

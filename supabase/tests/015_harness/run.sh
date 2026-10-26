@@ -217,11 +217,77 @@ expect_refused "a duplicate receipt_number is refused by the unique index" \
 expect_eq "another company may reuse the same receipt number" \
   "$(q "insert into public.payments (receipt_number, amount, tenant_id) values ('REC-A-1', 1, '00000000-0000-0000-0000-0000000000b1') returning 'ok'")" "ok"
 
+# --- 5b. the atomic REVERSAL ------------------------------------------------
+# The receipt written in section 3 (REC-A-1, 99, invoice INV-A) is reversed. The
+# mirror must restore the receivable, mark the payment cancelled and write
+# exactly one mirror journal - and a second attempt must be a no-op.
+REC_PAY_ID="$(q "select id from public.payments where receipt_number='REC-A-1' and tenant_id='00000000-0000-0000-0000-0000000000a1'")"
+
+expect_eq "the reversal mirrors the receipt in one call" \
+  "$(q "select (public.post_customer_receipt_reversal(
+     '$REC_PAY_ID'::uuid,
+     '00000000-0000-0000-0000-0000000000a1'::uuid,
+     '{\"journal_number\":\"JV-REV-1\",\"entry_date\":\"2026-01-09\",\"reference_number\":\"REC-A-1\",\"entry_type\":\"customer_receipt_reversal\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
+     '[{\"account_id\":\"00000000-0000-0000-0000-00000000a002\",\"debit\":99,\"credit\":0},
+       {\"account_id\":\"00000000-0000-0000-0000-00000000a001\",\"debit\":0,\"credit\":99}]'::jsonb
+   )->>'already_cancelled')")" "false"
+
+expect_eq "the reversal journal exists exactly once" \
+  "$(q "select count(*) from public.journal_entries where reference_number='REC-A-1' and entry_type='customer_receipt_reversal'")" "1"
+expect_eq "the reversal restores the invoice to pending" \
+  "$(q "select round(paid_amount,3)::text || '/' || status from public.invoices where invoice_number='INV-A'")" "0.000/pending"
+expect_eq "the payment is marked cancelled" \
+  "$(q "select status from public.payments where receipt_number='REC-A-1' and tenant_id='00000000-0000-0000-0000-0000000000a1'")" "cancelled"
+
+# Idempotency: reversing again writes nothing and says so.
+expect_eq "a second reversal is a no-op" \
+  "$(q "select (public.post_customer_receipt_reversal(
+     '$REC_PAY_ID'::uuid,
+     '00000000-0000-0000-0000-0000000000a1'::uuid,
+     '{\"journal_number\":\"JV-REV-2\"}'::jsonb,
+     '[{\"account_id\":\"00000000-0000-0000-0000-00000000a002\",\"debit\":99,\"credit\":0},
+       {\"account_id\":\"00000000-0000-0000-0000-00000000a001\",\"debit\":0,\"credit\":99}]'::jsonb
+   )->>'already_cancelled')")" "true"
+expect_eq "the second reversal wrote no second journal" \
+  "$(q "select count(*) from public.journal_entries where reference_number='REC-A-1' and entry_type='customer_receipt_reversal'")" "1"
+expect_eq "the second reversal did not un-settle the invoice twice" \
+  "$(q "select round(paid_amount,3)::text from public.invoices where invoice_number='INV-A'")" "0.000"
+
+# A reversal whose mirror journal is refused must change nothing.
+expect_eq "re-settle the invoice for the refusal case" \
+  "$(q "select (public.post_customer_receipt(
+     '{\"receipt_number\":\"REC-A-2\",\"customer_id\":\"00000000-0000-0000-0000-0000000000c1\",\"invoice_id\":\"00000000-0000-0000-0000-0000000000e1\",\"amount\":99,\"payment_method\":\"cash\",\"payment_date\":\"2026-01-06\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
+     '{\"journal_number\":\"JV-REC-2\",\"entry_date\":\"2026-01-06\",\"reference_number\":\"REC-A-2\",\"entry_type\":\"customer_receipt\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
+     '[{\"account_id\":\"00000000-0000-0000-0000-00000000a001\",\"debit\":99,\"credit\":0},
+       {\"account_id\":\"00000000-0000-0000-0000-00000000a002\",\"debit\":0,\"credit\":99}]'::jsonb
+   )->>'journal_id') is not null")" "t"
+REC2_PAY_ID="$(q "select id from public.payments where receipt_number='REC-A-2' and tenant_id='00000000-0000-0000-0000-0000000000a1'")"
+expect_refused "a reversal whose mirror uses a foreign account is refused" \
+  "select public.post_customer_receipt_reversal(
+     '$REC2_PAY_ID'::uuid,
+     '00000000-0000-0000-0000-0000000000a1'::uuid,
+     '{\"journal_number\":\"JV-REV-BAD\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
+     '[{\"account_id\":\"00000000-0000-0000-0000-00000000b001\",\"debit\":99,\"credit\":0},
+       {\"account_id\":\"00000000-0000-0000-0000-00000000b002\",\"debit\":0,\"credit\":99}]'::jsonb)"
+expect_eq "the refused reversal left the receipt cancelled=false" \
+  "$(q "select status from public.payments where receipt_number='REC-A-2' and tenant_id='00000000-0000-0000-0000-0000000000a1'")" "completed"
+expect_eq "the refused reversal left the invoice settled" \
+  "$(q "select round(paid_amount,3)::text || '/' || status from public.invoices where invoice_number='INV-A'")" "99.000/paid"
+
+# A reversal cannot touch another company's receipt.
+expect_refused "a reversal scoped to the wrong company finds nothing" \
+  "select public.post_customer_receipt_reversal(
+     '$REC2_PAY_ID'::uuid,
+     '00000000-0000-0000-0000-0000000000b1'::uuid,
+     '{\"journal_number\":\"JV-REV-X\"}'::jsonb, '[]'::jsonb)"
+
 # --- 6. rollback --------------------------------------------------------------
 echo "== rollback =="
 if apply "$ROLL015"; then ok "rollback applies"; else bad "rollback applies" "see error"; fi
 expect_eq "post_customer_receipt is gone" \
   "$(q "select count(*) from pg_proc where proname='post_customer_receipt'")" "0"
+expect_eq "post_customer_receipt_reversal is gone" \
+  "$(q "select count(*) from pg_proc where proname='post_customer_receipt_reversal'")" "0"
 expect_eq "the receipt indexes are gone" \
   "$(q "select count(*) from pg_indexes where indexname in ('payments_tenant_receipt_uidx','payments_null_tenant_receipt_uidx')")" "0"
 expect_eq "every posted journal survives the rollback" \

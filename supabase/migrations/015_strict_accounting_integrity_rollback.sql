@@ -3,7 +3,7 @@
 --
 -- Undoes migration 015:
 --   * drops the two receipt-idempotency indexes,
---   * drops the atomic `post_customer_receipt`,
+--   * drops the atomic `post_customer_receipt` and `post_customer_receipt_reversal`,
 --   * restores the 011 body of `post_journal_entry` by re-running 011.
 --
 -- NOT LOSSLESS: restoring the 011 function re-opens the account-ownership hole
@@ -20,6 +20,7 @@ drop index if exists public.payments_tenant_receipt_uidx;
 drop index if exists public.payments_null_tenant_receipt_uidx;
 
 drop function if exists public.post_customer_receipt(jsonb, jsonb, jsonb);
+drop function if exists public.post_customer_receipt_reversal(uuid, uuid, jsonb, jsonb);
 
 commit;
 

@@ -464,6 +464,195 @@ begin
 end $$;
 
 -- ============================================================================
+-- B2. Atomic customer receipt REVERSAL.
+--
+-- A collected receipt must never be hard-deleted: the ledger would keep
+-- describing a collection that no longer exists, and the audit trail would lose
+-- the fact that cash came in. The supported change is a reversal, which mirrors
+-- the receipt's journal (Dr AR / Cr Cash-Bank), restores the invoice's
+-- outstanding balance and marks the payment `cancelled`.
+--
+-- Writes, in ONE transaction:
+--   * the mirror journal (through the hardened post_journal_entry),
+--   * the invoice un-settlement (paid_amount - amount, status recomputed),
+--   * the payment's `status = 'cancelled'`.
+--
+-- The caller passes NO amount and NO account: both are read from the stored
+-- payment row, so a crafted body cannot reverse a different value or move the
+-- money to a different account. Idempotent: an already-cancelled payment returns
+-- { already_cancelled: true } and writes nothing.
+--
+-- Returns { payment_id, journal_id, already_cancelled, invoice_paid_amount,
+--           invoice_status }.
+-- ============================================================================
+do $$
+begin
+  if not exists (select 1 from information_schema.tables
+                 where table_schema='public' and table_name='payments') then
+    raise notice '015: payments table absent, skipping post_customer_receipt_reversal';
+    return;
+  end if;
+
+  execute $fn$
+  create or replace function public.post_customer_receipt_reversal(
+    p_payment_id uuid,
+    p_tenant     uuid,
+    p_header     jsonb,
+    p_lines      jsonb
+  ) returns jsonb
+  language plpgsql
+  as $body$
+  declare
+    v_amount       numeric;
+    v_status       text;
+    v_invoice_id   uuid;
+    v_pay_tenant   uuid;
+    v_journal_id   text;
+    v_has_pay_status  boolean;
+    v_has_pay_tenant  boolean;
+    v_new_paid     numeric;
+    v_total        numeric;
+    v_new_status   text;
+    v_has_inv_tenant boolean;
+    v_has_inv_status boolean;
+  begin
+    if p_payment_id is null then
+      raise exception 'post_customer_receipt_reversal: payment id is required'
+        using errcode = 'check_violation';
+    end if;
+
+    select exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='payments'
+                     and column_name='status'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='payments'
+                     and column_name='tenant_id')
+      into v_has_pay_status, v_has_pay_tenant;
+
+    -- Lock the payment row so two concurrent reversals cannot both mirror it.
+    if v_has_pay_status then
+      if v_has_pay_tenant then
+        execute 'select amount, status, invoice_id, tenant_id from public.payments '
+             || 'where id = $1 and tenant_id is not distinct from $2 for update'
+          into v_amount, v_status, v_invoice_id, v_pay_tenant
+          using p_payment_id, p_tenant;
+      else
+        execute 'select amount, status, invoice_id from public.payments '
+             || 'where id = $1 for update'
+          into v_amount, v_status, v_invoice_id
+          using p_payment_id;
+      end if;
+    else
+      if v_has_pay_tenant then
+        execute 'select amount, invoice_id, tenant_id from public.payments '
+             || 'where id = $1 and tenant_id is not distinct from $2 for update'
+          into v_amount, v_invoice_id, v_pay_tenant
+          using p_payment_id, p_tenant;
+      else
+        execute 'select amount, invoice_id from public.payments '
+             || 'where id = $1 for update'
+          into v_amount, v_invoice_id
+          using p_payment_id;
+      end if;
+      v_status := 'completed';
+    end if;
+
+    if v_amount is null then
+      raise exception 'post_customer_receipt_reversal: payment not found in this company'
+        using errcode = 'no_data_found';
+    end if;
+    if v_status = 'cancelled' then
+      return jsonb_build_object(
+        'payment_id', p_payment_id,
+        'journal_id', null,
+        'already_cancelled', true,
+        'invoice_paid_amount', null,
+        'invoice_status', null
+      );
+    end if;
+    if coalesce(v_amount, 0) <= 0 then
+      raise exception 'post_customer_receipt_reversal: payment has no amount to reverse'
+        using errcode = 'check_violation';
+    end if;
+
+    -- ---- The mirror journal first: if it is refused, NOTHING is changed. ----
+    v_journal_id := public.post_journal_entry(p_header, p_lines);
+
+    -- ---- Un-settle the invoice. --------------------------------------------
+    if v_invoice_id is not null then
+      select exists (select 1 from information_schema.columns
+                     where table_schema='public' and table_name='invoices'
+                       and column_name='tenant_id'),
+             exists (select 1 from information_schema.columns
+                     where table_schema='public' and table_name='invoices'
+                       and column_name='status')
+        into v_has_inv_tenant, v_has_inv_status;
+
+      if v_has_inv_tenant then
+        execute 'select coalesce(total_amount,0), coalesce(paid_amount,0) from public.invoices '
+             || 'where id = $1 and tenant_id is not distinct from $2 for update'
+          into v_total, v_new_paid
+          using v_invoice_id, v_pay_tenant;
+      else
+        execute 'select coalesce(total_amount,0), coalesce(paid_amount,0) from public.invoices '
+             || 'where id = $1 for update'
+          into v_total, v_new_paid
+          using v_invoice_id;
+      end if;
+
+      -- Never drive the settled amount below zero: a receipt larger than the
+      -- recorded paid_amount (only possible if the row was edited outside this
+      -- function) must not create a negative receivable.
+      v_new_paid := greatest(coalesce(v_new_paid, 0) - v_amount, 0);
+      v_new_status := case
+        when v_new_paid >= coalesce(v_total, 0) then 'paid'
+        when v_new_paid > 0 then 'partial'
+        else 'pending'
+      end;
+
+      if v_has_inv_status then
+        execute format(
+          'update public.invoices set paid_amount = $1, status = $2 where id = $3 %s',
+          case when v_has_inv_tenant then 'and tenant_id is not distinct from $4' else '' end
+        ) using v_new_paid, v_new_status, v_invoice_id, v_pay_tenant;
+      else
+        execute format(
+          'update public.invoices set paid_amount = $1 where id = $2 %s',
+          case when v_has_inv_tenant then 'and tenant_id is not distinct from $3' else '' end
+        ) using v_new_paid, v_invoice_id, v_pay_tenant;
+      end if;
+    else
+      v_new_paid := null;
+      v_new_status := null;
+    end if;
+
+    -- ---- Mark the payment cancelled. ---------------------------------------
+    if v_has_pay_status then
+      if v_has_pay_tenant then
+        execute 'update public.payments set status = ''cancelled'' '
+             || 'where id = $1 and tenant_id is not distinct from $2'
+          using p_payment_id, p_tenant;
+      else
+        execute 'update public.payments set status = ''cancelled'' where id = $1'
+          using p_payment_id;
+      end if;
+    end if;
+
+    return jsonb_build_object(
+      'payment_id', p_payment_id,
+      'journal_id', v_journal_id,
+      'already_cancelled', false,
+      'invoice_paid_amount', v_new_paid,
+      'invoice_status', v_new_status
+    );
+  end;
+  $body$;
+  $fn$;
+
+  raise notice '015: post_customer_receipt_reversal created (atomic reversal + un-settlement)';
+end $$;
+
+-- ============================================================================
 -- C. Receipt idempotency at the database level.
 --    A retried receipt must not be recorded twice. TWO indexes: a plain unique
 --    index treats NULLs as distinct, so the single-tenant install needs the

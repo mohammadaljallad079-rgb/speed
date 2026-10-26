@@ -48,7 +48,7 @@ export type ReceiptJournal = {
     total_credit: number;
     is_balanced: true;
     status: "posted";
-    entry_type: "customer_receipt";
+    entry_type: "customer_receipt" | "customer_receipt_reversal";
   };
   lines: ReceiptJournalLine[];
 };
@@ -106,6 +106,61 @@ type Builder = {
 export type ReceiptPostingClient = { from: (table: string) => Builder };
 
 const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
+
+/**
+ * The mirror of a receipt: Dr Accounts Receivable / Cr Cash / Bank.
+ *
+ * Reversing a collection puts the money back and restores the receivable. It
+ * must not touch revenue - the sale's revenue stands; only the collection is
+ * undone. Same amount, same accounts, swapped sides, so the pair nets to zero.
+ *
+ * Returns null for a non-positive amount: a zero-value reversal is not a
+ * document, and posting one would add a meaningless pair of lines to the
+ * ledger.
+ */
+export function buildReceiptReversalJournal(params: {
+  journalNumber: string;
+  receiptNumber: string;
+  amount: number;
+  reversalDate: string;
+  description: string;
+  cashAccountId: string;
+  arAccountId: string;
+}): ReceiptJournal | null {
+  const amount = money(params.amount);
+  if (!(amount > 0)) return null;
+  if (!params.cashAccountId || !params.arAccountId) return null;
+
+  return {
+    header: {
+      journal_number: params.journalNumber,
+      entry_date: params.reversalDate,
+      description: params.description,
+      entry_type: "customer_receipt_reversal",
+      reference_number: params.receiptNumber,
+      status: "posted",
+      total_debit: amount,
+      total_credit: amount,
+      is_balanced: true,
+    },
+    lines: [
+      {
+        account_id: params.arAccountId,
+        debit: amount,
+        credit: 0,
+        description: params.description,
+        line_order: 1,
+      },
+      {
+        account_id: params.cashAccountId,
+        debit: 0,
+        credit: amount,
+        description: params.description,
+        line_order: 2,
+      },
+    ],
+  };
+}
 
 /**
  * Post a customer receipt to the ledger. Resolves cash/bank and AR by their

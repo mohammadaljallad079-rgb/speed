@@ -9,7 +9,12 @@ import {
   REF_RENTAL_CONTRACT,
 } from "@/lib/auth";
 import { nextDocumentNumber } from "@/lib/numbering";
-import { buildReceiptJournal, cashBankCodeForMethod, RECEIPT_ACCOUNT_CODES } from "@/lib/accounting/receipt-posting";
+import {
+  buildReceiptJournal,
+  buildReceiptReversalJournal,
+  cashBankCodeForMethod,
+  RECEIPT_ACCOUNT_CODES,
+} from "@/lib/accounting/receipt-posting";
 import { resolveAccountIdsForTenant, type AccountClient } from "@/lib/accounting/account-resolution";
 
 /**
@@ -306,5 +311,149 @@ export async function recordReceipt(
     invoice_paid_amount: result.invoice_paid_amount == null ? null : round3(num(result.invoice_paid_amount)),
     invoice_status: result.invoice_status ?? null,
     idempotent: false,
+  };
+}
+
+export type ReverseReceiptResult = {
+  payment_id: string;
+  journal_id: string | null;
+  already_cancelled: boolean;
+  invoice_paid_amount: number | null;
+  invoice_status: string | null;
+};
+
+/**
+ * Reverse a collected customer receipt.
+ *
+ * A receipt that has moved money is never hard-deleted: the ledger would keep
+ * describing a collection that no longer exists. The supported change is this
+ * reversal, which mirrors the receipt's journal (Dr AR / Cr Cash-Bank), restores
+ * the invoice's outstanding balance and marks the payment `cancelled`.
+ *
+ * Nothing is trusted from the caller: the amount, the invoice and the company
+ * are read from the stored payment row under the caller's tenant scope, and the
+ * accounts are resolved for that company. The only input is the payment id.
+ *
+ * Idempotent: an already-cancelled payment returns `already_cancelled: true`
+ * and writes nothing, so a retry cannot un-settle the invoice twice.
+ */
+export async function reverseReceipt(
+  db: ReceiptDb,
+  context: AuthContext,
+  input: { payment_id: string },
+  deps: ReceiptDeps = {},
+): Promise<ReverseReceiptResult> {
+  const { getYear } = { ...DEFAULT_DEPS, ...deps };
+  const paymentId = typeof input.payment_id === "string" ? input.payment_id.trim() : "";
+  if (!paymentId) throw new ReceiptError("bad_request", "payment_id is required");
+
+  const tenantId = assertWritableTenant(context, null);
+
+  if (typeof db.rpc !== "function") {
+    throw new ReceiptError(
+      "rpc_unavailable",
+      "The atomic reversal function is not available; a receipt may not be reversed without its ledger mirror.",
+    );
+  }
+
+  // Read the stored payment under the caller's tenant scope. The amount and the
+  // invoice come from HERE, never from the request.
+  let payQuery = db
+    .from("payments")
+    .select("id,receipt_number,amount,payment_method,payment_date,invoice_id,status")
+    .eq("id", paymentId);
+  payQuery = context.tenantId ? payQuery.eq("tenant_id", context.tenantId) : payQuery.is("tenant_id", null);
+  const { data: payment, error: payErr } = await payQuery.maybeSingle();
+  if (payErr) throw payErr;
+  if (!payment) throw new ReceiptError("not_found", "The receipt does not belong to this company.");
+
+  const pay = payment as Record<string, unknown>;
+  if (pay.status === "cancelled") {
+    return {
+      payment_id: paymentId,
+      journal_id: null,
+      already_cancelled: true,
+      invoice_paid_amount: null,
+      invoice_status: null,
+    };
+  }
+
+  const amount = round3(num(pay.amount));
+  if (!(amount > 0)) throw new ReceiptError("bad_request", "The receipt has no amount to reverse.");
+
+  const receiptNumber = String(pay.receipt_number ?? "");
+  const method = String(pay.payment_method ?? "cash");
+  const reversalDate = new Date().toISOString().slice(0, 10);
+
+  // The same financial-year guard the receipt itself passed: a reversal dated
+  // into a closed year would be refused by the ledger.
+  const year = await getYear(context.tenantId);
+  assertDateInOpenFinancialYear(year, reversalDate, "reversal date");
+
+  const cashCode = cashBankCodeForMethod(method);
+  const ids = await resolveAccountIdsForTenant(
+    db as unknown as AccountClient,
+    [cashCode, RECEIPT_ACCOUNT_CODES.ar],
+    context.tenantId,
+  );
+  const cashAccountId = ids[cashCode];
+  const arAccountId = ids[RECEIPT_ACCOUNT_CODES.ar];
+  if (!cashAccountId || !arAccountId) {
+    throw new ReceiptError(
+      "account_missing",
+      "The cash/bank or accounts-receivable account could not be resolved for this company.",
+    );
+  }
+
+  const journalNumber = await nextDocumentNumber(db as never, "journal_entry", "JV");
+  const description = `Receipt reversed - ${receiptNumber || paymentId}`;
+  const journal = buildReceiptReversalJournal({
+    journalNumber,
+    receiptNumber: receiptNumber || paymentId,
+    amount,
+    reversalDate,
+    description,
+    cashAccountId,
+    arAccountId,
+  });
+  if (!journal) throw new ReceiptError("bad_request", "Cannot build a balanced reversal journal.");
+
+  const header = { ...journal.header, tenant_id: tenantId ?? undefined };
+  const lines = journal.lines.map((l) => ({ ...l, tenant_id: tenantId ?? undefined }));
+
+  const { data, error } = await db.rpc("post_customer_receipt_reversal", {
+    p_payment_id: paymentId,
+    p_tenant: context.tenantId,
+    p_header: header,
+    p_lines: lines,
+  });
+
+  if (error) {
+    if (isAtomicRpcUnavailable(error)) {
+      throw new ReceiptError(
+        "rpc_unavailable",
+        "The atomic reversal function (post_customer_receipt_reversal) is not deployed; apply migration 015.",
+      );
+    }
+    throw new ReceiptError("posting_failed", msg(error));
+  }
+
+  const result = (data ?? {}) as {
+    journal_id?: string | null;
+    already_cancelled?: boolean;
+    invoice_paid_amount?: number | string | null;
+    invoice_status?: string | null;
+  };
+  if (!result.already_cancelled && !result.journal_id) {
+    throw new ReceiptError("posting_failed", "The reversal was not fully written (no journal id).");
+  }
+
+  return {
+    payment_id: paymentId,
+    journal_id: result.journal_id ?? null,
+    already_cancelled: Boolean(result.already_cancelled),
+    invoice_paid_amount:
+      result.invoice_paid_amount == null ? null : round3(num(result.invoice_paid_amount)),
+    invoice_status: result.invoice_status ?? null,
   };
 }

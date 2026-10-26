@@ -3,8 +3,12 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-import { recordReceipt, ReceiptError } from "../src/lib/sales/receipt-service.ts";
-import { buildReceiptJournal, RECEIPT_ACCOUNT_CODES } from "../src/lib/accounting/receipt-posting.ts";
+import { recordReceipt, reverseReceipt, ReceiptError } from "../src/lib/sales/receipt-service.ts";
+import {
+  buildReceiptJournal,
+  buildReceiptReversalJournal,
+  RECEIPT_ACCOUNT_CODES,
+} from "../src/lib/accounting/receipt-posting.ts";
 
 /**
  * Execution 66 - the customer-receipt workflow is server-authoritative and atomic.
@@ -181,6 +185,40 @@ function makeDb(opts: { failRpc?: boolean; noRpc?: boolean; preExistingReceipt?:
    */
   const rpc = async (fn: string, args: Record<string, any> = {}) => {
     written.rpcCalls++;
+    if (fn === "post_customer_receipt_reversal") {
+      if (opts.failRpc) {
+        return { data: null, error: { code: "23514", message: "account 11001 is not usable by this company" } };
+      }
+      const pay = payments.find((p) => p.id === args.p_payment_id);
+      if (!pay) return { data: null, error: { code: "P0002", message: "payment not found in this company" } };
+      if (pay.status === "cancelled") {
+        return { data: { payment_id: pay.id, journal_id: null, already_cancelled: true, invoice_paid_amount: null, invoice_status: null }, error: null };
+      }
+      const header = args.p_header ?? {};
+      const jlines = (args.p_lines ?? []) as Row[];
+      const debit = jlines.reduce((n, l) => n + (Number(l.debit) || 0), 0);
+      const credit = jlines.reduce((n, l) => n + (Number(l.credit) || 0), 0);
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+        return { data: null, error: { code: "23514", message: "journal does not balance" } };
+      }
+      const entry = { id: `je-${++seq}`, status: "posted", ...header };
+      entries.push(entry);
+      jlines.forEach((l) => lines.push({ id: `jl-${++seq}`, ...l, journal_entry_id: entry.id }));
+
+      let paidAmount: number | null = null;
+      let status: string | null = null;
+      if (pay.invoice_id) {
+        const inv = invoices.find((i) => i.id === pay.invoice_id);
+        if (inv) {
+          inv.paid_amount = Math.max(Number(inv.paid_amount || 0) - Number(pay.amount || 0), 0);
+          inv.status = inv.paid_amount >= Number(inv.total_amount) ? "paid" : inv.paid_amount > 0 ? "partial" : "pending";
+          paidAmount = inv.paid_amount;
+          status = inv.status;
+        }
+      }
+      pay.status = "cancelled";
+      return { data: { payment_id: pay.id, journal_id: entry.id, already_cancelled: false, invoice_paid_amount: paidAmount, invoice_status: status }, error: null };
+    }
     if (fn !== "post_customer_receipt") return { data: null, error: { message: `unknown rpc ${fn}` } };
     if (opts.failRpc) {
       return { data: null, error: { code: "23514", message: "account 11001 is not usable by this company" } };
@@ -499,5 +537,158 @@ describe("exec66 the receipt journal shape", () => {
       });
       assert.equal(j, null, `amount ${amount} must not produce a journal`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F. Reversal: a collected receipt is mirrored, never deleted.
+// ---------------------------------------------------------------------------
+
+describe("exec66 a collected receipt is reversed, never deleted", () => {
+  const PAGES_WITH_DELETE = ["src/app/payments/page.tsx"];
+
+  async function issue(s: ReturnType<typeof makeDb>) {
+    return recordReceipt(
+      s.db,
+      contextFor(T_A),
+      { receipt_number: "REC-1", customer_id: CUSTOMER_A, invoice_id: INVOICE_A, amount: 99, payment_method: "cash", payment_date: "2026-03-10" },
+      { assertRefs: refsOk, getYear: noYear },
+    );
+  }
+
+  test("the mirror debits AR and credits cash, and un-settles the invoice", async () => {
+    const s = makeDb();
+    const receipt = await issue(s);
+    assert.equal(s.invoices[0].paid_amount, 99);
+
+    const reversal = await reverseReceipt(s.db, contextFor(T_A), { payment_id: receipt.payment_id }, { getYear: noYear });
+
+    assert.equal(reversal.already_cancelled, false);
+    assert.ok(reversal.journal_id, "a mirror journal is written");
+    assert.equal(reversal.invoice_status, "pending");
+    assert.equal(s.invoices[0].paid_amount, 0, "the receivable is restored");
+    assert.equal(s.payments[0].status, "cancelled");
+
+    // The mirror: Dr AR / Cr cash, exactly two lines, no revenue.
+    const mirror = s.lines.filter((l) => l.journal_entry_id === reversal.journal_id);
+    assert.equal(mirror.length, 2);
+    const byAcc = Object.fromEntries(mirror.map((l) => [l.account_id, l]));
+    assert.equal(byAcc["ar-A"].debit, 99);
+    assert.equal(byAcc["cash-A"].credit, 99);
+    assert.equal(mirror.find((l) => l.account_id === "41002"), undefined, "a reversal never touches revenue");
+  });
+
+  test("a retried reversal is a no-op and does not un-settle twice", async () => {
+    const s = makeDb();
+    const receipt = await issue(s);
+    await reverseReceipt(s.db, contextFor(T_A), { payment_id: receipt.payment_id }, { getYear: noYear });
+    const again = await reverseReceipt(s.db, contextFor(T_A), { payment_id: receipt.payment_id }, { getYear: noYear });
+
+    assert.equal(again.already_cancelled, true);
+    assert.equal(again.journal_id, null, "a retry writes no second mirror");
+    assert.equal(s.invoices[0].paid_amount, 0, "the invoice is not un-settled twice");
+    assert.equal(s.entries.length, 2, "one receipt journal + one mirror, no more");
+  });
+
+  test("a refused mirror leaves the receipt and the invoice untouched", async () => {
+    const s = makeDb();
+    const receipt = await issue(s);
+    const s2 = makeDb({ failRpc: true });
+    // Re-point the failing stub at the same payment row to model a DB refusal.
+    s2.payments.push({ id: receipt.payment_id, receipt_number: "REC-1", amount: 99, invoice_id: INVOICE_A, tenant_id: T_A, status: "completed", payment_method: "cash" });
+    s2.invoices[0].paid_amount = 99;
+
+    await assert.rejects(
+      () => reverseReceipt(s2.db, contextFor(T_A), { payment_id: receipt.payment_id }, { getYear: noYear }),
+      (e: unknown) => e instanceof ReceiptError && e.code === "posting_failed",
+    );
+    assert.equal(s2.payments[0].status, "completed", "the receipt stays live");
+    assert.equal(s2.invoices[0].paid_amount, 99, "the invoice stays settled");
+    assert.equal(s2.entries.length, 0, "no mirror journal survives a refusal");
+  });
+
+  test("another company's payment id is not found", async () => {
+    const s = makeDb();
+    const receipt = await issue(s);
+    await assert.rejects(
+      () => reverseReceipt(s.db, contextFor(T_B), { payment_id: receipt.payment_id }, { getYear: noYear }),
+      (e: unknown) => e instanceof ReceiptError && e.code === "not_found",
+    );
+    assert.equal(s.payments[0].status, "completed", "company B cannot cancel company A's receipt");
+  });
+
+  test("a missing payment id is refused before any write", async () => {
+    const s = makeDb();
+    await assert.rejects(
+      () => reverseReceipt(s.db, contextFor(T_A), { payment_id: "" }, { getYear: noYear }),
+      (e: unknown) => e instanceof ReceiptError && e.code === "bad_request",
+    );
+    assert.equal(s.written.rpcCalls, 0);
+  });
+
+  test("with no atomic function deployed the reversal is refused", async () => {
+    const s = makeDb({ noRpc: true });
+    s.payments.push({ id: "pay-1", receipt_number: "REC-1", amount: 99, tenant_id: T_A, status: "completed" });
+    await assert.rejects(
+      () => reverseReceipt(s.db, contextFor(T_A), { payment_id: "pay-1" }, { getYear: noYear }),
+      (e: unknown) => e instanceof ReceiptError && e.code === "rpc_unavailable",
+    );
+  });
+
+  for (const f of PAGES_WITH_DELETE) {
+    test(`${f} reverses a receipt instead of deleting the row`, () => {
+      const src = read(f);
+      assert.match(src, /submitReceiptReversal\(/, `${f} must reverse through the server`);
+      assert.doesNotMatch(src, /from\(["']payments["']\)\.delete\(/, `${f} must not hard-delete a payment`);
+    });
+  }
+
+  test("the receipt journal shape: AR debit / cash credit, entry type marked", () => {
+    const j = buildReceiptReversalJournal({
+      journalNumber: "JV-R",
+      receiptNumber: "REC-1",
+      amount: 99,
+      reversalDate: "2026-03-12",
+      description: "x",
+      cashAccountId: "cash",
+      arAccountId: "ar",
+    });
+    assert.ok(j);
+    assert.equal(j.header.entry_type, "customer_receipt_reversal");
+    assert.equal(j.header.reference_number, "REC-1");
+    const byAcc = Object.fromEntries(j.lines.map((l) => [l.account_id, l]));
+    assert.equal(byAcc["ar"].debit, 99);
+    assert.equal(byAcc["cash"].credit, 99);
+  });
+
+  test("a zero or negative amount yields no reversal journal", () => {
+    for (const amount of [0, -1]) {
+      assert.equal(
+        buildReceiptReversalJournal({
+          journalNumber: "JV-R",
+          receiptNumber: "REC-1",
+          amount,
+          reversalDate: "2026-03-12",
+          description: "x",
+          cashAccountId: "cash",
+          arAccountId: "ar",
+        }),
+        null,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G. The orphan rental payment page.
+// ---------------------------------------------------------------------------
+
+describe("exec66 the rental detail payment page posts to the ledger", () => {
+  const f = "src/app/rentals/[id]/payment/page.tsx";
+
+  test("it records the receipt through the server, not a bare payment insert", () => {
+    const src = read(f);
+    assert.match(src, /submitReceipt\(/, `${f} must record the receipt through the server`);
+    assert.doesNotMatch(src, /from\(["']payments["']\)\.insert/, `${f} must not insert a payment with no posting`);
   });
 });

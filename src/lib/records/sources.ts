@@ -24,6 +24,12 @@ export type RecordSource = {
   table: string;
   /** Columns the searchable list shows. */
   listColumns: string;
+  /**
+   * Optional wider column list for a source whose postability metadata is added
+   * by a later migration. Attempted first; `listColumns` is the fallback when the
+   * schema is older, because naming an absent column fails the whole SELECT.
+   */
+  listColumnsWithPostable?: string;
   /** Column used as the option label. */
   labelColumn: string;
   /** Route of the module's canonical create page (for reference / fallback). */
@@ -77,6 +83,11 @@ export const RECORD_SOURCES: Record<RecordKind, RecordSource> = {
     kind: "account",
     table: "accounts",
     listColumns: "id, code, name_ar, name_en, type, is_active",
+    // `is_postable` is added by migration 014. Naming a column the live schema
+    // does not yet have fails the whole PostgREST SELECT, which empties the
+    // dropdown; so the wider list is attempted first and the narrower one is the
+    // fallback (see `load` in RecordSelect).
+    listColumnsWithPostable: "id, code, name_ar, name_en, type, is_active, is_postable",
     labelColumn: "name_ar",
     createRoute: "/accounting/chart-of-accounts",
     ar: "الحساب المحاسبي",
@@ -121,6 +132,44 @@ export const RECORD_SOURCES: Record<RecordKind, RecordSource> = {
  */
 export function isSelectableAccount(account: { is_active?: boolean | null }): boolean {
   return account.is_active !== false;
+}
+
+/**
+ * A code that is only a GROUP HEADING can never receive a journal line, so it
+ * must not be offered as a postable account. The rule mirrors
+ * `isPostable` in `@/lib/accounting/chart` (headings end in `00`), but it is
+ * re-stated here as a plain predicate so this module stays import-free and
+ * client-safe.
+ *
+ * The two exceptions are the codes the posting services actually name, which
+ * happen to end in `00` on the live chart: `24000` (output VAT) and `25000`
+ * (customer deposits). Filtering them out would leave a form unable to pick the
+ * VAT account a sale posts to.
+ */
+const POSTABLE_EXCEPTIONS: readonly string[] = ["24000", "25000"];
+
+export function isPostableCode(code: unknown): boolean {
+  const c = String(code ?? "").trim();
+  if (!/^\d{5}$/.test(c)) return false;
+  if (POSTABLE_EXCEPTIONS.includes(c)) return true;
+  return !c.endsWith("00");
+}
+
+/**
+ * The filter every account picker should use: active AND postable. Passing this
+ * as `filter` on a `<RecordSelect kind="account" />` keeps group headings such as
+ * `11000 Cash and Bank` out of a field that feeds a journal line — an invalid
+ * account id that only fails when the user presses Save.
+ */
+export function isSelectablePostableAccount(
+  account: { is_active?: boolean | null; code?: unknown; is_postable?: boolean | null },
+): boolean {
+  if (!isSelectableAccount(account)) return false;
+  // Prefer the stored flag when migration 014 has been applied: it is the
+  // authoritative value for a company that re-shaped its own chart, and it
+  // carries a deliberate exception for the codes the posting path names.
+  if (typeof account.is_postable === "boolean") return account.is_postable;
+  return isPostableCode(account.code);
 }
 
 /** The label to show for a record row, falling back across the known columns. */

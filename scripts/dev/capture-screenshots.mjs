@@ -86,6 +86,18 @@ const SHOTS = [
   // shared record picker (with inline create), not a read-only dropdown.
   { name: "hr-attendance-smartform", path: "/hr/attendance", auth: true, expect: "Attendance" },
   { name: "hr-payroll-smartform", path: "/hr/payroll", auth: true, expect: "Employees" },
+  // Execution 64: the manual journal editor's account selector. The chart the
+  // live install uses is FLAT (every account has no parent), and the tree builder
+  // used to treat every parentless account as a group heading — so the dropdown
+  // offered only "(No sub-accounts)" placeholders and nothing could be posted.
+  // This shot opens the dropdown and asserts real ledger accounts are offered.
+  {
+    name: "journal-entries-account-picker",
+    path: "/accounting/journal-entries",
+    auth: true,
+    journalPicker: true,
+    expect: "Add Line",
+  },
   // Execution 62: platform vs tenant identity. The homepage is the SPEED
   // platform's own website, so it must render the platform brand — not a
   // subscriber's company name (which is what an unscoped `settings` read
@@ -264,6 +276,21 @@ async function main() {
             if (await scan.count()) {
               await scan.click();
               await page.waitForTimeout(2500);
+            }
+          }
+          if (shot.journalPicker) {
+            // Open a new entry, then the account dropdown, and refuse to capture
+            // a dropdown that offers no real ledger account. A frame full of
+            // "(No sub-accounts)" placeholders is exactly the defect this guards.
+            await page.getByRole("button", { name: /new journal entry/i }).first().click();
+            await page.getByRole("button", { name: /select account/i }).first().click();
+            await page.locator("#account-dropdown-portal").waitFor({ state: "visible", timeout: 20000 });
+            await page.waitForTimeout(1200);
+            const ledgerAccounts = await page
+              .locator("#account-dropdown-portal div.cursor-pointer")
+              .evaluateAll((els) => els.map((e) => e.innerText.trim()).filter((t) => /^\d{5} - /.test(t)));
+            if (ledgerAccounts.length < 5) {
+              throw new Error(`[capture] journal account picker offered ${ledgerAccounts.length} ledger accounts`);
             }
           }
           if (shot.scroll) {

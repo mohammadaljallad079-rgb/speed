@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { ArrowLeft, Save, Loader2, Wallet, Plus, Minus, History, X, DollarSign, FileText } from 'lucide-react'
 import RecordSelect from '@/components/records/RecordSelect'
+import { isSelectablePostableAccount } from '@/lib/records/sources'
 
 interface PettyCashTransaction {
   id: string
@@ -235,7 +236,7 @@ function PettyCashContent() {
                     value={expenseAccountId}
                     onChange={(id) => setExpenseAccountId(id)}
                     createMode="inline"
-                    filter={(row) => row.is_active !== false && row.type !== 'asset' && row.type !== 'liability'}
+                    filter={(row) => row.type !== 'asset' && row.type !== 'liability' && isSelectablePostableAccount(row)}
                     placeholder={isRTL ? 'اختر حساب المصروف...' : 'Select expense account...'}
                   />
                 </div>

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import DashboardLayout from '@/components/DashboardLayout'
 import RecordSelect from '@/components/records/RecordSelect'
+import { isSelectablePostableAccount } from '@/lib/records/sources'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -726,7 +727,7 @@ function NewCarForm() {
                             onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
                             createMode="inline"
                             eq={[['is_active', 'true']]}
-                            filter={(r) => r.type !== 'asset' && r.type !== 'liability'}
+                            filter={(r) => r.type !== 'asset' && r.type !== 'liability' && isSelectablePostableAccount(r)}
                             placeholder={isRTL ? '-- اختر حساب --' : '-- Select Account --'}
                           />
                         </td>

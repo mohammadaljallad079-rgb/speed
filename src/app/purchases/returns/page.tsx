@@ -7,7 +7,7 @@ import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, DebitNote, Supplier, PurchaseInvoice } from "@/lib/supabase"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
 import RecordSelect from "@/components/records/RecordSelect"
-import { isSelectableAccount } from "@/lib/records/sources"
+import { isSelectablePostableAccount } from "@/lib/records/sources"
 import {
   RotateCcw, Plus, Search, Save, Trash2, ArrowLeft, FileText, AlertTriangle
 } from "lucide-react"
@@ -220,7 +220,7 @@ function DebitNotesPageContent() {
                   label={isRTL ? 'حساب المصروف' : 'Expense account'}
                   value={form.expense_account_id}
                   onChange={(v) => setForm({ ...form, expense_account_id: v })}
-                  filter={isSelectableAccount}
+                  filter={isSelectablePostableAccount}
                   placeholder={isRTL ? 'اختر الحساب (افتراضي: مصروفات أخرى)' : 'Select account (default: other expenses)'}
                 />
               </div>

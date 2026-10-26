@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import RecordSelect from "@/components/records/RecordSelect"
+import { isSelectablePostableAccount } from "@/lib/records/sources"
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Upload, X, Car, User, FileText, MapPin, DollarSign, Wrench, Image as ImageIcon, CreditCard } from "lucide-react"
 import Link from "next/link"
@@ -726,7 +727,7 @@ function NewRentalForm() {
                       onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
                       createMode="inline"
                       eq={[['is_active', 'true']]}
-                      filter={(r) => r.type !== 'asset' && r.type !== 'liability'}
+                      filter={(r) => r.type !== 'asset' && r.type !== 'liability' && isSelectablePostableAccount(r)}
                       placeholder={isRTL ? "اختر حساب" : "Select account"}
                     />
                   </div>

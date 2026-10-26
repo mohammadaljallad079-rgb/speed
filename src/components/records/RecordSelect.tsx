@@ -89,9 +89,23 @@ export default function RecordSelect({
 
   const load = async () => {
     setLoading(true)
-    let query = supabase.from(source.table).select(source.listColumns)
-    for (const [column, val] of eq ?? []) query = query.eq(column, val)
-    const { data } = await query
+    const run = async (columns: string) => {
+      let query = supabase.from(source.table).select(columns)
+      for (const [column, val] of eq ?? []) query = query.eq(column, val)
+      return query
+    }
+    // A source may declare a wider list for a column a later migration adds
+    // (`accounts.is_postable`, migration 014). Naming an absent column fails the
+    // whole SELECT and empties the dropdown, so fall back to the base list on an
+    // "undefined column" error rather than assuming the schema.
+    let { data, error } = await run(source.listColumnsWithPostable ?? source.listColumns)
+    if (error && source.listColumnsWithPostable) {
+      const code = (error as { code?: string }).code
+      const message = String((error as { message?: string }).message ?? "").toLowerCase()
+      const undefinedColumn =
+        code === "42703" || code === "PGRST204" || (message.includes("column") && message.includes("does not exist"))
+      if (undefinedColumn) ({ data, error } = await run(source.listColumns))
+    }
     setRows(((data as unknown as RecordRow[]) ?? []).filter((r) => (filter ? filter(r) : true)))
     setLoading(false)
   }

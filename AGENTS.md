@@ -1819,3 +1819,40 @@ that applies the filters it is given and returns only affected rows.
   rather than `networkidle`.
 - Exec 62 baseline: **1261 tests / 1255 pass / 0 fail / 6 skipped**; typecheck 0
   errors; lint clean; build green. Report: `SPEED_EXECUTION_62_REPORT.md`.
+
+## Execution 64 invariants (per-company chart of accounts)
+
+- **A chart of accounts belongs to a company.** Migration
+  `014_tenant_chart_of_accounts.sql` gives `accounts` a `tenant_id`, an
+  `is_postable` flag, and two PARTIAL unique indexes on `(tenant_id, code)` — one
+  for a real tenant, one for the NULL tenant, because a plain UNIQUE treats NULLs
+  as distinct. Applying it is an operator step; the app must run before AND after.
+- **Resolve an account by `(tenant_id, code)`, never by code alone.**
+  `src/lib/accounting/account-resolution.ts` prefers the caller's own account over
+  the shared one and refuses `foreign_tenant` / `ambiguous` / `inactive` /
+  `not_postable` with a reason. Two companies holding identical codes must never
+  resolve to each other's rows — `tests/exec64-tenant-chart-acceptance.test.ts`
+  asserts this, including the BD 99 issue→collect scenario per company.
+- **Postability is code-owned, not a naive `00` rule.**
+  `src/lib/accounting/chart.ts` (`isPostable`) is the single definition, and
+  migration 014's backfill EXEMPTS the codes the posting path actually names
+  (`24000` output VAT, `25000` customer deposits). The naive "headings end in 00"
+  rule would have refused every sale and every deposit refund once applied.
+- **The manual journal account tree must work on a FLAT chart.** The live install
+  has no hierarchy: every account is `parent_code: null`. The old `buildAccountTree`
+  treated every parentless account as a group heading, so the dropdown offered only
+  "(No sub-accounts)" placeholders and nothing could be posted. The rule now lives
+  in `src/lib/accounting/account-tree.ts` (pure, tested): a parentless account that
+  HAS children is a heading, one with none is the ledger account; `is_postable`
+  wins when the column is present. Verified in-browser: 14 selectable ledger
+  accounts, 0 placeholders.
+- **A capture scene must fail on the defect it guards.** `journal-entries-account-picker`
+  in `scripts/dev/capture-screenshots.mjs` opens the real dropdown and aborts if
+  fewer than 5 ledger accounts are offered, so a blank dropdown cannot be
+  committed as evidence.
+- **Run the dev server through `scripts/dev/run-dev.sh`.** It wipes `.next` first:
+  a stale cache (or a `next build` run against the same directory) makes Next serve
+  chunk URLs that no longer exist, which shows up as pages that never hydrate and
+  screenshots that silently capture the wrong tab. One dev server per `.next`.
+- Exec 64 Stage 1 baseline: **1358 tests / 1352 pass / 0 fail / 6 skipped**;
+  typecheck 0; lint clean; build green; migration 014 harness 36/36.

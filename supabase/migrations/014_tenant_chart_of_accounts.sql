@@ -248,6 +248,23 @@ begin
     before insert or update of parent_code, tenant_id on public.accounts
     for each row execute function public.assert_account_parent_same_tenant();
 
+  -- Preserve accounting history: deleting an account must never
+  -- turn journal_lines.account_id into NULL.
+  if exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.journal_lines'::regclass
+      and conname = 'journal_lines_account_id_fkey'
+  ) then
+    alter table public.journal_lines
+      drop constraint journal_lines_account_id_fkey;
+
+    alter table public.journal_lines
+      add constraint journal_lines_account_id_fkey
+      foreign key (account_id)
+      references public.accounts(id)
+      on delete restrict;
+  end if;
+
   -- --------------------------------------------------------------------------
   -- 5. An account used by a posted journal line may not be deleted. It may be
   --    deactivated instead. Without this, deleting an account silently orphans

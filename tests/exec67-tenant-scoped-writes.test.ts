@@ -287,6 +287,11 @@ describe("exec67 no screen writes a financial row directly", () => {
     "purchase_invoices",
     "sales_returns",
     "debit_notes",
+    // Tenant-owned master data that used to be written from the browser, leaving
+    // NULL-tenant orphans and `id`-only updates/deletes.
+    "customers",
+    "suppliers",
+    "expense_accounts",
   ];
 
   test("no app page inserts/updates/deletes a financial table", () => {

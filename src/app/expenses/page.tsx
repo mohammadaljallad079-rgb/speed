@@ -178,7 +178,14 @@ function ExpensesPageContent() {
 
   async function addSupplier() {
     if (!newSupplierName.trim()) return
-    const { data } = await supabase.from("suppliers").insert([{ name: newSupplierName.trim() }]).select().single()
+    // Server-side create: `suppliers` is tenant-owned, so the tenant must come
+    // from the session rather than a browser insert.
+    const supplierRes = await fetch("/api/suppliers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newSupplierName.trim() }),
+    })
+    const data = supplierRes.ok ? await supplierRes.json() : null
     if (data) {
       setSuppliers([...suppliers, data])
       setNewSupplierName("")
@@ -188,15 +195,21 @@ function ExpensesPageContent() {
 
   async function addAccount() {
     if (!newAccountName.trim() || !newAccountCode.trim()) return
-    const { data } = await supabase.from("expense_accounts").insert([
-      {
+    // Server-side create: `expense_accounts` is tenant-owned, so a browser
+    // insert would leave a NULL-tenant orphan. The route stamps the session tenant.
+    const res = await fetch("/api/expense-accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         name: newAccountName.trim(),
         name_ar: newAccountName.trim(),
         code: newAccountCode.trim(),
         parent_id: newAccountParent || null,
         is_indirect: newAccountIndirect,
-      }
-    ]).select().single()
+      }),
+    })
+    const data = res.ok ? await res.json() : null
+    if (!res.ok) console.error("Error saving expense account:", data)
     if (data) {
       setAccounts([...accounts, data])
       setNewAccountName("")

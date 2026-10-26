@@ -65,8 +65,12 @@ function SuppliersPageContent() {
     }
 
     setSaving(true)
-    const { error } = await supabase.from('suppliers').insert([
-      {
+    // Server-side create: `suppliers` is tenant-owned, so a browser insert would
+    // leave a NULL-tenant orphan. The route takes the tenant from the session.
+    const res = await fetch('/api/suppliers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         name: form.name.trim(),
         phone: form.phone.trim() || null,
         email: form.email.trim() || null,
@@ -75,14 +79,14 @@ function SuppliersPageContent() {
         contact_person: form.contact_person.trim() || null,
         payment_terms: form.payment_terms.trim() || null,
         opening_balance: parseFloat(form.opening_balance) || 0,
-        balance: parseFloat(form.opening_balance) || 0,
         notes: form.notes.trim() || null,
-      },
-    ])
+      }),
+    })
 
-    if (error) {
-      console.error('Insert error:', error)
-      alert(isRTL ? 'خطأ في الحفظ: ' + error.message : 'Save error: ' + error.message)
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      console.error('Insert error:', body)
+      alert(isRTL ? 'خطأ في الحفظ: ' + (body.error || res.status) : 'Save error: ' + (body.error || res.status))
       setSaving(false)
       return
     }
@@ -105,9 +109,10 @@ function SuppliersPageContent() {
 
   async function handleDelete(id: string) {
     if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذا المورد؟' : 'Are you sure you want to delete this supplier?')) return
-    const { error } = await supabase.from('suppliers').delete().eq('id', id)
-    if (error) {
-      alert(isRTL ? 'خطأ في الحذف' : 'Delete error')
+    const res = await fetch(`/api/suppliers/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      alert(body.error || (isRTL ? 'خطأ في الحذف' : 'Delete error'))
       return
     }
     await fetchSuppliers()

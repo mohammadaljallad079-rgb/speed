@@ -345,7 +345,19 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
     const upd: any = { cpr_number: cprNumber, driver_license: license }
     if (cprFile) { const u = await uploadFile(cprFile, 'cpr'); if (u) upd.cpr_image_url = u }
     if (licenseFile) { const u = await uploadFile(licenseFile, 'license'); if (u) upd.license_image_url = u }
-    await supabase.from('customers').update(upd).eq('id', customer!.id)
+    // The customer row is tenant-owned, so the update goes through the guarded
+    // route: the row is resolved from the session, never from a client-held id.
+    const profileRes = await fetch('/api/customer/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(upd),
+    })
+    if (!profileRes.ok) {
+      const body = await profileRes.json().catch(() => ({}))
+      setError(body.error || (isRTL ? 'تعذّر حفظ بيانات الهوية' : 'Could not save the identity documents'))
+      setSubmitting(false)
+      return
+    }
 
     // The booking is created server-side: the customer id and company come from
     // the session, the price from the car's own rates, and an overlapping booking

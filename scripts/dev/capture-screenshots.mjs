@@ -162,6 +162,17 @@ async function main() {
       viewport: { width: viewport.width, height: viewport.height },
       deviceScaleFactor: 1,
     });
+    // Pin the UI language BEFORE the app boots. `LanguageContext` reads
+    // `localStorage.lang` on mount and the operator's browser may be Arabic, so
+    // without this the English `expect` markers below never match and a shot is
+    // silently captured under the wrong tab (the panel markers are English).
+    await context.addInitScript(() => {
+      try {
+        window.localStorage.setItem("lang", "en");
+      } catch {
+        /* storage disabled: the app falls back to its own default */
+      }
+    });
     const page = await context.newPage();
 
     // Authenticate once per viewport through the real sign-in form.

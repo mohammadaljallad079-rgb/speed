@@ -97,7 +97,13 @@ export async function POST(request: Request) {
     // expense list shows the money leaving. The row and its journal are written
     // together: a posting failure removes the row rather than leave an expense
     // with no accounting effect.
-    const amount = round3(payload.total ?? payload.amount);
+    // The journal needs the GROSS (VAT-inclusive) figure. `expenses.amount` is
+    // stored PRE-VAT, so falling back to it alone would credit cash for less
+    // than was actually paid whenever a caller omitted `total`. When `total` is
+    // absent, reconstruct the gross from the net plus its VAT.
+    const net = round3(payload.amount);
+    const vat = round3(payload.vat_amount);
+    const amount = payload.total != null && round3(payload.total) > 0 ? round3(payload.total) : round3(net + vat);
     if (createdExpenseId && amount > 0) {
       const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "journal_entry", "JV");
       const posted = await postExpense(supabaseAdmin as never, {
@@ -106,7 +112,7 @@ export async function POST(request: Request) {
         date: String(expenseDate ?? new Date().toISOString().slice(0, 10)),
         description: String(payload.description ?? `Expense ${createdExpenseId}`),
         amount,
-        vatAmount: round3(payload.vat_amount),
+        vatAmount: vat,
         expenseAccountId: String(payload.expense_account_id),
         paymentMethod: (payload.payment_method as string | null) ?? null,
         paymentTerm: (payload.payment_term as string | null) ?? null,

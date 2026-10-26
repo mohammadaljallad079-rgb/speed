@@ -19,6 +19,8 @@ import {
   SALE_ACCOUNT_CODES,
 } from "../src/lib/accounting/sales-posting.ts";
 import { postCustomerReceipt, RECEIPT_ACCOUNT_CODES } from "../src/lib/accounting/receipt-posting.ts";
+import { postSalesReturn, SALES_RETURN_ACCOUNT_CODES } from "../src/lib/accounting/sales-return-posting.ts";
+import { postExpense, EXPENSE_ACCOUNT_CODES } from "../src/lib/accounting/expense-posting.ts";
 
 const ROOT = path.join(import.meta.dirname, "..");
 const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
@@ -45,6 +47,12 @@ function makeLedgerDb() {
     { id: "acc-ar", code: "12001", name: "Accounts Receivable", name_ar: "ذمم مدينة", type: "asset", is_active: true },
     { id: "acc-vat", code: "24000", name: "Output VAT", name_ar: "ضريبة المخرجات", type: "liability", is_active: true },
     { id: "acc-rev", code: "41002", name: "Sales Revenue", name_ar: "إيرادات المبيعات", type: "revenue", is_active: true },
+    { id: "acc-ap", code: "21001", name: "Accounts Payable", name_ar: "ذمم دائنة", type: "liability", is_active: true },
+    { id: "acc-invat", code: "24001", name: "Input VAT", name_ar: "ضريبة المدخلات", type: "asset", is_active: true },
+    { id: "acc-exp", code: "51001", name: "Rent Expense", name_ar: "مصروف الإيجار", type: "expense", is_active: true },
+    // NOTE: 41003 (sales-returns contra) is deliberately ABSENT. It is seeded
+    // only by migration 003, which is not applied on the live project, so the
+    // return MUST fall back to debiting revenue 41002 rather than fail.
   ];
   const entries: any[] = [];
   const lines: any[] = [];
@@ -362,6 +370,155 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
     assert.equal(statement.rows[1].credit, 110);
     assert.equal(statement.rows[1].balance, 0, "the running balance returns to zero");
     assert.equal(statement.closingBalance, 0);
+  });
+
+  test("the full BD 99 cycle reconciles when an expense and a return are added", async () => {
+    const db = makeLedgerDb();
+
+    // 1. Issue a sale: subtotal 100.000, VAT 10%, total 110.000.
+    await postSaleInvoice(db.client as never, {
+      journalNumber: "JV-3001",
+      invoiceNumber: "INV-BD99-C1",
+      entryDate: "2026-05-01",
+      description: "BD 99 full-cycle sale",
+      customerId: "cust-1",
+      paymentMethod: "cash",
+      amount: 100.0,
+      discount: 0,
+      vat: 10.0,
+      advancePayment: 0,
+      remaining: 110.0,
+    });
+
+    // 2. Collect it in full.
+    await postCustomerReceipt(db.client as never, {
+      journalNumber: "JV-3002",
+      receiptNumber: "REC-BD99-C1",
+      amount: 110.0,
+      paymentDate: "2026-05-02",
+      paymentMethod: "cash",
+      description: "BD 99 full-cycle collection",
+    });
+
+    // 3. Pay a 30.000 expense in cash, with 3.000 input VAT (10%).
+    const expense = await postExpense(db.client as never, {
+      journalNumber: "JV-3003",
+      referenceNumber: "EXP-BD99-C1",
+      date: "2026-05-03",
+      description: "BD 99 rent expense",
+      // `postExpense` takes the VAT-inclusive gross (the stored `total`).
+      amount: 33.0,
+      vatAmount: 3.0,
+      expenseAccountId: "acc-exp",
+      paymentMethod: "cash",
+      paymentTerm: "cash",
+    });
+    assert.equal(expense.created, true, "an expense MUST post a journal");
+
+    // 4. A customer returns goods worth 20.000, VAT 2.000.
+    //    41003 does NOT exist in this chart, so the return debits revenue 41002.
+    const ret = await postSalesReturn(db.client as never, {
+      journalNumber: "JV-3004",
+      returnNumber: "SR-BD99-C1",
+      date: "2026-05-04",
+      description: "BD 99 sales return",
+      amount: 22.0,
+      vatAmount: 2.0,
+    });
+    assert.equal(ret.created, true, "a return MUST post a journal");
+
+    // Every one of the four documents wrote exactly one balanced journal.
+    assert.equal(db.entries.length, 4, "one journal per document, no more");
+    for (const entry of db.entries) {
+      const ls = db.lines.filter((l) => l.journal_entry_id === entry.id);
+      const debit = ls.reduce((n, l) => n + Number(l.debit || 0), 0);
+      const credit = ls.reduce((n, l) => n + Number(l.credit || 0), 0);
+      assert.equal(
+        Math.round(debit * 1000),
+        Math.round(credit * 1000),
+        `journal ${entry.entry_type} must balance (Dr ${debit} / Cr ${credit})`,
+      );
+    }
+
+    // The expense journal is Dr expense 30 + Dr input VAT 3 / Cr cash 33.
+    const expEntry = db.entries.find((e) => e.entry_type === "expense")!;
+    assert.deepEqual(
+      db.lines
+        .filter((l) => l.journal_entry_id === expEntry.id)
+        .map((l) => [l.account_id, l.debit, l.credit])
+        .sort(),
+      [
+        ["acc-cash", 0, 33],
+        ["acc-exp", 30, 0],
+        ["acc-invat", 3, 0],
+      ].sort(),
+    );
+
+    // The return journal falls back to revenue 41002 because 41003 is absent.
+    const retEntry = db.entries.find((e) => e.entry_type === "sales_return")!;
+    const retLines = db.lines.filter((l) => l.journal_entry_id === retEntry.id);
+    assert.deepEqual(
+      retLines.map((l) => [l.account_id, l.debit, l.credit]).sort(),
+      [
+        ["acc-ar", 0, 22],
+        ["acc-rev", 20, 0],
+        ["acc-vat", 2, 0],
+      ].sort(),
+    );
+    assert.equal(
+      retLines.some((l) => l.account_id === "acc-returns"),
+      false,
+      "41003 must not be required for the return to post",
+    );
+
+    // 5. The reports, derived from the SAME journals, must agree with the docs.
+    const tb = buildTrialBalance(db.accounts as never, db.entries as never, db.lines as never, {
+      from: "2026-05-01",
+      to: "2026-05-31",
+    });
+    const byCode = (code: string) => tb.rows.find((r) => r.code === code)!;
+
+    // The invoice was collected in FULL, so the return has nothing left to
+    // offset: AR ends at -22.000, i.e. a credit balance the company owes the
+    // customer as a refund. That is the correct accounting, not a defect - a
+    // return can only cancel a receivable that is still open.
+    assert.equal(byCode(SALE_ACCOUNT_CODES.ar).closingBalance, -22, "a return after full collection leaves a customer refund due");
+    // Revenue 100 (sale) - 20 (return) = 80. A return is contra-revenue.
+    assert.equal(byCode(SALE_ACCOUNT_CODES.revenue).closingBalance, 80, "revenue is net of the return");
+    // Output VAT 10 - 2 (returned) = 8; input VAT 3 is a separate debit-nature account.
+    assert.equal(byCode(SALE_ACCOUNT_CODES.vat).closingBalance, 8, "output VAT is net of the return");
+    assert.equal(byCode(EXPENSE_ACCOUNT_CODES.inputVat).closingBalance, 3, "input VAT is recorded");
+    // Cash: +110 collected, -33 expense = 77.
+    assert.equal(byCode(SALE_ACCOUNT_CODES.cash).closingBalance, 77, "cash reflects both the collection and the expense");
+    // The expense reaches P&L, which is the defect this execution closed.
+    assert.equal(byCode("51001").closingBalance, 30, "the expense MUST appear in the ledger");
+
+    assert.equal(tb.balanced, true, "the ledger must still balance with an expense and a return in it");
+
+    // 6. A retried expense and a retried return are both idempotent.
+    const expense2 = await postExpense(db.client as never, {
+      journalNumber: "JV-3005",
+      referenceNumber: "EXP-BD99-C1",
+      date: "2026-05-03",
+      description: "BD 99 rent expense",
+      amount: 33.0,
+      vatAmount: 3.0,
+      expenseAccountId: "acc-exp",
+      paymentMethod: "cash",
+      paymentTerm: "cash",
+    });
+    assert.equal(expense2.created, false, "a retried expense must not post a second journal");
+    assert.equal(expense2.journalId, expEntry.id);
+    const ret2 = await postSalesReturn(db.client as never, {
+      journalNumber: "JV-3006",
+      returnNumber: "SR-BD99-C1",
+      date: "2026-05-04",
+      description: "BD 99 sales return",
+      amount: 22.0,
+      vatAmount: 2.0,
+    });
+    assert.equal(ret2.created, false, "a retried return must not post a second journal");
+    assert.equal(db.entries.length, 4, "retries add no journals");
   });
 
   test("a retried issue is idempotent and cannot double revenue", async () => {

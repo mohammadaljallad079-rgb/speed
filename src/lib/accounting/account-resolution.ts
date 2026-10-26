@@ -233,12 +233,25 @@ export async function resolveOptionalAccountIds(
   tenantId: string | null,
   options: ResolveOptions = {},
 ): Promise<Record<string, string>> {
-  try {
-    return await resolveAccountIdsForTenant(client, codes, tenantId, options);
-  } catch (error) {
-    if (!(error instanceof AccountResolutionError)) throw error;
-    const optional = error.failures.filter((f) => f.reason !== "missing");
-    if (optional.length > 0) throw new AccountResolutionError(optional);
-    return {};
+  let remaining = codes;
+  for (;;) {
+    try {
+      return await resolveAccountIdsForTenant(client, remaining, tenantId, options);
+    } catch (error) {
+      if (!(error instanceof AccountResolutionError)) throw error;
+      // A cross-tenant or ambiguous row is a configuration fault, not absence:
+      // report it rather than silently dropping the account.
+      const faults = error.failures.filter((f) => f.reason !== "missing");
+      if (faults.length > 0) throw new AccountResolutionError(faults);
+
+      // Drop only the codes that are genuinely absent and retry, so the codes
+      // that DID resolve are kept. Returning {} here would throw away a
+      // perfectly good account (e.g. output VAT) just because a sibling
+      // optional code (41003) is missing.
+      const missing = new Set(error.failures.map((f) => f.code));
+      const next = remaining.filter((c) => !missing.has(c));
+      if (next.length === 0) return {};
+      remaining = next;
+    }
   }
 }

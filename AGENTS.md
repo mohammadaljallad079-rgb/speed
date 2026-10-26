@@ -2075,3 +2075,65 @@ that applies the filters it is given and returns only affected rows.
   every module that uses that code).
 - **Baseline after Exec 67:** 1469 tests / 1463 pass / 0 fail / 6 skipped;
   typecheck 0 errors; lint clean; production build green.
+
+## Execution 67 Stage 2 invariants (ledger acceptance + expense/VAT gross)
+
+- **The BD 99 acceptance cycle covers four documents, not two.** A sale, its
+  collection, an EXPENSE and a sales RETURN, all posted by the real services
+  against one ledger, then reconciled through the same `buildTrialBalance` the
+  reports use. The earlier scenario had no expense and no return — the two paths
+  that wrote a document with no journal at all — so it could pass while the
+  ledger was missing every expense the company ever paid.
+  `tests/exec53-stage2-ledger-and-acceptance.test.ts`.
+- **A return after a FULL collection leaves AR negative.** Dr AR credit 22
+  against an invoice that was already settled gives AR -22.000: a refund owed to
+  the customer. A return can only cancel a receivable that is still open, so this
+  is correct accounting, not a defect. Do not "fix" it by netting to zero.
+- **`resolveOptionalAccountIds` drops only the absent codes.** It used to catch a
+  missing code and return `{}` — throwing away the accounts that DID resolve. With
+  41003 absent (it is seeded only by migration 003, not applied live) the output
+  VAT account was discarded too, so a return posted Dr Revenue 22 / Cr AR 22
+  instead of Dr Revenue 20 + Dr Output VAT 2. It now removes only the genuinely
+  missing codes and retries; a cross-tenant/ambiguous row is still an error.
+- **`POST /api/expenses` reconstructs the gross.** `expenses.amount` is stored
+  PRE-VAT, so the old `payload.total ?? payload.amount` fallback credited cash for
+  less than was paid whenever a caller omitted `total`. It now uses
+  `amount + vat_amount` when `total` is absent. `postExpense` takes the
+  VAT-inclusive gross (the stored `total`).
+
+## Execution 67 Stage 3 invariants (purchasing + tenant-owned master data)
+
+- **A supplier bill splits out input VAT.** `buildPurchaseJournal` used to debit
+  the WHOLE VAT-inclusive total to the expense account, so recoverable VAT was
+  capitalised as cost — the VAT return could not claim it and the expense was
+  overstated by the tax. It now takes `vatAmount`/`vatAccountId` and posts
+  `Dr expense (total - vat) / Dr input VAT / Cr cash-bank / Cr AP`, falling back
+  to capitalising the whole amount when no 24001 account is resolvable. 24001 is
+  seeded by migration 010, which is NOT applied live, so the fallback is the
+  behaviour that matters today.
+- **Stage 3 acceptance** (`tests/exec54-purchasing-integrity.test.ts`): credit
+  bill 300 + 30 VAT, paid in full, then a 55.000 debit note, reconciled through
+  `buildTrialBalance` — AP -55 (the supplier now owes the company), cash -330,
+  expense 250 (net of VAT and the credit), input VAT 25, ledger balanced.
+- **No tenant-owned table is written from the browser.** An audit maps every
+  `from('<table>').insert|update|delete|upsert` in `src/app/**/*.tsx` against
+  migration 002's tenant/company arrays. The defect shape is always the same: a
+  create that never sets `tenant_id` (a NULL-tenant orphan), and an
+  update/delete scoped by `id` ALONE so any authenticated caller reaches another
+  company's row. Fixed in this execution: `customers`, `suppliers`,
+  `expense_accounts`. `accounts` and `expenses` were fixed earlier.
+  `FINANCIAL_TABLES` in `tests/exec67-tenant-scoped-writes.test.ts` now includes
+  `customers`, `suppliers`, `expense_accounts`; a future page that writes one
+  directly fails the suite.
+- **A referenced master record is refused, not orphaned.** `DELETE
+  /api/customers/[id]` and `DELETE /api/suppliers/[id]` count the documents that
+  name the row (`invoices`/`rental_contracts`/`payments` and
+  `purchase_invoices`/`supplier_payments`/`debit_notes` respectively) and return
+  409 `has_dependents`. An unreadable table counts as zero so the guard never
+  blocks a legitimate delete.
+- **The customer portal updates its own row from the session.**
+  `PUT /api/customer/profile` resolves the row from `context.customerId` (read
+  from `users.customer_id`), never from the request, and scopes the write by
+  tenant — the browser write trusted a client-held id and asserted no tenant.
+- **Baseline after Exec 67 Stage 2+3:** 1475 tests / 1469 pass / 0 fail / 6
+  skipped; typecheck 0 errors; lint clean; production build green (165/165).

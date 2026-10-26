@@ -1,4 +1,5 @@
 import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+import { resolveAccountIdsForTenant, type AccountClient } from "./account-resolution";
 
 /**
  * Depreciation posting service.
@@ -169,21 +170,17 @@ const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 /** Resolve the two fixed depreciation accounts by code; throws if either is missing. */
 export async function resolveDepreciationAccounts(
   client: DepreciationClient,
+  tenantId: string | null = null,
 ): Promise<{ accumulatedAccountId: string; expenseAccountId: string }> {
-  const { data, error } = await client
-    .from("accounts")
-    .select("id,code")
-    .in("code", [DEPRECIATION_ACCOUNT_CODES.accumulated, DEPRECIATION_ACCOUNT_CODES.expense]);
-  if (error) throw new Error("Could not load depreciation accounts: " + msg(error));
-  const rows = (data as Array<{ id: string; code: string }>) || [];
-  const accumulatedAccountId = rows.find((a) => a.code === DEPRECIATION_ACCOUNT_CODES.accumulated)?.id;
-  const expenseAccountId = rows.find((a) => a.code === DEPRECIATION_ACCOUNT_CODES.expense)?.id;
-  if (!accumulatedAccountId || !expenseAccountId) {
-    throw new Error(
-      "Cannot post depreciation without the accumulated-depreciation (14001) and depreciation-expense (52001) accounts in the chart.",
-    );
-  }
-  return { accumulatedAccountId, expenseAccountId };
+  const ids = await resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    [DEPRECIATION_ACCOUNT_CODES.accumulated, DEPRECIATION_ACCOUNT_CODES.expense],
+    tenantId,
+  );
+  return {
+    accumulatedAccountId: ids[DEPRECIATION_ACCOUNT_CODES.accumulated],
+    expenseAccountId: ids[DEPRECIATION_ACCOUNT_CODES.expense],
+  };
 }
 
 /** The posted depreciation journal for a reference, or null. */
@@ -216,12 +213,14 @@ export async function postDepreciation(
     date: string;
     description: string;
     amount: number;
+    /** The posting company (migration 014 makes the chart per-company). */
+    tenantId?: string | null;
   },
 ): Promise<{ journalId: string; created: boolean }> {
   const existing = await findPostedDepreciation(client, input.reference);
   if (existing) return { journalId: existing.id, created: false };
 
-  const accounts = await resolveDepreciationAccounts(client);
+  const accounts = await resolveDepreciationAccounts(client, input.tenantId ?? null);
   const journal = buildDepreciationJournal({ ...input, ...accounts });
   if (!journal) {
     throw new Error("Cannot post depreciation that does not balance (check the amount and accounts).");
@@ -229,6 +228,6 @@ export async function postDepreciation(
 
   // Shared atomic writer (migration 011): header + lines in one transaction, so
   // a failed line write cannot leave an orphan header behind.
-  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal, input.tenantId ?? null);
   return { journalId, created: true };
 }

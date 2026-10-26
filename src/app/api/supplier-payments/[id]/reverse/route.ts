@@ -69,7 +69,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         cashAccountId: resolved[cashCode],
       });
       if (!journal) throw badRequest("Cannot reverse a supplier payment without resolvable accounts.");
-      journalId = await writeJournal(supabaseAdmin as never, journal);
+      journalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);
     }
 
     // Restore the bill balance from the current value, then cancel the payment.

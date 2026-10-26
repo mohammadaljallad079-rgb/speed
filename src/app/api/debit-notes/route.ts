@@ -173,6 +173,7 @@ export async function POST(request: Request) {
       vatAmount,
       expenseAccountId,
       vatAccountId,
+      tenantId,
     });
     if (posted.created) createdJournalId = posted.journalId;
 

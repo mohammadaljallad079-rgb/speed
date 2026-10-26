@@ -49,6 +49,8 @@ function makeDb(seedAccounts = true) {
     table: string;
     op = "select";
     filters: [string, any][] = [];
+    isFilters: [string, any][] = [];
+    orFilter: string | null = null;
     inVals: any[] | null = null;
     row: any = null;
     constructor(t: string) {
@@ -65,6 +67,30 @@ function makeDb(seedAccounts = true) {
       this.inVals = v;
       return this;
     }
+    is(c: string, v: any) {
+      this.isFilters.push([c, v]);
+      return this;
+    }
+    or(f: string) {
+      this.orFilter = f;
+      return this;
+    }
+    _tenantMatch(a: any): boolean {
+      // `IS NULL` must match a missing field too: a stub row with no tenant_id
+      // is the NULL tenant, exactly as the database sees it.
+      if (this.isFilters.length) {
+        return this.isFilters.every(([c, v]) => (v === null ? a[c] == null : a[c] === v));
+      }
+      if (this.orFilter) {
+        return this.orFilter.split(",").some((part) => {
+          const m = /tenant_id\.eq\.(.+)/.exec(part);
+          if (m) return a.tenant_id === m[1];
+          if (part.includes("tenant_id.is.null")) return a.tenant_id == null;
+          return false;
+        });
+      }
+      return true;
+    }
     limit(_n: number) {
       return this;
     }
@@ -80,7 +106,8 @@ function makeDb(seedAccounts = true) {
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          return { data: accounts.filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {
           return { data: entries.filter((r) => this.filters.every(([c, v]) => r[c] === v)), error: null };
@@ -336,9 +363,11 @@ describe("postDepreciation writes one balanced journal and is idempotent", () =>
 
   test("it throws rather than posting when the accounts are missing", async () => {
     const db = makeDb(false);
+    // The tenant-scoped resolver (Exec 64) reports WHICH codes are missing and
+    // why, rather than a generic message. Both codes are named.
     await assert.rejects(
       () => postDepreciation(db.client as never, input),
-      /Cannot post depreciation/,
+      /14001 .*missing.*52001 .*missing|Cannot resolve chart account/,
     );
     assert.equal(db.entries.length, 0);
   });

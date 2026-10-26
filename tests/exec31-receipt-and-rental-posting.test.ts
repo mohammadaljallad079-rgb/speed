@@ -70,17 +70,36 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
         const q: any = {
           _op: "select",
           _filters: [] as [string, any][],
+          _is: [] as [string, any][],
+          _or: null as string | null,
           _in: null as any,
           select() { return q; },
           in(_c: string, v: any[]) { q._in = v; return q; },
           eq(c: string, v: any) { q._filters.push([c, v]); return q; },
+          is(c: string, v: any) { q._is.push([c, v]); return q; },
+          or(f: string) { q._or = f; return q; },
+          _tenantMatch(a: any) {
+            if (q._is.length) {
+              return q._is.every(([c, v]: [string, any]) => (v === null ? a[c] == null : a[c] === v));
+            }
+            if (q._or) {
+              return q._or.split(",").some((part: string) => {
+                const m = /tenant_id\.eq\.(.+)/.exec(part);
+                if (m) return a.tenant_id === m[1];
+                if (part.includes("tenant_id.is.null")) return a.tenant_id == null;
+                return false;
+              });
+            }
+            return true;
+          },
           delete() { q._op = "delete"; return q; },
           insert(row: any) { q._op = "insert"; q._row = row; return q; },
           async single() { return q._run(); },
           then(res: any, rej: any) { return q._run().then(res, rej); },
           async _run() {
             if (table === "accounts" && q._op === "select") {
-              return { data: accounts.filter((a) => (q._in ?? []).includes(a.code)), error: null };
+              const byCode = accounts.filter((a) => (q._in ?? []).includes(a.code));
+              return { data: byCode.filter((a: any) => q._tenantMatch(a)), error: null };
             }
             if (q._op === "insert" && table === "journal_entries") {
               const row = { id: "je-1", ...q._row };

@@ -208,6 +208,7 @@ export async function issueInvoice(
       paymentMethod,
       entryType: postsAsRental ? "rental_invoice" : "sale_invoice",
       revenueCode: postsAsRental ? SALE_ACCOUNT_CODES.rentalRevenue : SALE_ACCOUNT_CODES.revenue,
+      tenantId,
     });
     // Only a journal THIS call created may be compensated away on failure: a
     // `created:false` journal already existed and deleting it would destroy a

@@ -45,6 +45,8 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
     table: string;
     op = "select";
     filters: [string, any][] = [];
+    isFilters: [string, any][] = [];
+    orFilter: string | null = null;
     inVals: any[] | null = null;
     row: any = null;
     constructor(t: string) {
@@ -57,9 +59,34 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
       this.filters.push([c, v]);
       return this;
     }
+    is(c: string, v: any) {
+      this.isFilters.push([c, v]);
+      return this;
+    }
+    or(f: string) {
+      this.orFilter = f;
+      return this;
+    }
     in(_c: string, v: any[]) {
       this.inVals = v;
       return this;
+    }
+    /** The RLS predicate, as PostgREST would apply it. */
+    _tenantMatch(a: any): boolean {
+      // `IS NULL` must match a missing field too: a stub row with no tenant_id
+      // is the NULL tenant, exactly as the database sees it.
+      if (this.isFilters.length) {
+        return this.isFilters.every(([c, v]) => (v === null ? a[c] == null : a[c] === v));
+      }
+      if (this.orFilter) {
+        return this.orFilter.split(",").some((part) => {
+          const m = /tenant_id\.eq\.(.+)/.exec(part);
+          if (m) return a.tenant_id === m[1];
+          if (part.includes("tenant_id.is.null")) return a.tenant_id == null;
+          return false;
+        });
+      }
+      return true;
     }
     limit(_n: number) {
       return this;
@@ -76,7 +103,8 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          return { data: accounts.filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {
           const rows = entries.filter((r) => this.filters.every(([c, v]) => r[c] === v));

@@ -169,7 +169,7 @@ export async function POST(request: Request) {
       cashAccountId: resolved[cashCode],
     });
     if (!journal) throw new Error("Cannot post a supplier payment without a positive amount and resolvable accounts.");
-    createdJournalId = await writeJournal(supabaseAdmin as never, journal);
+    createdJournalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);
 
     // Settle the bill from the freshly read balance.
     if (bill) {

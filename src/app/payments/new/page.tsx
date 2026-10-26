@@ -7,6 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { nextDocumentNumber } from '@/lib/numbering'
 import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
+import { useTenantId } from '@/lib/hooks/use-tenant-id'
 import RecordSelect from '@/components/records/RecordSelect'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -20,6 +21,9 @@ import Link from 'next/link'
 
 function NewPaymentPageContent() {
   const { t, isRTL } = useLanguage()
+  // The chart is per-company (migration 014); the posting company comes from the
+  // session, never a form field.
+  const { tenantId } = useTenantId()
   const router = useRouter()
   const searchParams = useSearchParams()
   const [mounted, setMounted] = useState(false)
@@ -166,6 +170,7 @@ function NewPaymentPageContent() {
             description: isRTL
               ? 'قبض دفعة - ' + form.receipt_number
               : 'Payment received - ' + form.receipt_number,
+            tenantId,
           })
         } catch (postErr: any) {
           // The receipt row is already saved; surface the failure instead of

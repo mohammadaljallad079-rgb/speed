@@ -205,7 +205,7 @@ export async function POST(request: Request) {
       payableAccountId: byCode(PURCHASE_ACCOUNT_CODES.payable),
     });
     if (!journal) throw new Error("Cannot post a purchase without a positive total and resolvable accounts.");
-    createdJournalId = await writeJournal(supabaseAdmin as never, journal);
+    createdJournalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);
 
     await logAudit(context, {
       action: "create",

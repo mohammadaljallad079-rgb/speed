@@ -184,7 +184,7 @@ export async function POST(request: Request) {
           loanAccountId: byCode(VEHICLE_ACCOUNT_CODES.bankLoan),
         });
         if (journal) {
-          createdJournalId = await writeJournal(supabaseAdmin as never, journal);
+          createdJournalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);
         }
       } catch (loanErr) {
         // Financing is best-effort: the car is already created and must not be

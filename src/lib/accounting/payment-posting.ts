@@ -1,4 +1,5 @@
 import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+import { resolveAccountIdsForTenant, type AccountClient } from "./account-resolution";
 
 /**
  * Supplier-payment posting.
@@ -157,17 +158,21 @@ export async function postSupplierPayment(
     paymentDate: string;
     paymentMethod: string;
     description: string;
+    /**
+     * The posting company. Required once the chart is per-company (migration
+     * 014), so a payment cannot debit another company's AP or cash account.
+     */
+    tenantId?: string | null;
   },
 ): Promise<{ journalId: string }> {
   const cashCode = cashBankCodeForMethod(params.paymentMethod);
-  const { data: accounts, error: accErr } = await client
-    .from("accounts")
-    .select("id,code")
-    .in("code", [AP_ACCOUNT_CODE, cashCode]);
-  if (accErr) throw new Error("Could not load AP/cash accounts: " + String((accErr as { message?: string }).message ?? accErr));
-  const rows = (accounts as Array<{ id: string; code: string }>) || [];
-  const apAccountId = rows.find((a) => a.code === AP_ACCOUNT_CODE)?.id;
-  const cashAccountId = rows.find((a) => a.code === cashCode)?.id;
+  const ids = await resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    [AP_ACCOUNT_CODE, cashCode],
+    params.tenantId ?? null,
+  );
+  const apAccountId = ids[AP_ACCOUNT_CODE];
+  const cashAccountId = ids[cashCode];
 
   const journal = buildSupplierPaymentJournal({
     journalNumber: params.journalNumber,
@@ -183,6 +188,6 @@ export async function postSupplierPayment(
 
   // Shared atomic writer (migration 011): header + lines in one transaction, so
   // a failed line write cannot leave an orphan header behind.
-  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal, params.tenantId ?? null);
   return { journalId };
 }

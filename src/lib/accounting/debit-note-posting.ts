@@ -24,6 +24,7 @@
  */
 
 import { writeJournal, type PostingClient } from "./manual-posting";
+import { resolveAccountIdsForTenant, type AccountClient } from "./account-resolution";
 import type { ManualJournal } from "./manual-postings";
 
 export const DEBIT_NOTE_ACCOUNT_CODES = {
@@ -142,18 +143,22 @@ export async function postDebitNote(
     vatAmount?: number;
     expenseAccountId?: string | null;
     vatAccountId?: string | null;
+    /**
+     * The posting company. Required once the chart is per-company (migration
+     * 014), so a note cannot credit another company's payable account.
+     */
+    tenantId?: string | null;
   },
 ): Promise<{ journalId: string; created: boolean }> {
   const existing = await findPostedDebitNoteJournal(client, params.noteNumber);
   if (existing) return { journalId: existing.id, created: false };
 
-  const { data: accounts, error: accErr } = await client
-    .from("accounts")
-    .select("id,code")
-    .eq("code", DEBIT_NOTE_ACCOUNT_CODES.payable);
-  if (accErr) throw new Error("Could not load the accounts-payable account: " + String((accErr as { message?: string })?.message ?? accErr));
-  const payableAccountId = (accounts as Array<{ id: string; code: string }> | null)?.[0]?.id;
-  if (!payableAccountId) throw new Error(`Account ${DEBIT_NOTE_ACCOUNT_CODES.payable} is not present in the chart of accounts.`);
+  const resolved = await resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    [DEBIT_NOTE_ACCOUNT_CODES.payable],
+    params.tenantId ?? null,
+  );
+  const payableAccountId = resolved[DEBIT_NOTE_ACCOUNT_CODES.payable];
 
   const journal = buildDebitNoteJournal({
     journalNumber: params.journalNumber,
@@ -168,6 +173,6 @@ export async function postDebitNote(
   });
   if (!journal) throw new Error("Cannot post a debit note without a positive amount and resolvable accounts.");
 
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId ?? null);
   return { journalId, created: true };
 }

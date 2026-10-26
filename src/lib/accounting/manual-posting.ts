@@ -24,6 +24,10 @@
  */
 
 import {
+  resolveAccountIdsForTenant,
+  type AccountClient,
+} from "./account-resolution";
+import {
   buildBankTransferJournal,
   buildDepositRefundJournal,
   buildPayrollJournal,
@@ -97,33 +101,24 @@ export type PostingClient = { from: (table: string) => Builder } & RpcCapable;
 const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 
 /**
- * Resolve account ids by code for a tenant. A tenant-scoped account is
- * preferred; the shared (tenant-less) chart is the fallback, mirroring the RLS
- * predicate. Throws when a requested code is absent, so a caller can never post
- * a line against a missing/undefined account.
+ * Resolve account ids by code for a company.
+ *
+ * Delegates to `account-resolution.ts`, which is the ONE resolver: it applies the
+ * tenant filter in the query, prefers the caller's own account over the shared
+ * one, refuses an ambiguous chart, and refuses a non-postable or inactive
+ * account. A second implementation here would drift from it — that is exactly
+ * how a company's journal ends up posting into another company's account.
  */
 export async function resolveAccountIds(
   client: PostingClient,
   codes: string[],
   tenantId: string | null,
 ): Promise<Record<string, string>> {
-  let query = client.from("accounts").select("id,code,tenant_id").in("code", codes);
-  if (tenantId) query = query.or(`tenant_id.eq.${tenantId},tenant_id.is.null`);
-  else query = query.is("tenant_id", null);
-
-  const { data, error } = await query;
-  if (error) throw new Error("Could not load accounts: " + msg(error));
-  const rows = (data as Array<{ id: string; code: string; tenant_id: string | null }>) || [];
-
-  const resolved: Record<string, string> = {};
-  for (const code of codes) {
-    const own = rows.find((r) => r.code === code && r.tenant_id === tenantId);
-    const shared = rows.find((r) => r.code === code);
-    const id = (own ?? shared)?.id;
-    if (!id) throw new Error(`Account ${code} is not present in the chart of accounts.`);
-    resolved[code] = id;
-  }
-  return resolved;
+  return resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    codes,
+    tenantId,
+  );
 }
 
 /**
@@ -156,8 +151,27 @@ function isRpcUnavailable(error: unknown): boolean {
  *
  * Throws on failure so the caller can compensate the document row it created.
  */
-export async function writeJournal(client: PostingClient, journal: PostableJournal): Promise<string> {
+export async function writeJournal(
+  client: PostingClient,
+  journal: PostableJournal,
+  /**
+   * The company the journal belongs to. Once the chart is per-company
+   * (migration 014) a journal MUST record its company, or every company's ledger
+   * collapses into the tenant-less one. Stamped here, in the single writer, so
+   * no individual builder can forget it. Omitted/`null` keeps the previous
+   * single-tenant behaviour.
+   */
+  tenantId?: string | null,
+): Promise<string> {
   if (!isPostableJournalBalanced(journal)) throw new Error("Refusing to post an unbalanced journal.");
+
+  // The journal, and every line in it, belong to one company.
+  if (tenantId) {
+    journal = {
+      header: { ...journal.header, tenant_id: journal.header.tenant_id ?? tenantId },
+      lines: journal.lines.map((l) => ({ ...l, tenant_id: (l as { tenant_id?: string }).tenant_id ?? tenantId })),
+    };
+  }
 
   if (typeof client.rpc === "function") {
     const { data, error } = await client.rpc("post_journal_entry", {
@@ -233,7 +247,7 @@ export async function postBankTransfer(
   }
   const journal = buildBankTransferJournal(params);
   if (!journal) throw new Error("Invalid bank transfer: amount must be positive and both accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }
 
@@ -251,11 +265,13 @@ export async function postPettyCash(
     expenseAccountId: string;
     fundDescription: string;
     expenseDescription: string;
+    /** The posting company (migration 014 makes the chart per-company). */
+    tenantId?: string | null;
   },
 ): Promise<ManualPostResult> {
   const journal = buildPettyCashJournal(params);
   if (!journal) throw new Error("Invalid petty cash entry: amount must be positive and accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }
 
@@ -279,7 +295,7 @@ export async function postPayroll(
   }
   const journal = buildPayrollJournal(params);
   if (!journal) throw new Error("Invalid payroll: amount must be positive and accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }
 
@@ -303,6 +319,6 @@ export async function postDepositRefund(
   }
   const journal = buildDepositRefundJournal(params);
   if (!journal) throw new Error("Invalid deposit refund: amount must be positive and accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }

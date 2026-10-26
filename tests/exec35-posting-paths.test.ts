@@ -94,7 +94,7 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     }
     _tenantMatch(row: Row): boolean {
       if (this.isFilters.length) {
-        return this.isFilters.every(([c, v]) => row[c] === v);
+        return this.isFilters.every(([c, v]) => (v === null ? row[c] == null : row[c] === v));
       }
       if (this.orFilter) {
         const parts = this.orFilter.split(",");

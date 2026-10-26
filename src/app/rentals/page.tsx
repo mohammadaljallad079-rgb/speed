@@ -6,6 +6,7 @@ import { supabase, RentalContract } from '@/lib/supabase'
 import { formatCurrency, formatDate, getStatusColor } from '@/lib/utils'
 import { nextDocumentNumber } from '@/lib/numbering'
 import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
+import { useTenantId } from '@/lib/hooks/use-tenant-id'
 import {
   FileText, Plus, Search, MoreVertical, Trash2, CreditCard, Printer, Eye, Pencil, Wallet,
   Save, Loader2, Receipt, X, User, Car, Calendar, DollarSign, CheckCircle
@@ -25,6 +26,9 @@ export const dynamic = 'force-dynamic'
 
 function RentalsPageContent() {
   const { t, isRTL } = useLanguage()
+  // The chart is per-company (migration 014); the posting company comes from the
+  // session, never a form field.
+  const { tenantId } = useTenantId()
   const router = useRouter()
   const [mounted, setMounted] = useState(false)
   const [contracts, setContracts] = useState<RentalContract[]>([])
@@ -192,6 +196,7 @@ function RentalsPageContent() {
           description: isRTL
             ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + selectedContract.contract_number
             : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + selectedContract.contract_number,
+          tenantId,
         })
       } catch (postErr: any) {
         console.error('Receipt GL posting failed:', postErr)

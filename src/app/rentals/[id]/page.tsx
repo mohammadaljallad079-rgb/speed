@@ -18,6 +18,7 @@ import Link from 'next/link'
 import { nextDocumentNumber } from '@/lib/numbering'
 import { carStatusForContractChange } from '@/lib/rental/car-status'
 import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
+import { useTenantId } from '@/lib/hooks/use-tenant-id'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -26,6 +27,9 @@ const supabase = createClient(
 
 function PageContent() {
   const { t, language } = useLanguage()
+  // The chart is per-company (migration 014); the posting company comes from the
+  // session, never a form field.
+  const { tenantId } = useTenantId()
   const router = useRouter()
   const params = useParams()
   const id = params?.id as string
@@ -182,6 +186,7 @@ function PageContent() {
           description: isRTL
             ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + contract?.contract_number
             : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + contract?.contract_number,
+          tenantId,
         })
       } catch (postErr: any) {
         console.error('Receipt GL posting failed:', postErr)

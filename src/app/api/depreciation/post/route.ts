@@ -163,6 +163,7 @@ export async function POST(request: Request) {
       date: entryDate,
       description,
       amount,
+      tenantId: context.tenantId,
     });
 
     // On an idempotent re-post nothing was charged, so the accumulated total and

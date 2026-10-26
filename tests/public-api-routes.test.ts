@@ -30,7 +30,7 @@ const APPROVED_VEHICLE_FIELDS = [
   "gallery_images", "plate_number",
   // Display fields the public fleet/detail pages render. They describe the car
   // to a buyer/renter; none of them is commercial or identifying data.
-  "body_type", "condition", "description", "features",
+  // Optional display columns are not present in the current production cars schema.
 ];
 
 const FORBIDDEN_VEHICLE_FIELDS = [

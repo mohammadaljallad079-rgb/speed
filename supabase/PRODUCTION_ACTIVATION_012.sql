@@ -178,13 +178,13 @@ commit;
 select 'table public.notifications present' as item,
        (to_regclass('public.notifications') is not null) as ok
 union all select 'RLS enabled on notifications',
-       coalesce((select relrowsecurity from pg_class where oid = to_regclass('public.notifications')), false)
+       coalesce((select relrowsecurity from pg_class where oid = to_regclass('public.notifications')), false) as ok
 union all select 'tenant dedupe index present',
-       exists (select 1 from pg_class where relname = 'notifications_tenant_dedupe_uidx')
+       exists (select 1 from pg_class where relname = 'notifications_tenant_dedupe_uidx') as ok
 union all select 'null-tenant dedupe index present',
-       exists (select 1 from pg_class where relname = 'notifications_null_tenant_dedupe_uidx')
+       exists (select 1 from pg_class where relname = 'notifications_null_tenant_dedupe_uidx') as ok
 union all select 'anon holds no privilege',
-       not has_table_privilege('anon', 'public.notifications', 'select')
+       not has_table_privilege('anon', 'public.notifications', 'select') as ok
 order by ok, item;
 
 -- ============================================================================

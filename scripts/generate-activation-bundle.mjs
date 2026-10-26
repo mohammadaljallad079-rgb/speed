@@ -649,13 +649,13 @@ ${b012}
 select 'table public.notifications present' as item,
        (to_regclass('public.notifications') is not null) as ok
 union all select 'RLS enabled on notifications',
-       coalesce((select relrowsecurity from pg_class where oid = to_regclass('public.notifications')), false)
+       coalesce((select relrowsecurity from pg_class where oid = to_regclass('public.notifications')), false) as ok
 union all select 'tenant dedupe index present',
-       exists (select 1 from pg_class where relname = 'notifications_tenant_dedupe_uidx')
+       exists (select 1 from pg_class where relname = 'notifications_tenant_dedupe_uidx') as ok
 union all select 'null-tenant dedupe index present',
-       exists (select 1 from pg_class where relname = 'notifications_null_tenant_dedupe_uidx')
+       exists (select 1 from pg_class where relname = 'notifications_null_tenant_dedupe_uidx') as ok
 union all select 'anon holds no privilege',
-       not has_table_privilege('anon', 'public.notifications', 'select')
+       not has_table_privilege('anon', 'public.notifications', 'select') as ok
 order by ok, item;
 
 -- ============================================================================
@@ -666,3 +666,204 @@ order by ok, item;
 fs.writeFileSync(OUT_012, header012, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_012)}`);
 console.log(`  012 sha256 ${h012}`);
+
+// ---------------------------------------------------------------------------
+// 013 — booking invoice idempotency. Appended after 012 so the earlier outputs
+// stay byte-identical.
+// ---------------------------------------------------------------------------
+const b013 = read("013_booking_invoice_idempotency.sql");
+const h013 = sha(b013);
+const OUT_013 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_013.sql");
+
+const header013 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (013)
+-- ============================================================================
+-- Purpose : make a booking's invoice creation idempotent at the database level.
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : run PRODUCTION_ACTIVATION_001_002_003.sql, then 004, 005_006,
+--           007, 008, 009, 010, 011, 012, and ONLY THEN this file.
+-- Project : chlkmdobhvfnldqkgdji
+--
+-- The body below is byte-identical to
+-- supabase/migrations/013_booking_invoice_idempotency.sql (SHA-256 recorded at
+-- its header). Do NOT edit it here — regenerate with
+--   node scripts/generate-activation-bundle.mjs
+-- ============================================================================
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — inspect before applying)
+-- ============================================================================
+select 'bookings table present' as item,
+       (to_regclass('public.bookings') is not null) as ok
+union all select 'invoices table present',
+       (to_regclass('public.invoices') is not null) as ok
+order by ok, item;
+
+${sep}
+-- BEGIN 013_booking_invoice_idempotency.sql
+-- SHA-256 (body): ${h013}
+${sep}
+
+${b013}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'one live invoice per rental contract' as item,
+       exists (select 1 from pg_class where relname = 'invoices_one_live_per_rental_contract_uidx') as ok
+union all select 'rental-contract lookup index present',
+       exists (select 1 from pg_class where relname = 'invoices_rental_contract_id_idx') as ok
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (013)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_013, header013, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_013)}`);
+console.log(`  013 sha256 ${h013}`);
+
+// ---------------------------------------------------------------------------
+// 014 — per-tenant chart of accounts. Appended after 013.
+// ---------------------------------------------------------------------------
+const b014 = read("014_tenant_chart_of_accounts.sql");
+const h014 = sha(b014);
+const OUT_014 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_014.sql");
+
+const header014 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (014)
+-- ============================================================================
+-- Purpose : give each tenant its own chart of accounts, so a code-only account
+--           lookup cannot settle another company's account.
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : run PRODUCTION_ACTIVATION_001_002_003.sql, then 004, 005_006,
+--           007, 008, 009, 010, 011, 012, 013, and ONLY THEN this file.
+-- Project : chlkmdobhvfnldqkgdji
+--
+-- The body below is byte-identical to
+-- supabase/migrations/014_tenant_chart_of_accounts.sql (SHA-256 recorded at its
+-- header). Do NOT edit it here — regenerate with
+--   node scripts/generate-activation-bundle.mjs
+-- ============================================================================
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — inspect before applying)
+-- ============================================================================
+select 'accounts table present' as item,
+       (to_regclass('public.accounts') is not null) as ok
+union all select 'accounts.tenant_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='accounts' and column_name='tenant_id') as ok
+order by ok, item;
+
+${sep}
+-- BEGIN 014_tenant_chart_of_accounts.sql
+-- SHA-256 (body): ${h014}
+${sep}
+
+${b014}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'accounts.tenant_id present' as item,
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='accounts' and column_name='tenant_id') as ok
+union all select 'tenant + code uniqueness present',
+       exists (select 1 from pg_class where relname = 'accounts_tenant_code_uidx') as ok
+union all select 'null-tenant code uniqueness present',
+       exists (select 1 from pg_class where relname = 'accounts_null_tenant_code_uidx') as ok
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (014)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_014, header014, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_014)}`);
+console.log(`  014 sha256 ${h014}`);
+
+// ---------------------------------------------------------------------------
+// 015 — strict accounting integrity + the atomic customer receipt (and its
+// reversal). Appended after 014.
+// ---------------------------------------------------------------------------
+const b015 = read("015_strict_accounting_integrity.sql");
+const h015 = sha(b015);
+const OUT_015 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_015.sql");
+
+const header015 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (015)
+-- ============================================================================
+-- Purpose : harden post_journal_entry (a tenanted journal may only reference
+--           accounts its own company may use) and add the ATOMIC customer
+--           receipt — post_customer_receipt — plus its mirror,
+--           post_customer_receipt_reversal. A receipt, its ledger posting and
+--           the invoice settlement are written in ONE transaction; a reversal
+--           mirrors the journal, restores the invoice balance and cancels the
+--           payment in ONE transaction.
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : run PRODUCTION_ACTIVATION_001_002_003.sql, then 004, 005_006,
+--           007, 008, 009, 010, 011, 012, 013, 014, and ONLY THEN this file.
+-- Project : chlkmdobhvfnldqkgdji
+--
+-- The body below is byte-identical to
+-- supabase/migrations/015_strict_accounting_integrity.sql (SHA-256 recorded at
+-- its header). Do NOT edit it here — regenerate with
+--   node scripts/generate-activation-bundle.mjs
+-- ============================================================================
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — inspect before applying)
+-- ============================================================================
+select 'journal_entries table present' as item,
+       (to_regclass('public.journal_entries') is not null) as ok
+union all select 'payments table present',
+       (to_regclass('public.payments') is not null) as ok
+union all select 'invoices table present',
+       (to_regclass('public.invoices') is not null) as ok
+order by ok, item;
+
+${sep}
+-- BEGIN 015_strict_accounting_integrity.sql
+-- SHA-256 (body): ${h015}
+${sep}
+
+${b015}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'post_journal_entry present' as item,
+       exists (select 1 from pg_proc where proname = 'post_journal_entry') as ok
+union all select 'post_customer_receipt present',
+       exists (select 1 from pg_proc where proname = 'post_customer_receipt') as ok
+union all select 'post_customer_receipt_reversal present',
+       exists (select 1 from pg_proc where proname = 'post_customer_receipt_reversal') as ok
+union all select 'tenant receipt index present',
+       exists (select 1 from pg_class where relname = 'payments_tenant_receipt_uidx') as ok
+union all select 'null-tenant receipt index present',
+       exists (select 1 from pg_class where relname = 'payments_null_tenant_receipt_uidx') as ok
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (015)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_015, header015, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_015)}`);
+console.log(`  015 sha256 ${h015}`);

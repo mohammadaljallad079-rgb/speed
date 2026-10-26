@@ -1989,3 +1989,37 @@ that applies the filters it is given and returns only affected rows.
   company is a `404`), decides, deletes scoped, and audits. The page calls it.
 - Exec 66 baseline after this fix: **1403 tests / 1397 pass / 0 fail / 6
   skipped**; typecheck 0; lint clean; build green.
+
+### Exec 66 follow-up 4: every migration now has a frozen activation package
+
+- **The operator can only apply what is packaged.** `PRODUCTION_ACTIVATION_001_002_003`,
+  `_004`, `_005_006`, `_007`, `_008` … `_012` existed, but **013, 014 and 015 had
+  no package** — so the atomic `post_customer_receipt_reversal` (Exec 66) could
+  never reach production, no matter how correct the migration file was. All three
+  now exist, emitted by `scripts/generate-activation-bundle.mjs`.
+- **Generate, never hand-edit.** `node scripts/generate-activation-bundle.mjs`
+  rewrites every body and recomputes its recorded SHA-256.
+  `tests/activation-package-integrity.test.ts` (60 assertions) recomputes every
+  hash, asserts byte-identity, and now **fails when any migration from 001 to 015
+  has no package** — the gap cannot silently reopen.
+- **A read-only flight query must alias EVERY union branch.** The POST-FLIGHT
+  queries end in `order by ok, item`; a branch whose second column was unnamed
+  (`... is not null)` without `as ok`) cannot resolve `ok` across the UNION. The
+  new packages hit this on first execution; the generator now aliases every
+  branch. The same latent defect existed in `PRODUCTION_ACTIVATION_012.sql` and
+  was corrected there too.
+- **Verified by execution, not parsing:** `supabase/tests/activation_013_015_harness/run.sh`
+  applies the three packages to a real PostgreSQL 17 and asserts 28/28 — clean
+  apply, idempotent re-apply, the duplicate blocks (one live invoice per rental
+  contract; one account code per company, including the NULL tenant), the
+  functions created, and the end-to-end collect-then-reverse (payment + journal +
+  settlement in one call; the reversal restores the invoice and cancels the
+  payment; a second reversal is a no-op). A harness schema must model the live
+  `accounts` columns (`type`, `parent_code`, `parent_id`, `reporting_category`, …)
+  or 014 aborts.
+- `014_tenant_chart_of_accounts_rollback.sql` was missing; it now drops the two
+  uniqueness indexes and the provisioning function, and documents that it is not
+  lossless (provisioned per-tenant rows survive, so a code may then repeat once
+  per company). It never deletes an account.
+- Exec 66 baseline after this fix: **1419 tests / 1413 pass / 0 fail / 6
+  skipped**; typecheck 0; lint clean; build green.

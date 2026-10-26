@@ -213,3 +213,32 @@ export async function resolveAccountIdsForTenant(
   if (failures.length > 0) throw new AccountResolutionError(failures);
   return resolved;
 }
+
+/**
+ * Resolve codes that are OPTIONAL: a code that cannot be resolved is simply
+ * absent from the result instead of failing the call.
+ *
+ * This is the right behaviour for an account that a live install may not have
+ * yet - the sales-returns contra account 41003 is seeded only by migration 003,
+ * and the input-VAT account is not on every chart. The caller then falls back to
+ * a required account it already holds (a return debits revenue directly) rather
+ * than refusing a legitimate business document because a seeded row is missing.
+ *
+ * A cross-tenant or ambiguous row is still reported: those are configuration
+ * faults, not absence.
+ */
+export async function resolveOptionalAccountIds(
+  client: AccountClient,
+  codes: string[],
+  tenantId: string | null,
+  options: ResolveOptions = {},
+): Promise<Record<string, string>> {
+  try {
+    return await resolveAccountIdsForTenant(client, codes, tenantId, options);
+  } catch (error) {
+    if (!(error instanceof AccountResolutionError)) throw error;
+    const optional = error.failures.filter((f) => f.reason !== "missing");
+    if (optional.length > 0) throw new AccountResolutionError(optional);
+    return {};
+  }
+}

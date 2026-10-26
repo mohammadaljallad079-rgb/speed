@@ -107,7 +107,7 @@ export async function createSalesReturn(
   // The invoice must belong to the caller's company. `assertReference` applies
   // the tenant scope in the query, so a foreign invoice id is a 422 rather than
   // a row the caller can read.
-  await assertReference(REF_INVOICE, invoiceId, context);
+  await assertReference(REF_INVOICE, invoiceId, context, db as never);
 
   let invoiceQuery = db
     .from("invoices")
@@ -124,13 +124,6 @@ export async function createSalesReturn(
   const paidAmount = round3(num(invoice.paid_amount));
   const customerId = invoice.customer_id ?? null;
 
-  if (amount > paidAmount) {
-    throw new SalesReturnError(
-      "bad_request",
-      "The return amount cannot exceed the amount the customer has paid on this invoice.",
-    );
-  }
-
   const tenantId = assertWritableTenant(context, input.tenant_id);
   const year = await getActiveFinancialYear(context.tenantId);
   assertDateInOpenFinancialYear(year, returnDate, "return date");
@@ -139,8 +132,11 @@ export async function createSalesReturn(
     (typeof input.return_number === "string" && input.return_number.trim()) ||
     (await nextDocumentNumber(db as never, "sales_return", "SR"));
 
-  // Idempotency: a return number is unique per tenant. A retry must not create a
-  // second return and a second journal for the same document.
+  // Idempotency comes FIRST, before the amount guard. A retry of a legitimate
+  // return arrives after the first attempt already reduced the invoice's paid
+  // amount, so checking the amount first would refuse the retry with a
+  // misleading "exceeds the amount paid" error instead of reporting the return
+  // that already exists.
   let existingQuery = db
     .from("sales_returns")
     .select("id,return_number,amount,invoice_id")
@@ -160,6 +156,13 @@ export async function createSalesReturn(
       invoice_status: String(invoice.status ?? ""),
       idempotent: true,
     };
+  }
+
+  if (amount > paidAmount) {
+    throw new SalesReturnError(
+      "bad_request",
+      "The return amount cannot exceed the amount the customer has paid on this invoice.",
+    );
   }
 
   const returnRow: Record<string, unknown> = {

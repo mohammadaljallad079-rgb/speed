@@ -12,7 +12,7 @@ import { findPostedManualJournal } from "../src/lib/accounting/manual-posting.ts
 import {
   buildSalesReturnJournal,
 } from "../src/lib/accounting/sales-return-posting.ts";
-import { statusAfterReturn } from "../src/lib/sales/return-service.ts";
+import { statusAfterReturn, createSalesReturn } from "../src/lib/sales/return-service.ts";
 import { buildDebitNoteReversalJournal } from "../src/lib/accounting/debit-note-posting.ts";
 import {
   buildExpenseJournal,
@@ -601,3 +601,264 @@ describe("exec67 the expense path is server-authoritative", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// H. The sales-return SERVICE, end to end against a two-tenant PostgREST stub.
+// ---------------------------------------------------------------------------
+
+describe("exec67 createSalesReturn writes the row, the settlement and the journal", () => {
+  const T = "tttttttt-0000-0000-0000-000000000001";
+  const INVOICE = "inv-0001";
+
+  /** A stub holding one invoice, the chart, and the journals it is asked to write. */
+  function makeDb(opts: { paid?: number; failJournal?: boolean } = {}) {
+    const paid = opts.paid ?? 99;
+    const invoice: any = {
+      id: INVOICE,
+      invoice_number: "INV-1",
+      customer_id: "cust-0001",
+      paid_amount: paid,
+      total_amount: 99,
+      status: "paid",
+      tenant_id: T,
+    };
+    const returns: any[] = [];
+    const entries: any[] = [];
+    const lines: any[] = [];
+    const accounts = [
+      { id: "acct-12001", code: "12001", tenant_id: T, is_active: true, is_postable: true },
+      { id: "acct-41002", code: "41002", tenant_id: T, is_active: true, is_postable: true },
+      { id: "acct-24000", code: "24000", tenant_id: T, is_active: true, is_postable: true },
+    ];
+    let seq = 0;
+
+    class Q {
+      table: string;
+      op = "select";
+      eqs: [string, any][] = [];
+      iss: [string, any][] = [];
+      inVals: any[] | null = null;
+      orFilter: string | null = null;
+      row: any = null;
+      constructor(t: string) {
+        this.table = t;
+      }
+      select() {
+        return this;
+      }
+      eq(c: string, v: any) {
+        this.eqs.push([c, v]);
+        return this;
+      }
+      is(c: string, v: any) {
+        this.iss.push([c, v]);
+        return this;
+      }
+      in(_c: string, v: any[]) {
+        this.inVals = v;
+        return this;
+      }
+      or(f: string) {
+        this.orFilter = f;
+        return this;
+      }
+      limit() {
+        return this;
+      }
+      insert(r: any) {
+        this.op = "insert";
+        this.row = r;
+        return this;
+      }
+      update(r: any) {
+        this.op = "update";
+        this.row = r;
+        return this;
+      }
+      delete() {
+        this.op = "delete";
+        return this;
+      }
+      _match(r: any) {
+        if (!this.eqs.every(([c, v]) => r[c] === v)) return false;
+        if (this.iss.length) return this.iss.every(([c, v]) => (v === null ? r[c] == null : r[c] === v));
+        if (this.orFilter) {
+          // The production `or` shape: `tenant_id.eq.<id>,tenant_id.is.null`.
+          return this.orFilter.split(",").some((part) => {
+            const t = part.trim();
+            const eq = /^tenant_id\.eq\.(.+)$/.exec(t);
+            if (eq) return r.tenant_id === eq[1];
+            if (t === "tenant_id.is.null") return r.tenant_id == null;
+            return false;
+          });
+        }
+        return true;
+      }
+      async _run() {
+        if (this.op === "select") {
+          if (this.table === "accounts") {
+            let rows = accounts.filter((a) => (this.inVals ? this.inVals.includes(a.code) : true));
+            rows = rows.filter((a) => this._match(a));
+            return { data: rows, error: null };
+          }
+          if (this.table === "invoices") return { data: invoice, error: null };
+          if (this.table === "sales_returns") {
+            const found = returns.filter((r) => this._match(r));
+            return { data: found.length ? found : null, error: null };
+          }
+          if (this.table === "journal_entries") {
+            return { data: entries.filter((e) => this._match(e)).slice(0, 1), error: null };
+          }
+          return { data: [], error: null };
+        }
+        if (this.op === "insert") {
+          if (this.table === "sales_returns") {
+            const r = { id: `sr-${++seq}`, ...this.row[0] };
+            returns.push(r);
+            return { data: r, error: null };
+          }
+          if (this.table === "journal_entries") {
+            if (opts.failJournal) return { data: null, error: { message: "ledger unavailable" } };
+            const r = { id: `je-${++seq}`, status: "posted", ...this.row[0] };
+            entries.push(r);
+            return { data: r, error: null };
+          }
+          if (this.table === "journal_lines") {
+            for (const l of this.row) lines.push({ id: `jl-${++seq}`, ...l });
+            return { data: null, error: null };
+          }
+          return { data: null, error: null };
+        }
+        if (this.op === "update") {
+          if (this.table === "invoices") Object.assign(invoice, this.row);
+          return { data: null, error: null };
+        }
+        if (this.op === "delete") {
+          if (this.table === "sales_returns") {
+            for (let i = returns.length - 1; i >= 0; i--) if (this._match(returns[i])) returns.splice(i, 1);
+          }
+          if (this.table === "journal_entries") {
+            for (let i = entries.length - 1; i >= 0; i--) if (this._match(entries[i])) entries.splice(i, 1);
+          }
+          return { data: null, error: null };
+        }
+        return { data: null, error: null };
+      }
+      single() {
+        return this._single();
+      }
+      maybeSingle() {
+        return this._single();
+      }
+      async _single() {
+        const res = await this._run();
+        const data = Array.isArray(res.data) ? (res.data[0] ?? null) : res.data;
+        return { data, error: res.error };
+      }
+      then(f: any, r: any) {
+        return this._run().then(f, r);
+      }
+    }
+
+    // Mirrors the production RPCs: the number generator, and the atomic journal
+    // writer that a tenanted install requires (migration 011).
+    const rpc = async (fn: string, args: Record<string, any> = {}) => {
+      if (fn === "generate_document_number") return { data: `SR-${++seq}`, error: null };
+      if (fn === "post_journal_entry") {
+        if (opts.failJournal) return { data: null, error: { message: "ledger unavailable" } };
+        const header = args.p_header ?? {};
+        const jlines = (args.p_lines ?? []) as any[];
+        const debit = jlines.reduce((n, l) => n + (Number(l.debit) || 0), 0);
+        const credit = jlines.reduce((n, l) => n + (Number(l.credit) || 0), 0);
+        if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+          return { data: null, error: { code: "23514", message: "journal does not balance" } };
+        }
+        const entry = { id: `je-${++seq}`, status: "posted", ...header };
+        entries.push(entry);
+        jlines.forEach((l) => lines.push({ id: `jl-${++seq}`, ...l, journal_entry_id: entry.id }));
+        return { data: entry.id, error: null };
+      }
+      return { data: null, error: { message: `unknown rpc ${fn}` } };
+    };
+
+    return { client: { from: (t: string) => new Q(t), rpc }, invoice, returns, entries, lines };
+  }
+
+  function ctx(tenantId: string | null) {
+    return {
+      userId: "u-1",
+      tenantId,
+      branchId: null,
+      financialYearId: null,
+      role: "admin",
+      permissions: {},
+      isSuperAdmin: false,
+    } as never;
+  }
+
+  test("a return writes one row, settles the invoice and posts a balanced journal", async () => {
+    const db = makeDb();
+    const result = await createSalesReturn(db.client as never, ctx(T), {
+      invoice_id: INVOICE,
+      return_number: "SR-1",
+      return_date: "2026-03-10",
+      amount: 99,
+    });
+
+    assert.equal(result.amount, 99);
+    assert.equal(db.returns.length, 1, "exactly one return row");
+    assert.equal(db.invoice.paid_amount, 0, "the invoice paid amount is reduced");
+    assert.equal(db.invoice.status, "returned");
+
+    const journal = db.entries[0];
+    assert.ok(journal, "a journal must be posted");
+    assert.equal(journal.entry_type, "sales_return");
+    assert.equal(journal.tenant_id, T, "the journal must carry the tenant");
+    const jlines = db.lines.filter((l) => l.journal_entry_id === journal.id);
+    const debit = jlines.reduce((s, l) => s + Number(l.debit), 0);
+    const credit = jlines.reduce((s, l) => s + Number(l.credit), 0);
+    assert.equal(debit, credit, "the journal must balance");
+    assert.equal(jlines.find((l) => l.account_id === "acct-12001")!.credit, 99, "AR is restored");
+    assert.equal(jlines.find((l) => l.account_id === "acct-41002")!.debit, 99, "revenue is reversed");
+  });
+
+  test("a return larger than the paid amount is refused before any write", async () => {
+    const db = makeDb({ paid: 50 });
+    await assert.rejects(
+      () => createSalesReturn(db.client as never, ctx(T), { invoice_id: INVOICE, amount: 99 }),
+      /cannot exceed the amount the customer has paid/,
+    );
+    assert.equal(db.returns.length, 0, "nothing may be written");
+    assert.equal(db.entries.length, 0, "no journal may be posted");
+  });
+
+  test("a failed posting compensates: no return row is left behind", async () => {
+    const db = makeDb({ failJournal: true });
+    await assert.rejects(() =>
+      createSalesReturn(db.client as never, ctx(T), { invoice_id: INVOICE, return_number: "SR-9", amount: 99 }),
+    );
+    assert.equal(db.returns.length, 0, "the return row must be removed");
+    assert.equal(db.invoice.paid_amount, 99, "the invoice settlement must not stand");
+  });
+
+  test("a repeat of the same return number is idempotent", async () => {
+    const db = makeDb();
+    const first = await createSalesReturn(db.client as never, ctx(T), {
+      invoice_id: INVOICE,
+      return_number: "SR-1",
+      return_date: "2026-03-10",
+      amount: 99,
+    });
+    assert.equal(first.idempotent, false);
+    const second = await createSalesReturn(db.client as never, ctx(T), {
+      invoice_id: INVOICE,
+      return_number: "SR-1",
+      return_date: "2026-03-10",
+      amount: 99,
+    });
+    assert.equal(second.idempotent, true, "a retry must not create a second return");
+    assert.equal(db.returns.length, 1);
+    assert.equal(db.entries.length, 1, "a retry must not post a second journal");
+  });
+});
+

@@ -31,7 +31,7 @@
  */
 
 import { writeJournal, type PostingClient } from "./manual-posting";
-import { resolveAccountIdsForTenant, type AccountClient } from "./account-resolution";
+import { resolveAccountIdsForTenant, resolveOptionalAccountIds, type AccountClient } from "./account-resolution";
 import type { ManualJournal } from "./manual-postings";
 
 export const EXPENSE_ACCOUNT_CODES = {
@@ -170,9 +170,17 @@ export async function postExpense(
 
   const onCredit = isCreditPurchase(params.paymentTerm);
   const settlementCode = cashBankCodeForMethod(params.paymentMethod || "cash");
+  // The settlement account (and the payable, for a credit purchase) is REQUIRED.
   const resolved = await resolveAccountIdsForTenant(
     client as unknown as AccountClient,
-    [settlementCode, EXPENSE_ACCOUNT_CODES.payable, EXPENSE_ACCOUNT_CODES.inputVat],
+    [settlementCode, EXPENSE_ACCOUNT_CODES.payable],
+    params.tenantId ?? null,
+  );
+  // Input VAT is OPTIONAL: a chart without a 24001 row still records the
+  // expense, it simply carries no VAT line.
+  const optional = await resolveOptionalAccountIds(
+    client as unknown as AccountClient,
+    [EXPENSE_ACCOUNT_CODES.inputVat],
     params.tenantId ?? null,
   );
 
@@ -187,7 +195,7 @@ export async function postExpense(
     settlementAccountId: resolved[settlementCode] ?? null,
     payableAccountId: resolved[EXPENSE_ACCOUNT_CODES.payable] ?? null,
     onCredit,
-    vatAccountId: resolved[EXPENSE_ACCOUNT_CODES.inputVat] ?? null,
+    vatAccountId: optional[EXPENSE_ACCOUNT_CODES.inputVat] ?? null,
   });
   if (!journal) {
     throw new Error("Cannot post an expense without a positive amount and resolvable accounts.");

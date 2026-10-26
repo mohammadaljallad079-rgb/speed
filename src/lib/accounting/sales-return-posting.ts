@@ -36,7 +36,7 @@
  */
 
 import { writeJournal, type PostingClient } from "./manual-posting";
-import { resolveAccountIdsForTenant, type AccountClient } from "./account-resolution";
+import { resolveAccountIdsForTenant, resolveOptionalAccountIds, type AccountClient } from "./account-resolution";
 import type { ManualJournal } from "./manual-postings";
 
 export const SALES_RETURN_ACCOUNT_CODES = {
@@ -166,16 +166,21 @@ export async function postSalesReturn(
   const existing = await findPostedSalesReturnJournal(client, params.returnNumber, params.tenantId);
   if (existing) return { journalId: existing.id, created: false };
 
-  // 41003 may not exist on a live install; resolve it together with its
-  // fallback so a missing contra account never blocks the return.
-  const resolved = await resolveAccountIdsForTenant(
+  // AR and revenue are REQUIRED: a return cannot be recorded without them.
+  const required = await resolveAccountIdsForTenant(
     client as unknown as AccountClient,
-    [
-      SALES_RETURN_ACCOUNT_CODES.ar,
-      SALES_RETURN_ACCOUNT_CODES.salesReturns,
-      SALES_RETURN_ACCOUNT_CODES.salesRevenue,
-      SALES_RETURN_ACCOUNT_CODES.outputVat,
-    ],
+    [SALES_RETURN_ACCOUNT_CODES.ar, SALES_RETURN_ACCOUNT_CODES.salesRevenue],
+    params.tenantId ?? null,
+  );
+
+  // 41003 and the output-VAT account are OPTIONAL. 41003 is seeded only by
+  // migration 003 and may be absent on a live install, and not every chart has
+  // an output-VAT row. Resolving them tolerantly lets the builder fall back -
+  // the return debits revenue directly and carries no VAT line - instead of
+  // refusing a legitimate return because a seeded row is missing.
+  const optional = await resolveOptionalAccountIds(
+    client as unknown as AccountClient,
+    [SALES_RETURN_ACCOUNT_CODES.salesReturns, SALES_RETURN_ACCOUNT_CODES.outputVat],
     params.tenantId ?? null,
   );
 
@@ -186,10 +191,10 @@ export async function postSalesReturn(
     description: params.description,
     amount: params.amount,
     vatAmount: params.vatAmount,
-    arAccountId: resolved[SALES_RETURN_ACCOUNT_CODES.ar],
-    salesReturnsAccountId: resolved[SALES_RETURN_ACCOUNT_CODES.salesReturns] ?? null,
-    salesRevenueAccountId: resolved[SALES_RETURN_ACCOUNT_CODES.salesRevenue] ?? null,
-    vatAccountId: resolved[SALES_RETURN_ACCOUNT_CODES.outputVat] ?? null,
+    arAccountId: required[SALES_RETURN_ACCOUNT_CODES.ar],
+    salesReturnsAccountId: optional[SALES_RETURN_ACCOUNT_CODES.salesReturns] ?? null,
+    salesRevenueAccountId: required[SALES_RETURN_ACCOUNT_CODES.salesRevenue] ?? null,
+    vatAccountId: optional[SALES_RETURN_ACCOUNT_CODES.outputVat] ?? null,
   });
   if (!journal) {
     throw new Error("Cannot post a sales return without a positive amount and resolvable accounts.");

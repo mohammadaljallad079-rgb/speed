@@ -4,9 +4,10 @@ import { logAudit, requireContext, toErrorResponse } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import type { ReportingDb } from "@/lib/reporting/data";
 import { answerQuestion } from "@/lib/ai/assistant";
-import { loadAiSettings } from "@/lib/ai/settings";
-import { makeComplete } from "@/lib/ai/server";
+import { makeComplete, resolveEffectiveAi } from "@/lib/ai/server";
 import { detectWriteIntent, redactSecrets } from "@/lib/ai/policy";
+import { checkLimits, summarizeUsage, type UsageDb } from "@/lib/ai/usage";
+import { loadPlatformAiConfig, type PlatformAiDb } from "@/lib/ai/platform-settings";
 import { loadTenantPlan } from "@/lib/saas/tenant-plan";
 import { planGrants } from "@/lib/saas/entitlements";
 
@@ -17,6 +18,11 @@ import { planGrants } from "@/lib/saas/entitlements";
  * via `requireContext`; the request body can only carry the question, an
  * optional screen name and a date range. Answers are grounded in real,
  * permission-gated tool results and every request is audited.
+ *
+ * The provider credential is resolved at request time: a company's own key wins,
+ * otherwise the platform configuration the Super Admin saved applies. Limits are
+ * enforced BEFORE the provider call so an over-quota tenant is refused without
+ * incurring a charge.
  */
 
 export const dynamic = "force-dynamic";
@@ -46,7 +52,36 @@ export async function POST(request: Request) {
     const from = body.from ? String(body.from) : null;
     const to = body.to ? String(body.to) : null;
 
-    const settings = await loadAiSettings(supabaseAdmin as never, context.tenantId);
+    // Resolve the effective provider: the company's own key, else the platform's.
+    const { settings, source } = await resolveEffectiveAi(
+      supabaseAdmin as unknown as PlatformAiDb,
+      context.tenantId,
+    );
+
+    // Enforce the platform limits before spending anything. A refused request is
+    // reported explicitly rather than silently degraded.
+    const platform = await loadPlatformAiConfig(supabaseAdmin as unknown as PlatformAiDb);
+    if (settings.enabled === true && !context.isSuperAdmin) {
+      const platformUsage = await summarizeUsage(supabaseAdmin as unknown as UsageDb, { allTenants: true, limit: 5000 });
+      // The company's own consumption today, scoped to its tenant.
+      const companyUsage = await summarizeUsage(supabaseAdmin as unknown as UsageDb, {
+        tenantId: context.tenantId,
+        limit: 2000,
+      });
+      const limit = checkLimits(platform.limits, platformUsage, companyUsage.today.totalTokens);
+      if (!limit.allowed) {
+        await logAudit(context, {
+          action: "export",
+          entity: "ai_assistant",
+          metadata: { blocked: "limit", reason: limit.reason, screen },
+        });
+        return NextResponse.json(
+          { error: limit.message, code: "ai_limit_reached", reason: limit.reason },
+          { status: 429 },
+        );
+      }
+    }
+
     const complete = makeComplete(settings);
 
     const result = await answerQuestion(
@@ -61,9 +96,11 @@ export async function POST(request: Request) {
       metadata: {
         screen,
         provider: result.provider ?? "none",
+        config_source: source,
         degraded: result.degraded,
         sources: result.sources.length,
         blocked_write_intent: detectWriteIntent(prompt).blocked,
+        model: result.usage?.model ?? null,
         tokens_in: result.usage?.inputTokens ?? 0,
         tokens_out: result.usage?.outputTokens ?? 0,
         cost_usd: result.usage?.costUsd ?? null,
@@ -76,6 +113,7 @@ export async function POST(request: Request) {
       sources: result.sources,
       degraded: result.degraded,
       requiresApproval: result.requiresApproval,
+      configSource: source,
     });
   } catch (error) {
     const { status, body } = toErrorResponse(error);

@@ -331,6 +331,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   // the session by /api/branding/company; it is never read from a cookie,
   // localStorage or a URL parameter.
   const [brand, setBrand] = useState<{ name: string; logoUrl: string | null } | null>(null)
+  // The signed-in user's own identity. This was previously the literal string
+  // "Admin" / "Administrator" for every account — a staff member and a
+  // super admin both saw a name that belonged to neither. It now comes from
+  // `/api/me`, which resolves it server-side from the session.
+  const [identity, setIdentity] = useState<{ fullName: string | null; email: string | null; role: string | null }>({
+    fullName: null,
+    email: null,
+    role: null,
+  })
 
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -354,6 +363,13 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         // row the database hands back first, so one company would render another
         // company's sidebar. The tenant comes from the session via /api/me.
         const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null)).catch(() => null)
+        if (me) {
+          setIdentity({
+            fullName: typeof me.fullName === 'string' ? me.fullName : null,
+            email: typeof me.email === 'string' ? me.email : null,
+            role: typeof me.role === 'string' ? me.role : null,
+          })
+        }
         const value = await readScopedSetting(
           supabase as unknown as ScopedSettingsClient,
           me?.tenantId ?? null,
@@ -405,6 +421,23 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       .catch(() => {})
     return () => { active = false }
   }, [])
+
+  // A human-readable role, localized. `role` is the server-resolved role from
+  // `/api/me`; it is never inferred from a client value.
+  const identityRoleLabel = (() => {
+    const labels: Record<string, { en: string; ar: string }> = {
+      super_admin: { en: 'Platform Administrator', ar: 'مسؤول المنصة' },
+      admin: { en: 'Company Administrator', ar: 'مسؤول الشركة' },
+      staff: { en: 'Staff', ar: 'موظف' },
+      accountant: { en: 'Accountant', ar: 'محاسب' },
+      client: { en: 'Customer', ar: 'عميل' },
+    }
+    const found = identity.role ? labels[identity.role] : undefined
+    if (found) return isRTL ? found.ar : found.en
+    return isRTL ? 'مستخدم' : 'User'
+  })()
+
+  const identityInitial = (identity.fullName || identity.email || 'U').trim().charAt(0).toUpperCase() || 'U'
 
   const isRouteActive = (href?: string) => {
     if (!href || href === '#') return false
@@ -574,11 +607,13 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <div className="mt-4 flex items-center justify-between px-2">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-600 font-bold border border-red-100">
-                  A
+                  {identityInitial}
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-slate-800 leading-none">Admin</p>
-                  <p className="text-xs text-slate-500 mt-1">Administrator</p>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-800 leading-none truncate">
+                    {identity.fullName || identity.email || (isRTL ? 'مستخدم' : 'User')}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">{identityRoleLabel}</p>
                 </div>
               </div>
               <button onClick={handleLogout} className="p-2 text-slate-500 hover:text-red-400 transition-colors">

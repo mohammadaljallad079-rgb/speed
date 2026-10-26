@@ -7,6 +7,7 @@ import Link from "next/link"
 import { supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/LanguageContext"
 import AiAssistantPanel from "@/components/ai/AiAssistantPanel"
+import AiControlCenter from "@/components/super-admin/AiControlCenter"
 import {
   Building2,
   Users,
@@ -372,7 +373,12 @@ export default function SuperAdminPage() {
                 t={t}
               />
             )}
-            {tab === "ai" && <AiTab ai={ai} t={t} />}
+            {tab === "ai" && (
+              <div className="space-y-6">
+                <AiControlCenter isRTL={isRTL} t={t} />
+                <AiTab ai={ai} t={t} />
+              </div>
+            )}
             {tab === "subscriptions" && overview && <SubscriptionsTab overview={overview} t={t} />}
             {tab === "settings" && <SettingsTab t={t} />}
           </div>

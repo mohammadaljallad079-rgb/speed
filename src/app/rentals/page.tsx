@@ -78,15 +78,22 @@ function RentalsPageContent() {
   async function handleApprove(contractId: string) {
     setApprovingId(contractId)
     try {
-      const { error } = await supabase
-        .from('rental_contracts')
-        .update({ status: 'active' })
-        .eq('id', contractId)
-      
-      if (error) throw error
-      
+      // Confirmation is server-authoritative and idempotent: the server
+      // activates the contract AND issues its invoice in one call, so a double
+      // click or a retry cannot bill the rental twice. The browser no longer
+      // updates the status or creates the invoice itself.
+      const res = await fetch('/api/rentals/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract_id: contractId }),
+      })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Error approving contract')
+
       await fetchContracts()
-      alert(isRTL ? 'تمت الموافقة على العقد بنجاح' : 'Contract approved successfully')
+      alert(payload?.idempotent
+        ? (isRTL ? 'العقد مفعّل بالفعل وفاتورته موجودة' : 'This contract is already active and invoiced')
+        : (isRTL ? 'تمت الموافقة على العقد وإنشاء الفاتورة' : 'Contract approved and invoiced successfully'))
     } catch (err: any) {
       console.error('Approve error:', err)
       alert(err.message || (isRTL ? 'خطأ في الموافقة على العقد' : 'Error approving contract'))

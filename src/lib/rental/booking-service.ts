@@ -240,6 +240,77 @@ export async function listAvailableCars(
   return cars.map(project);
 }
 
+/**
+ * Resolves a SINGLE car for the booking form, with its availability.
+ *
+ * The booking form needs this because a car can be reached by a deep link
+ * (`/customer-dashboard?tab=booking&car=<id>`) that does not pass through the
+ * availability list. Without an explicit lookup the `<select>` silently falls
+ * back to its placeholder when the car is absent from the freshly-loaded list,
+ * which is how a customer ended up on a form that had quietly discarded their
+ * choice.
+ *
+ * The result distinguishes the three cases the UI must render differently:
+ *   - `found: false`               -> not in this company (or not rentable)
+ *   - `found: true, available: false` -> real, but busy for the requested window
+ *   - `found: true, available: true`  -> selectable
+ *
+ * Scope comes from the session, exactly as `listAvailableCars`, so a deep link
+ * cannot reference another company's car.
+ */
+export interface CarAvailability {
+  found: boolean;
+  available: boolean;
+  car: AvailableCar | null;
+  /** When unavailable, why. Shown to the customer verbatim. */
+  reason: "not_found" | "not_rentable" | "busy" | null;
+  /** Conflicting window, when the reason is `busy`. */
+  conflict?: { startDate: string | null; endDate: string | null } | null;
+}
+
+export async function getCarAvailability(
+  db: BookingDb,
+  scopeIn: { tenantId: string | null; carId: string; start?: string | null; end?: string | null },
+): Promise<CarAvailability> {
+  if (!scopeIn.carId) return { found: false, available: false, car: null, reason: "not_found" };
+
+  const query = scope(db.from("cars").select(CAR_SELECT).eq("id", scopeIn.carId), scopeIn.tenantId ?? null);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  const car = data as Row | null;
+  if (!car) return { found: false, available: false, car: null, reason: "not_found" };
+  if (!isCarRentable(car)) {
+    return { found: true, available: false, car: project(car), reason: "not_rentable" };
+  }
+
+  const start = scopeIn.start ?? null;
+  const end = scopeIn.end ?? null;
+  const today = new Date().toISOString().slice(0, 10);
+  const windowStart = isIsoDate(start) ? start : today;
+  const windowEnd = isIsoDate(end) && isIsoDate(start) && end > start ? end : FAR_FUTURE;
+
+  const conflictQuery = scope(
+    db.from("rental_contracts").select("id,start_date,end_date,status,car_id").eq("car_id", String(car.id)),
+    (car.tenant_id as string | null) ?? null,
+  ).in("status", BLOCKING_STATUSES);
+  const { data: existing, error: conflictError } = await conflictQuery;
+  if (conflictError) throw conflictError;
+
+  const conflict = ((existing ?? []) as Row[]).find((r) =>
+    periodsOverlap(windowStart, windowEnd, String(r.start_date), String(r.end_date)),
+  );
+
+  return {
+    found: true,
+    available: !conflict,
+    car: project(car),
+    reason: conflict ? "busy" : null,
+    conflict: conflict
+      ? { startDate: (conflict.start_date as string) ?? null, endDate: (conflict.end_date as string) ?? null }
+      : null,
+  };
+}
+
 /** Price for a window, computed server-side from the car's own rates. */
 export function computePrice(
   car: Row,

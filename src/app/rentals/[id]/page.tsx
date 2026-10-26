@@ -60,51 +60,50 @@ function PageContent() {
 
   async function updateStatus(status: string) {
     setApproving(true)
-    await supabase.from('rental_contracts').update({ status }).eq('id', id)
-    // Emit the matching operational notification (best-effort; the server rebuilds
-    // the content from the contract row, tenant-scoped).
-    const notifyEvent = status === 'active' ? 'booking_confirmed' : status === 'cancelled' ? 'booking_cancelled' : null
-    if (notifyEvent) {
-      fetch('/api/notifications?op=emit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event: notifyEvent, contractId: id }),
-      }).catch((e) => console.error('Notification emit failed:', e))
-    }
-    // A terminal transition returns the vehicle to the pool; otherwise the
-    // denormalised `cars.status` flag stays `rented` forever (Exec 57).
-    const releaseStatus = carStatusForContractChange(status)
-    if (releaseStatus && contract?.car_id) {
-      await supabase.from('cars').update({ status: releaseStatus }).eq('id', contract.car_id)
-    }
-    if (status === 'active') {
-      const { data: existingInvoice } = await supabase.from('invoices').select('id').eq('rental_contract_id', id).maybeSingle()
-      if (!existingInvoice) {
-        // Issue through the single server-side posting path: a row-locked number
-        // from the numbering RPC (not a row count that collides) plus its
-        // balanced journal and tenant from the session (Exec 33, Item 2/10).
-        const res = await fetch('/api/invoices', {
+    try {
+      if (status === 'active') {
+        // Confirmation is server-authoritative and idempotent: one call
+        // activates the contract AND issues its invoice through the single
+        // sales posting path. The browser used to update the status and then
+        // check-then-create the invoice, which two concurrent approvals could
+        // both pass — billing the same rental twice.
+        const res = await fetch('/api/rentals/confirm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            customer_id: contract?.customer_id,
-            rental_contract_id: id,
-            invoice_date: new Date().toISOString().split('T')[0],
-            due_date: contract?.end_date || null,
-            amount: contract?.subtotal ?? contract?.total_amount ?? 0,
-            discount: contract?.discount_amount ?? 0,
-            vat: contract?.vat_amount ?? 0,
-            invoice_type: 'rental',
-            rental_days: contract?.total_days ?? undefined,
-            payment_method: contract?.payment_type || 'cash',
-          }),
+          body: JSON.stringify({ contract_id: id }),
         })
         const payload = await res.json().catch(() => ({}))
-        if (!res.ok) throw new Error(payload?.error || 'Failed to create the rental invoice')
+        if (!res.ok) throw new Error(payload?.error || 'Failed to confirm the booking')
+      } else {
+        const { error } = await supabase.from('rental_contracts').update({ status }).eq('id', id)
+        if (error) throw error
       }
+
+      // Emit the matching operational notification (best-effort; the server
+      // rebuilds the content from the contract row, tenant-scoped).
+      const notifyEvent = status === 'active' ? 'booking_confirmed' : status === 'cancelled' ? 'booking_cancelled' : null
+      if (notifyEvent) {
+        fetch('/api/notifications?op=emit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: notifyEvent, contractId: id }),
+        }).catch((e) => console.error('Notification emit failed:', e))
+      }
+
+      // A terminal transition returns the vehicle to the pool; otherwise the
+      // denormalised `cars.status` flag stays `rented` forever (Exec 57).
+      const releaseStatus = carStatusForContractChange(status)
+      if (releaseStatus && contract?.car_id) {
+        await supabase.from('cars').update({ status: releaseStatus }).eq('id', contract.car_id)
+      }
+
+      await fetchContract()
+    } catch (err) {
+      console.error('Status update failed:', err)
+      alert((err as Error).message || 'Could not update the booking')
+    } finally {
+      setApproving(false)
     }
-    await fetchContract()
-    setApproving(false)
   }
 
   async function openPaymentModal() {

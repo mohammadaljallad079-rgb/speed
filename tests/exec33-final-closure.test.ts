@@ -33,8 +33,18 @@ describe("Exec 33 Item 2/10 - booking & rental approvals use the single server p
     ["src/app/bookings/page.tsx", bookings],
     ["src/app/rentals/[id]/page.tsx", rentalDetail],
   ] as const) {
-    test(`${name} issues the invoice through /api/invoices, not the browser`, () => {
-      assert.match(src, /fetch\(['"]\/api\/invoices['"]/, "must POST to the server posting path");
+    test(`${name} issues the invoice through a server posting path, not the browser`, () => {
+      // The invariant is "the browser does not post the document itself". It may
+      // reach the single sales service through either server entry point:
+      //   - /api/invoices          (issue a sale or a standalone rental invoice)
+      //   - /api/rentals/confirm   (Exec 63: activate the booking AND invoice it
+      //                             in one idempotent call, which delegates to
+      //                             the same sales service)
+      assert.match(
+        src,
+        /fetch\(['"]\/(api\/invoices|api\/rentals\/confirm)['"]/,
+        "must POST to a server posting path",
+      );
       assert.doesNotMatch(src, /from\(['"]invoices['"]\)\.insert/, "must not insert the invoice directly");
     });
 

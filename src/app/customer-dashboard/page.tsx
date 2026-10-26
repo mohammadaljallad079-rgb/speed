@@ -31,18 +31,41 @@ interface SupportTicket { id: string; subject: string | null; message: string | 
  * Car list + booking are resolved server-side (tenant-scoped, overlap-aware) via
  * `/api/customer/*`; the browser never reads `cars`/`rental_contracts` directly,
  * so it cannot widen the company scope or bypass the double-booking guard.
+ *
+ * `carId` asks the server to resolve ONE car explicitly. A deep link from the
+ * fleet page (`?car=<id>`) needs this: the car may be absent from the list
+ * because it is busy for the requested window, and a `<select>` whose value has
+ * no matching option silently renders its placeholder — the customer sees their
+ * choice discarded.
  */
-async function fetchAvailableCars(start?: string, end?: string): Promise<{ cars: CarOption[]; error: string | null }> {
+export interface SelectedCarInfo {
+  found: boolean
+  available: boolean
+  car: CarOption | null
+  reason: 'not_found' | 'not_rentable' | 'busy' | null
+  conflict?: { startDate: string | null; endDate: string | null } | null
+}
+
+async function fetchAvailableCars(
+  start?: string,
+  end?: string,
+  carId?: string,
+): Promise<{ cars: CarOption[]; selected: SelectedCarInfo | null; error: string | null }> {
   try {
     const qs = new URLSearchParams()
     if (start) qs.set('start', start)
     if (end) qs.set('end', end)
+    if (carId) qs.set('car', carId)
     const res = await fetch(`/api/customer/available-cars${qs.toString() ? `?${qs}` : ''}`, { cache: 'no-store' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) return { cars: [], error: data?.error || 'Failed to load cars' }
-    return { cars: (data?.cars ?? []) as CarOption[], error: null }
+    if (!res.ok) return { cars: [], selected: null, error: data?.error || 'Failed to load cars' }
+    return {
+      cars: (data?.cars ?? []) as CarOption[],
+      selected: (data?.selected ?? null) as SelectedCarInfo | null,
+      error: null,
+    }
   } catch {
-    return { cars: [], error: 'Failed to load cars' }
+    return { cars: [], selected: null, error: 'Failed to load cars' }
   }
 }
 
@@ -143,6 +166,10 @@ function DashboardContent() {
   const [tickets, setTickets] = useState<SupportTicket[]>([])
   const [tab, setTab] = useState<'overview'|'booking'|'rentals'|'support'>('overview')
   const [selectedCar, setSelectedCar] = useState('')
+  // The deep-linked car, resolved server-side. Non-null only while a `?car=`
+  // id is in play, so the form can render an explicit reason instead of
+  // silently dropping the customer's choice.
+  const [deepLinkCar, setDeepLinkCar] = useState<SelectedCarInfo | null>(null)
   const searchParams = useSearchParams()
 
   useEffect(() => {
@@ -184,7 +211,10 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
   }, [startDate, endDate, isRTL])
 
   const priceBreakdown = useMemo(() => {
-    const carData = cars.find(c => c.id === selectedCar)
+    // Prefer the deep-linked car the server resolved: a car that is busy for the
+    // window is absent from `cars`, and without this the price block would
+    // vanish even though the form is showing the customer their selection.
+    const carData = cars.find(c => c.id === selectedCar) ?? (deepLinkCar?.car?.id === selectedCar ? deepLinkCar.car : undefined)
     if (!carData || !startDate || !endDate) return null
     const days = estimatedDays
     
@@ -218,9 +248,39 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
       total: (carData.daily_rate ?? 0) * days,
       dailyRate: carData.daily_rate ?? 0
     }
-  }, [cars, selectedCar, estimatedDays, rentalType, startDate, endDate, isRTL])
+  }, [cars, selectedCar, estimatedDays, rentalType, startDate, endDate, isRTL, deepLinkCar])
   
   const estimatedTotal = priceBreakdown?.total ?? 0
+
+  const requestedCarId = searchParams.get('car') || ''
+
+  // Options the <select> may offer. A deep-linked car that IS available but was
+  // filtered out of the list (it can happen when the requested window differs
+  // from the list's) is added, so the customer's choice survives.
+  const selectableCars = useMemo(() => {
+    const c = deepLinkCar?.car
+    if (deepLinkCar?.found && deepLinkCar.available && c && !cars.some((x) => x.id === c.id)) {
+      return [c, ...cars]
+    }
+    return cars
+  }, [cars, deepLinkCar])
+
+  // Why the deep-linked car cannot be booked. Shown instead of a silent reset.
+  const carSelectNotice = useMemo(() => {
+    if (!requestedCarId || selectedCar !== requestedCarId || !deepLinkCar) return ''
+    if (deepLinkCar.found && deepLinkCar.available) return ''
+    if (!deepLinkCar.found) {
+      return isRTL ? 'السيارة المطلوبة غير متوفرة لدينا.' : 'The requested vehicle is not available.'
+    }
+    if (deepLinkCar.reason === 'busy') {
+      const w = deepLinkCar.conflict
+      const range = w?.startDate && w?.endDate ? ` (${w.startDate} → ${w.endDate})` : ''
+      return isRTL
+        ? `هذه السيارة محجوزة للفترة المطلوبة${range}. اختر سيارة أخرى أو غيّر التواريخ.`
+        : `This vehicle is booked for the requested period${range}. Choose another vehicle or change the dates.`
+    }
+    return isRTL ? 'هذه السيارة غير متاحة للحجز حاليًا.' : 'This vehicle is not bookable right now.'
+  }, [requestedCarId, selectedCar, deepLinkCar, isRTL])
 
   const load = async () => {
     setLoading(true)
@@ -243,11 +303,19 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
 
   // Cars are fetched from the tenant-scoped server route; a window hides cars
   // that are already booked, so the list always reflects what can be reserved.
+  //
+  // When a `?car=` deep link is active we also ask the server to resolve THAT
+  // car explicitly. The list alone cannot serve it: a car that is busy for the
+  // requested window is deliberately absent, and `<select value>` with no
+  // matching option renders the placeholder — which looked like the form had
+  // thrown the customer's choice away.
   const loadCars = async (start?: string, end?: string) => {
     setLoadingCars(true); setCarsError('')
-    const { cars: list, error } = await fetchAvailableCars(start, end)
+    const requested = searchParams.get('car') || ''
+    const { cars: list, selected, error } = await fetchAvailableCars(start, end, requested || undefined)
     setCars(list)
     setCarsError(error ?? '')
+    setDeepLinkCar(selected)
     setLoadingCars(false)
   }
 
@@ -519,17 +587,31 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
                       </div>
                     ) : loadingCars ? (
                       <div className="h-12 rounded-xl border border-gray-200 px-4 flex items-center text-gray-400 text-sm font-semibold">{isRTL ? 'جاري تحميل السيارات...' : 'Loading cars...'}</div>
-                    ) : cars.length === 0 ? (
+                    ) : selectableCars.length === 0 ? (
                       <div className="h-12 rounded-xl border border-amber-200 bg-amber-50 px-4 flex items-center text-amber-700 text-sm font-semibold">
                         {startDate && endDate
                           ? (isRTL ? 'لا توجد سيارات متاحة للفترة المحددة. جرّب تغيير التواريخ.' : 'No cars available for the selected period. Try changing the dates.')
                           : (isRTL ? 'لا توجد سيارات متاحة حالياً. تواصل مع الشركة.' : 'No cars are available right now. Please contact the company.')}
                       </div>
                     ) : (
-                      <select value={selectedCar} onChange={e => setSelectedCar(e.target.value)} className="w-full h-12 rounded-xl border border-gray-200 px-4 text-gray-700 bg-white text-sm font-semibold focus:border-red-400 focus:ring-1 focus:ring-red-400 outline-none">
-                        <option value="">{isRTL ? 'اختر من السيارات المتاحة' : 'Select available car'}</option>
-                        {cars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model} {c.year} — {c.category === 'sale' ? (isRTL ? 'للبيع' : 'For Sale') : (isRTL ? 'للتأجير' : 'For Rent')}</option>)}
-                      </select>
+                      <>
+                        <select value={selectedCar} onChange={e => setSelectedCar(e.target.value)} className="w-full h-12 rounded-xl border border-gray-200 px-4 text-gray-700 bg-white text-sm font-semibold focus:border-red-400 focus:ring-1 focus:ring-red-400 outline-none">
+                          <option value="">{isRTL ? 'اختر من السيارات المتاحة' : 'Select available car'}</option>
+                          {selectableCars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model} {c.year} — {c.category === 'sale' ? (isRTL ? 'للبيع' : 'For Sale') : (isRTL ? 'للتأجير' : 'For Rent')}</option>)}
+                        </select>
+                        {carSelectNotice && (
+                          <div className="mt-2 flex items-start justify-between gap-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                            <p className="text-amber-800 text-sm font-semibold">{carSelectNotice}</p>
+                            <button
+                              type="button"
+                              onClick={() => { setSelectedCar(''); setDeepLinkCar(null); router.replace('/customer-dashboard?tab=booking') }}
+                              className="shrink-0 text-sm font-bold text-amber-700 hover:underline"
+                            >
+                              {isRTL ? 'إظهار كل السيارات' : 'Show all cars'}
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                   

@@ -160,8 +160,17 @@ credit_limit: toNumberOrZero(formData.credit_limit),
 
     setLoading(true)
     try {
-      const { error } = await supabase.from('customers').insert([payload])
-      if (error) throw error
+      // Server-side create: the tenant comes from the session, so the customer
+      // is not written as a NULL-tenant orphan.
+      const res = await fetch('/api/customers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Request failed (${res.status})`)
+      }
       router.push('/customers')
     } catch (error: any) {
       alert(isRTL ? 'خطأ في إضافة العميل: ' + error.message : 'Error adding customer: ' + error.message)

@@ -893,3 +893,49 @@ describe("exec67 the chart of accounts is written server-side", () => {
     assert.match(put![1], /\.neq\("id", id\)/, "the uniqueness check excludes the row being edited");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Execution 67 (Stage 3) - the customer record is written server-side.
+// ---------------------------------------------------------------------------
+
+describe("exec67 the customer record is written server-side", () => {
+  test("no customer page inserts, updates or deletes in the browser", () => {
+    for (const page of ["src/app/customers/page.tsx", "src/app/customers/new/page.tsx"]) {
+      const src = read(page);
+      assert.doesNotMatch(
+        src,
+        /from\(\s*["']customers["']\s*\)\s*\.\s*(insert|update|delete|upsert)/,
+        `${page} must not write customers with the browser client`,
+      );
+      assert.match(src, /fetch\(\s*[`"']\/api\/customers/, `${page} must call the guarded route`);
+    }
+  });
+
+  test("the create route takes the tenant from the session, never the body", () => {
+    const src = read("src/app/api/customers/route.ts");
+    assert.match(src, /requireContext\(/, "the route must resolve an authenticated context");
+    assert.match(src, /assertWritableTenant\(context, body\.tenant_id\)/, "the tenant must be asserted from the session");
+    assert.match(src, /if \(tenantId\) payload\.tenant_id = tenantId/, "the row must be stamped with the session tenant");
+    assert.match(src, /CUSTOMER_EDITABLE_FIELDS/, "the body must be filtered through a column whitelist");
+  });
+
+  test("the edit and delete routes are tenant-scoped and refuse a referenced customer", () => {
+    const src = read("src/app/api/customers/[id]/route.ts");
+    // Both the lookup and the write carry the tenant, so a foreign id is a 404.
+    assert.equal(
+      (src.match(/\.is\("tenant_id", null\)/g) || []).length,
+      4,
+      "the PUT lookup + update and the DELETE lookup + delete must each scope the NULL tenant",
+    );
+    assert.match(src, /CUSTOMER_DEPENDENT_TABLES/, "the delete must consult the dependent tables");
+    assert.match(src, /has_dependents/, "a referenced customer must be refused, not orphaned");
+    assert.match(src, /action: "delete"/, "the delete must be audited");
+  });
+
+  test("the customer column whitelist cannot carry tenant_id", () => {
+    const src = read("src/lib/customers/fields.ts");
+    assert.doesNotMatch(src, /"tenant_id"/, "tenant_id must never be a client-settable field");
+    assert.match(src, /"full_name"/);
+    assert.match(src, /"phone"/);
+  });
+});

@@ -2,6 +2,7 @@
 import { Suspense } from 'react'
 import { useState, useEffect } from 'react'
 import { supabase, Invoice } from '@/lib/supabase'
+import { deleteInvoice } from '@/lib/invoices/invoice-client'
 import { formatCurrency, formatDate, getStatusColor } from '@/lib/utils'
 import {
   Receipt,
@@ -88,8 +89,15 @@ function InvoicesPageContent() {
 
   async function handleDelete(invId: string) {
     if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذه الفاتورة؟' : 'Are you sure you want to delete this invoice?')) return
-    await supabase.from('invoices').delete().eq('id', invId)
-    fetchInvoices()
+    try {
+      // The server decides: a posted invoice, or one with receipts/returns
+      // attached, is refused. Deleting the row here left the ledger describing a
+      // document that no longer existed.
+      await deleteInvoice(invId)
+      fetchInvoices()
+    } catch (err: any) {
+      alert(err?.message || (isRTL ? 'تعذر حذف الفاتورة' : 'Could not delete the invoice'))
+    }
   }
 
   const filtered = invoices.filter(inv => {

@@ -692,3 +692,43 @@ describe("exec66 the rental detail payment page posts to the ledger", () => {
     assert.doesNotMatch(src, /from\(["']payments["']\)\.insert/, `${f} must not insert a payment with no posting`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// H. Invoice deletion is server-authoritative from EVERY screen.
+// ---------------------------------------------------------------------------
+
+describe("exec66 an invoice is never deleted with the browser client", () => {
+  // These four screens each used to call `.from('invoices').delete()` directly,
+  // bypassing `decideInvoiceDeletion` - a posted invoice, or one with receipts
+  // attached, could be deleted and its ledger entry orphaned.
+  const PAGES = [
+    "src/app/invoices/page.tsx",
+    "src/app/invoices/[id]/page.tsx",
+    "src/app/sales/page.tsx",
+    "src/app/rentals/invoices/page.tsx",
+  ];
+
+  for (const f of PAGES) {
+    test(`${f} deletes through the guarded endpoint`, () => {
+      const src = read(f);
+      assert.doesNotMatch(
+        src,
+        /from\(["']invoices["']\)\.delete\(/,
+        `${f} must not delete an invoice with the browser client`,
+      );
+      assert.match(src, /deleteInvoice\(/, `${f} must use the guarded deleteInvoice helper`);
+    });
+  }
+
+  test("the invoice detail screen still shows the advisory posted/dependents flags", () => {
+    const src = read("src/app/invoices/[id]/page.tsx");
+    assert.match(src, /isSaleInvoicePosted\(/, "the posted flag is still read for the UI");
+    assert.match(src, /hasInvoiceDependents\(/, "the dependents flag is still read for the UI");
+  });
+
+  test("the delete helper targets the guarded route and refuses on a non-ok response", () => {
+    const src = read("src/lib/invoices/invoice-client.ts");
+    assert.match(src, /\/api\/invoices\/\$\{encodeURIComponent\(invoiceId\)\}/, "the guarded route is used");
+    assert.match(src, /if \(!response\.ok\)/, "a refusal is surfaced, not swallowed");
+  });
+});

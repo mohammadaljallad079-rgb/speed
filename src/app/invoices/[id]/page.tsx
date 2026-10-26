@@ -17,6 +17,7 @@ import { ArrowLeft, Save, FileText, User, DollarSign, Trash2, CreditCard, Rotate
 import Link from 'next/link'
 import { Customer, RentalContract } from '@/lib/supabase'
 import { isSaleInvoicePosted, hasInvoiceDependents } from '@/lib/accounting/invoice-guards'
+import { deleteInvoice, reverseInvoice } from '@/lib/invoices/invoice-client'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -184,15 +185,12 @@ function PageContent() {
     if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذه الفاتورة؟' : 'Are you sure you want to delete this invoice?')) return
     setDeleting(true)
     try {
-      // An invoice with receipts or returns must not be deleted: those rows would
-      // be orphaned. Reverse/cancel the document instead (Exec 29, Item 11).
-      if (await hasInvoiceDependents(supabase as any, id)) {
-        alert(isRTL ? 'لا يمكن حذف فاتورة لها دفعات أو مرتجعات مرتبطة. استخدم الإلغاء/العكس.' : 'This invoice has payments or returns attached and cannot be deleted. Cancel/reverse it instead.')
-        setDeleting(false)
-        return
-      }
-      const { error } = await supabase.from('invoices').delete().eq('id', id)
-      if (error) throw error
+      // The SERVER decides, not this screen. A posted invoice, or one with
+      // receipts/returns attached, is refused there (`decideInvoiceDeletion`
+      // fails closed). The client-side check was advisory only: a user could
+      // still have deleted the row directly, orphaning its ledger entry and its
+      // receipts. The delete is tenant-scoped and audited server-side.
+      await deleteInvoice(id)
       notifyDataChanged()
       router.push('/invoices')
     } catch (err: any) {
@@ -205,9 +203,7 @@ function PageContent() {
     if (!confirm(isRTL ? 'سيتم عكس القيد المحاسبي وإلغاء الفاتورة. هل أنت متأكد؟' : 'This will post a reversing journal and cancel the invoice. Continue?')) return
     setDeleting(true)
     try {
-      const res = await fetch(`/api/invoices/${id}/reverse`, { method: "POST" })
-      const payload = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(payload?.error || 'Error reversing invoice')
+      await reverseInvoice(id)
       notifyDataChanged()
       router.push('/invoices')
     } catch (err: any) {

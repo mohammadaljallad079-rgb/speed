@@ -347,7 +347,9 @@ describe("Exec29 - route + page wiring (source assertions)", () => {
   test("edit page offers reversal (not in-place edit/delete) for a posted invoice", () => {
     assert.match(editPage, /isSaleInvoicePosted/);
     assert.match(editPage, /handleReverse/);
-    assert.match(editPage, /\/reverse/);
+    // The reversal now goes through the shared helper, which owns the route.
+    assert.match(editPage, /reverseInvoice\(/);
+    assert.match(read("src/lib/invoices/invoice-client.ts"), /\/reverse/);
     assert.match(editPage, /isPosted \? \(/);
     assert.match(editPage, /disabled=\{loading \|\| isPosted\}/);
   });

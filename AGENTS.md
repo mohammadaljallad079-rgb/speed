@@ -1948,3 +1948,25 @@ that applies the filters it is given and returns only affected rows.
   leaves receipt+invoice untouched, a wrong-company id finds nothing).
 - Exec 66 final baseline: **1390 tests / 1384 pass / 0 fail / 6 skipped**;
   typecheck 0; lint clean; build green; 015 harness 41/41.
+
+### Exec 66 follow-up 2: invoice deletion is server-authoritative from EVERY screen
+
+- **Four screens deleted `invoices` rows with the browser client**, bypassing the
+  guarded `DELETE /api/invoices/[id]` (which fails closed through
+  `decideInvoiceDeletion`): `invoices/page.tsx`, `invoices/[id]/page.tsx`,
+  `sales/page.tsx`, `rentals/invoices/page.tsx`. A posted invoice, or one with
+  receipts/returns attached, could be deleted from a list and its ledger entry and
+  receipts left orphaned. All four now call `deleteInvoice`
+  (`src/lib/invoices/invoice-client.ts`), and `tests/exec66-receipt-workflow.test.ts`
+  asserts no page calls `from('invoices').delete()` again.
+- **The invoice detail screen's client-side guard was advisory only.** It read
+  `hasInvoiceDependents` and then deleted the row itself; that check could not
+  stop a delete from another screen, and it could not see a concurrent receipt.
+  The flags are still read for display, but the DECISION moved to the server. Do
+  not reintroduce a client-side delete for a document that has a ledger entry.
+- **One helper owns the lifecycle routes** (`deleteInvoice`, `reverseInvoice`).
+  The routes are spelled once, in `invoice-client.ts`; a page must not inline
+  `fetch('/api/invoices/...')`. `tests/exec29-sales-posting.test.ts` was updated
+  to assert `reverseInvoice(` rather than the literal route string.
+- Exec 66 baseline after this fix: **1396 tests / 1390 pass / 0 fail / 6
+  skipped**; typecheck 0; lint clean; build green.

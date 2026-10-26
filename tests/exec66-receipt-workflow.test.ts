@@ -799,6 +799,15 @@ describe("exec66 an account the ledger uses is not deletable", () => {
     const src = read("src/app/api/accounts/[id]/route.ts");
     assert.match(src, /requireContext\(request, \{ module: "accounting", action: "delete" \}\)/);
     assert.match(src, /decideAccountDeletion\(/);
-    assert.doesNotMatch(src, /body\?\.tenant_id|body\.tenant_id/, "the tenant comes from the session");
+    // Exec 67 added a PUT handler to the same file. The delete path must still
+    // take the tenant from the session alone; the edit path uses the shared
+    // `assertWritableTenant(context, body.tenant_id)` convention, which REFUSES
+    // a caller that names another tenant rather than honouring it.
+    const del = /export async function DELETE\(([\s\S]*?)\n\}/.exec(src);
+    assert.ok(del, "the DELETE handler must exist");
+    assert.doesNotMatch(del![1], /body\?\.tenant_id|body\.tenant_id/, "the delete tenant comes from the session");
+    const put = /export async function PUT\(([\s\S]*?)\n\}/.exec(src);
+    assert.ok(put, "the PUT handler must exist");
+    assert.match(put![1], /assertWritableTenant\(context, body\.tenant_id\)/, "an edit cannot name a foreign tenant");
   });
 });

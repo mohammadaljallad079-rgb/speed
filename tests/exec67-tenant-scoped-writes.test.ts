@@ -277,6 +277,7 @@ describe("exec67 the invoice edit route is server-authoritative", () => {
 
 describe("exec67 no screen writes a financial row directly", () => {
   const FINANCIAL_TABLES = [
+    "accounts",
     "expenses",
     "invoices",
     "payments",
@@ -862,3 +863,33 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// I. The chart of accounts is server-authoritative too.
+// ---------------------------------------------------------------------------
+
+describe("exec67 the chart of accounts is written server-side", () => {
+  test("the chart screen creates and edits through the guarded routes", () => {
+    const src = read("src/app/accounting/chart-of-accounts/page.tsx");
+    assert.doesNotMatch(src, /from\("accounts"\)\.(insert|update|delete)/, "no direct chart write");
+    assert.match(src, /fetch\(url, \{/, "the screen posts to the route");
+    assert.match(src, /editingAccount \? 'PUT' : 'POST'/, "create and edit are both delegated");
+  });
+
+  test("the create route stamps the tenant from the session and refuses a duplicate code", () => {
+    const src = read("src/app/api/accounts/route.ts");
+    assert.match(src, /requireContext\(request, \{ module: "accounting", action: "create" \}\)/);
+    assert.match(src, /assertWritableTenant\(context, body\.tenant_id\)/);
+    assert.match(src, /duplicate_code/, "an ambiguous code would break posting");
+    assert.match(src, /tenant_id\.eq\.\$\{tenantId\},tenant_id\.is\.null/, "a parent must be own or shared");
+  });
+
+  test("the edit route refuses a self-parent and keeps the code unique", () => {
+    const src = read("src/app/api/accounts/[id]/route.ts");
+    const put = /export async function PUT\(([\s\S]*?)\n\}/.exec(src);
+    assert.ok(put, "PUT must exist");
+    assert.match(put![1], /cannot be its own parent/);
+    assert.match(put![1], /duplicate_code/);
+    assert.match(put![1], /\.neq\("id", id\)/, "the uniqueness check excludes the row being edited");
+  });
+});

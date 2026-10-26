@@ -207,10 +207,24 @@ function PageContent() {
       level: formData.parent_id ? (accounts.find((a: Account) => a.id === formData.parent_id)?.level || 0) + 1 : 1,
     }
 
-    if (editingAccount) {
-      await supabase.from('accounts').update(payload).eq('id', editingAccount.id)
-    } else {
-      await supabase.from('accounts').insert([payload])
+    // The SERVER owns this write. A browser insert could create an account with
+    // no tenant, a foreign parent, or a duplicate code - and a duplicate code is
+    // refused by the account resolver, which would silently break posting for
+    // every module that uses it.
+    try {
+      const url = editingAccount
+        ? `/api/accounts/${encodeURIComponent(editingAccount.id)}`
+        : '/api/accounts'
+      const res = await fetch(url, {
+        method: editingAccount ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const result = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(result?.error || 'Could not save the account')
+    } catch (err: any) {
+      alert(err?.message || (isRTL ? 'تعذر حفظ الحساب' : 'Could not save the account'))
+      return
     }
 
     setDialogOpen(false)

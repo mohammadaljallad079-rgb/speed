@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { decideAccountDeletion } from "@/lib/accounting/invoice-guards";
-import { conflict, forbidden, logAudit, notFound, requireContext, toErrorResponse } from "@/lib/auth";
+import {
+  assertWritableTenant,
+  conflict,
+  forbidden,
+  logAudit,
+  notFound,
+  requireContext,
+  toErrorResponse,
+} from "@/lib/auth";
 
 /**
  * Delete a chart-of-accounts row.
@@ -55,6 +63,94 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
       entity: "accounts",
       entityId: id,
       metadata: { code: row.code ?? null, name: row.name ?? null },
+    });
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    const { status, body } = toErrorResponse(error);
+    return NextResponse.json(body, { status });
+  }
+}
+
+/**
+ * Edit a chart-of-accounts row.
+ *
+ * The chart screen wrote `accounts` straight from the browser, so a caller could
+ * rename or re-type an account the ledger already uses, or re-point its parent
+ * at another company's account. Two things are refused here rather than checked
+ * in the browser:
+ *
+ *   - the tenant and the row's identity are never taken from the body;
+ *   - the parent must be usable by this caller, and the code must stay unique
+ *     within the caller's own chart (an ambiguous code breaks posting).
+ */
+const EDITABLE_FIELDS = ["code", "name_ar", "name_en", "type", "parent_id", "is_active", "level"] as const;
+
+export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const context = await requireContext(request, { module: "accounting", action: "edit" });
+    const { id } = await params;
+
+    let findQuery = supabaseAdmin.from("accounts").select("id,code,tenant_id").eq("id", id);
+    findQuery = context.tenantId
+      ? findQuery.eq("tenant_id", context.tenantId)
+      : findQuery.is("tenant_id", null);
+    const { data: current, error } = await findQuery.maybeSingle();
+    if (error) throw error;
+    if (!current) throw notFound("Account not found");
+
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const field of EDITABLE_FIELDS) {
+      if (body[field] !== undefined) patch[field] = body[field];
+    }
+    if (Object.keys(patch).length === 0) {
+      return NextResponse.json({ error: "No editable fields were supplied.", code: "bad_request" }, { status: 400 });
+    }
+
+    const tenantId = assertWritableTenant(context, body.tenant_id);
+
+    const parentId = patch.parent_id ? String(patch.parent_id) : null;
+    if (parentId === id) throw conflict("An account cannot be its own parent.", "invalid_parent");
+    if (parentId) {
+      let parentQuery = supabaseAdmin.from("accounts").select("id,tenant_id").eq("id", parentId);
+      parentQuery = tenantId
+        ? parentQuery.or(`tenant_id.eq.${tenantId},tenant_id.is.null`)
+        : parentQuery.is("tenant_id", null);
+      const { data: parent } = await parentQuery.maybeSingle();
+      if (!parent) {
+        return NextResponse.json(
+          { error: "Invalid or unauthorized reference: parent_id", code: "invalid_reference" },
+          { status: 422 },
+        );
+      }
+    } else if (patch.parent_id !== undefined) {
+      patch.parent_id = null;
+    }
+
+    if (patch.code !== undefined) {
+      const code = String(patch.code).trim();
+      if (!code) {
+        return NextResponse.json({ error: "code is required", code: "bad_request" }, { status: 400 });
+      }
+      patch.code = code;
+      let dupQuery = supabaseAdmin.from("accounts").select("id").eq("code", code).neq("id", id);
+      dupQuery = tenantId ? dupQuery.eq("tenant_id", tenantId) : dupQuery.is("tenant_id", null);
+      const { data: duplicate } = await dupQuery.limit(1).maybeSingle();
+      if (duplicate) throw conflict(`An account with code ${code} already exists.`, "duplicate_code");
+    }
+
+    let updateQuery = supabaseAdmin.from("accounts").update(patch).eq("id", id);
+    updateQuery = context.tenantId
+      ? updateQuery.eq("tenant_id", context.tenantId)
+      : updateQuery.is("tenant_id", null);
+    const { error: updErr } = await updateQuery;
+    if (updErr) throw updErr;
+
+    await logAudit(context, {
+      action: "update",
+      entity: "accounts",
+      entityId: id,
+      metadata: { code: patch.code ?? (current as { code?: string }).code ?? null },
     });
     return NextResponse.json({ ok: true });
   } catch (error) {

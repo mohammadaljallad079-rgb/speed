@@ -1970,3 +1970,22 @@ that applies the filters it is given and returns only affected rows.
   to assert `reverseInvoice(` rather than the literal route string.
 - Exec 66 baseline after this fix: **1396 tests / 1390 pass / 0 fail / 6
   skipped**; typecheck 0; lint clean; build green.
+
+### Exec 66 follow-up 3: an account the ledger uses is not deletable
+
+- **The chart-of-accounts screen deleted `accounts` rows with the browser client,
+  with no guard.** Every report derives its balances from `journal_lines`, so
+  deleting an account that lines reference makes those entries silently vanish
+  from every statement while their journal header still claims a total. A live FK
+  might refuse the delete, but relying on that is not a guard: it depends on the
+  schema, and an `on delete set null` FK would leave the lines with no account at
+  all.
+- `decideAccountDeletion` (`invoice-guards.ts`) refuses when
+  `journal_lines.account_id` references the account, and fails closed
+  (`unverified`) when the usage count cannot be established. The supported way to
+  retire an account is `is_active = false`, which keeps history intact.
+- `DELETE /api/accounts/[id]` is the one path: it requires
+  `accounting.delete`, resolves the account tenant-scoped (an id from another
+  company is a `404`), decides, deletes scoped, and audits. The page calls it.
+- Exec 66 baseline after this fix: **1403 tests / 1397 pass / 0 fail / 6
+  skipped**; typecheck 0; lint clean; build green.

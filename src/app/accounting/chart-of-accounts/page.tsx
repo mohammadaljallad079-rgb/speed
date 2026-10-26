@@ -218,9 +218,18 @@ function PageContent() {
   }
 
   const handleDelete = async (id: string) => {
-    if (confirm(isRTL ? 'هل أنت متأكد من حذف هذا الحساب؟' : 'Are you sure you want to delete this account?')) {
-      await supabase.from('accounts').delete().eq('id', id)
+    if (!confirm(isRTL ? 'هل أنت متأكد من حذف هذا الحساب؟' : 'Are you sure you want to delete this account?')) return
+    try {
+      // The server refuses to delete an account the ledger uses: every report
+      // derives balances from journal_lines, so removing an account with lines
+      // would silently drop those entries out of the ledger. Deactivate it
+      // instead. This screen used to delete the row directly, with no guard.
+      const res = await fetch(`/api/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not delete the account')
       fetchAccounts()
+    } catch (err: any) {
+      alert(err?.message || (isRTL ? 'تعذر حذف الحساب' : 'Could not delete the account'))
     }
   }
 

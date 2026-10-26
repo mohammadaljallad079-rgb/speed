@@ -9,6 +9,7 @@ import {
   buildReceiptReversalJournal,
   RECEIPT_ACCOUNT_CODES,
 } from "../src/lib/accounting/receipt-posting.ts";
+import { decideAccountDeletion, hasAccountActivity } from "../src/lib/accounting/invoice-guards.ts";
 
 /**
  * Execution 66 - the customer-receipt workflow is server-authoritative and atomic.
@@ -730,5 +731,74 @@ describe("exec66 an invoice is never deleted with the browser client", () => {
     const src = read("src/lib/invoices/invoice-client.ts");
     assert.match(src, /\/api\/invoices\/\$\{encodeURIComponent\(invoiceId\)\}/, "the guarded route is used");
     assert.match(src, /if \(!response\.ok\)/, "a refusal is surfaced, not swallowed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I. Chart-of-accounts deletion.
+// ---------------------------------------------------------------------------
+
+describe("exec66 an account the ledger uses is not deletable", () => {
+  /** Count stub: `journal_lines` returns a fixed count, or an error. */
+  function stub(count: number | null, error = false) {
+    return {
+      from() {
+        const b: any = {
+          select: () => b,
+          eq: () => b,
+          then: (resolve: (v: unknown) => void) =>
+            Promise.resolve(
+              error ? { count: null, error: { message: "permission denied" } } : { count, error: null },
+            ).then(resolve),
+        };
+        return b;
+      },
+    };
+  }
+
+  test("an account with journal lines is refused", async () => {
+    const d = await decideAccountDeletion(stub(3) as never, { id: "acc-1", code: "11001" });
+    assert.equal(d.allowed, false);
+    if (!d.allowed) {
+      assert.equal(d.code, "dependents");
+      assert.match(d.message, /11001/);
+      assert.match(d.message, /journal line/);
+    }
+  });
+
+  test("an account with no journal lines may be deleted", async () => {
+    const d = await decideAccountDeletion(stub(0) as never, { id: "acc-1", code: "99999" });
+    assert.equal(d.allowed, true);
+  });
+
+  test("a check that cannot be completed fails closed", async () => {
+    const d = await decideAccountDeletion(stub(null, true) as never, { id: "acc-1", code: "11001" });
+    assert.equal(d.allowed, false);
+    if (!d.allowed) assert.equal(d.code, "unverified");
+  });
+
+  test("a missing id fails closed", async () => {
+    const d = await decideAccountDeletion(stub(0) as never, { id: "" });
+    assert.equal(d.allowed, false);
+    if (!d.allowed) assert.equal(d.code, "unverified");
+  });
+
+  test("the advisory boolean assumes usage when the count is unknown", async () => {
+    assert.equal(await hasAccountActivity(stub(null, true) as never, "acc-1"), true);
+    assert.equal(await hasAccountActivity(stub(2) as never, "acc-1"), true);
+    assert.equal(await hasAccountActivity(stub(0) as never, "acc-1"), false);
+  });
+
+  test("the chart-of-accounts screen deletes through the guarded endpoint", () => {
+    const src = read("src/app/accounting/chart-of-accounts/page.tsx");
+    assert.doesNotMatch(src, /from\('accounts'\)\.delete\(/, "no direct account delete");
+    assert.match(src, /\/api\/accounts\//, "the guarded endpoint is used");
+  });
+
+  test("the route decides server-side and never trusts the body", () => {
+    const src = read("src/app/api/accounts/[id]/route.ts");
+    assert.match(src, /requireContext\(request, \{ module: "accounting", action: "delete" \}\)/);
+    assert.match(src, /decideAccountDeletion\(/);
+    assert.doesNotMatch(src, /body\?\.tenant_id|body\.tenant_id/, "the tenant comes from the session");
   });
 });

@@ -333,3 +333,53 @@ export async function decideInvoiceDeletion(
 
   return { allowed: true };
 }
+
+// ---------------------------------------------------------------------------
+// Account deletion
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether a chart-of-accounts row may be hard-deleted. Fails closed.
+ *
+ * Deleting an account that a journal line references leaves that line pointing
+ * at nothing: every report derives its balances from `journal_lines`, so the
+ * entry silently drops out of the ledger while its journal header still claims a
+ * total. A database FK may refuse the delete outright, but relying on that is not
+ * a guard - it depends on the live schema, and a `on delete set null` FK would
+ * instead leave the line with no account at all.
+ *
+ * The supported way to retire an account is to deactivate it (`is_active =
+ * false`), which keeps history intact. `journal_lines.account_id` is the
+ * canonical column (Exec 16).
+ */
+export async function decideAccountDeletion(
+  client: CountClient,
+  params: { id: string; code?: string | null },
+): Promise<DeletionDecision> {
+  if (!params.id) return { allowed: false, code: "unverified", message: "No account id was supplied." };
+
+  const lines = await countRows(client, "journal_lines", "account_id", params.id);
+  if (lines.state === "unknown") {
+    return {
+      allowed: false,
+      code: "unverified",
+      message: `Cannot verify whether the account is used by the ledger: ${lines.reason}`,
+    };
+  }
+  if (lines.value > 0) {
+    const label = params.code ? `account ${params.code}` : "this account";
+    return {
+      allowed: false,
+      code: "dependents",
+      message: `Cannot delete ${label}: ${lines.value} journal line(s) reference it. Deactivate it instead.`,
+    };
+  }
+
+  return { allowed: true };
+}
+
+/** Advisory boolean: may the caller treat this account as unused? `unknown` -> true. */
+export async function hasAccountActivity(client: CountClient, accountId: string): Promise<boolean> {
+  const outcome = await countRows(client, "journal_lines", "account_id", accountId);
+  return outcome.state !== "found" || outcome.value > 0;
+}

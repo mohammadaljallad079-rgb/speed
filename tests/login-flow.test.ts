@@ -16,6 +16,7 @@ import {
   supabaseConfigConsistent,
 } from "../src/lib/supabase-config.ts";
 import { isProtectedPage, isPublicApiPath, middleware, isSuperAdminPage } from "../src/middleware.ts";
+import { loginPathForArea } from "../src/lib/auth/access-areas.ts";
 
 /**
  * Login + authentication flow regression guard.
@@ -206,7 +207,14 @@ describe("page-level gate redirects anonymous callers", () => {
 
   test("the middleware sends an anonymous operator to /super-admin-login", () => {
     const src = read("src/middleware.ts");
-    assert.match(src, /isSuperAdminPage\(pathname\) \? "\/super-admin-login" : "\/login"/);
+    // The door is resolved from the AREA, so the platform area (and only it)
+    // gets the operator sign-in. This is stronger than a literal ternary: the
+    // rule lives in one place (`loginPathForArea`) and is asserted there too.
+    assert.match(src, /loginPathForArea\(area\)/);
+    assert.equal(loginPathForArea("platform"), "/super-admin-login");
+    assert.equal(loginPathForArea("erp"), "/login");
+    // The customer portal has its own door, which refuses a non-customer account.
+    assert.equal(loginPathForArea("customer"), "/customer-login");
   });
 
   test("a prefix does not swallow an unrelated page", () => {

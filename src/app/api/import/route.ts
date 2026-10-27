@@ -37,7 +37,7 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     if (url.searchParams.get("modules") === "1") {
-      const context = await requireContext(request);
+      const context = await requireContext(request, { requireErp: true });
       // The package gates the capability before the per-module permission: a
       // free package gets no import surface at all, so the UI never offers a
       // control the server will refuse.

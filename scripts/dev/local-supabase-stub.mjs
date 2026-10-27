@@ -48,7 +48,14 @@ const USERS = [
   { id: "aaaaaaaa-3333-3333-3333-333333333333", email: "old@speed.local", full_name: "Former Staff", role: "staff", tenant_id: TENANT_A, is_active: false, created_at: "2026-08-04T08:00:00Z", customer_id: null },
   { id: "bbbbbbbb-1111-1111-1111-111111111111", email: "admin@harbour.local", full_name: "Harbour Administrator", role: "admin", tenant_id: TENANT_B, is_active: true, created_at: "2026-09-15T08:00:00Z", customer_id: null },
   { id: "bbbbbbbb-2222-2222-2222-222222222222", email: "driver@harbour.local", full_name: "Harbour Driver", role: "staff", tenant_id: TENANT_B, is_active: true, created_at: "2026-09-16T08:00:00Z", customer_id: null },
+  // A rental customer, linked to customer `c1`. Without a `client` identity the
+  // customer dashboard (and therefore the "Book Now" form) could not be opened
+  // in a browser at all - the access boundary sends a non-client away.
+  { id: "cccccccc-1111-1111-1111-111111111111", email: "customer@speed.local", full_name: "Ali Hassan", role: "client", tenant_id: TENANT_A, is_active: true, created_at: "2026-08-05T08:00:00Z", customer_id: "c1" },
 ];
+
+/** Auth identities created through the admin API (see the handler below). */
+const AUTH_USERS = [];
 
 const BRANCHES = [
   { id: "br1", tenant_id: TENANT_A, name: "Manama" },
@@ -136,8 +143,12 @@ const TABLES = {
     { id: "e2", full_name: "Mariam Ali", job_title: "Accountant", position: "Accountant", phone: "+97339003344", status: "active", tenant_id: TENANT_A },
   ],
   cars: [
-    { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A, purchase_price: 10000, purchase_date: "2025-01-01" },
+    { id: "car1", make: "Toyota", model: "Corolla", year: 2024, plate_number: "12345", status: "available", category: "rental", tenant_id: TENANT_A, purchase_price: 10000, purchase_date: "2025-01-01", daily_rate: 15, weekly_rate: 90, monthly_rate: 350, seats: 5, transmission: "automatic", fuel_type: "petrol", location: "Manama" },
     { id: "car2", make: "Nissan", model: "Patrol", year: 2023, plate_number: "67890", status: "rented", category: "rental", tenant_id: TENANT_A, purchase_price: 24000, purchase_date: "2024-06-01" },
+    // Free for every window (no contract references it), with a name that cannot
+    // be confused with another car - so a booking-form assertion can name the
+    // EXACT vehicle rather than merely "some car".
+    { id: "car3", make: "Mazda", model: "CX5", year: 2025, plate_number: "55555", status: "available", category: "rental", tenant_id: TENANT_A, purchase_price: 15000, purchase_date: "2025-06-01", daily_rate: 25, weekly_rate: 150, monthly_rate: 600, seats: 5, transmission: "automatic", fuel_type: "petrol", location: "Manama" },
   ],
   depreciation_schedules: [
     { id: "ds1", car_id: "car1", method: "straight_line", useful_life_years: 5, salvage_value: 1000, annual_rate: 20, start_date: "2026-12-31", tenant_id: TENANT_A },
@@ -337,6 +348,64 @@ const server = http.createServer(async (req, res) => {
   }
   if (path === "/auth/v1/logout") {
     return send(res, 204, undefined);
+  }
+
+  // ---- Auth admin API -----------------------------------------------------
+  // The public signup route provisions through `auth.admin.createUser` /
+  // `deleteUser`. Without these the "Start Free" flow could only be tested by
+  // reading the route source, never by running it. AUTH_USERS is a separate
+  // identity list from `public.users` on purpose: a real install has an
+  // `auth.users` row that may exist BEFORE the `public.users` mapping is
+  // written, and the route's rollback relies on being able to delete the former
+  // when the latter fails.
+  const adminUser = /^\/auth\/v1\/admin\/users(?:\/([0-9a-fA-F-]+))?$/.exec(path);
+  if (adminUser) {
+    if (req.method === "POST" && !adminUser[1]) {
+      const chunks = [];
+      for await (const c of req) chunks.push(c);
+      let body = {};
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      } catch {
+        return send(res, 400, { message: "invalid JSON body", code: "bad_request" });
+      }
+      const email = String(body.email ?? "").toLowerCase();
+      if (!email) return send(res, 400, { message: "email is required", code: "validation_failed" });
+      // A real Auth refuses a duplicate address; the route relies on that too, so
+      // the stub must not silently accept one or the duplicate-email path is
+      // untestable.
+      const clash = USERS.some((u) => u.email === email) || AUTH_USERS.some((u) => u.email === email);
+      if (clash) {
+        return send(res, 422, { message: "A user with this email address has already been registered", code: "email_exists" });
+      }
+      const n = AUTH_USERS.length + 1;
+      const user = {
+        id: `ffffffff-0000-4000-8000-${String(n).padStart(12, "0")}`,
+        aud: "authenticated",
+        role: "authenticated",
+        email,
+        email_confirmed_at: new Date().toISOString(),
+        confirmed_at: new Date().toISOString(),
+        last_sign_in_at: new Date().toISOString(),
+        app_metadata: { provider: "email", providers: ["email"] },
+        user_metadata: body.user_metadata ?? {},
+        identities: [],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      AUTH_USERS.push(user);
+      return send(res, 200, { user });
+    }
+    if (req.method === "DELETE" && adminUser[1]) {
+      const id = adminUser[1];
+      const i = AUTH_USERS.findIndex((u) => u.id === id);
+      if (i >= 0) AUTH_USERS.splice(i, 1);
+      return send(res, 200, {});
+    }
+    if (req.method === "GET" && adminUser[1]) {
+      const found = AUTH_USERS.find((u) => u.id === adminUser[1]);
+      return found ? send(res, 200, { user: found }) : send(res, 404, { message: "User not found", code: "not_found" });
+    }
   }
   if (path === "/auth/v1/settings") {
     return send(res, 200, { external: {}, disable_signup: false });

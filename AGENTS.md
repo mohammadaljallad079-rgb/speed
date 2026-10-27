@@ -2236,3 +2236,57 @@ that applies the filters it is given and returns only affected rows.
   branched from and pushed on top of that, not on the stale commit.
 - Baseline after Exec 69: **1519 tests / 1513 pass / 6 skipped / 0 fail**;
   typecheck 0 errors; lint clean; production build green.
+
+## Execution 70 invariants (customer row isolation + fail-closed tenant scopes)
+
+- **Migration 016 is the intra-tenant isolation model.** 001/002 isolate by
+  TENANT, so every `authenticated` identity of a tenant satisfies the tenant
+  predicate for every row of that tenant - a rental customer could read another
+  customer's rentals, invoices and payments. `016_customer_row_isolation.sql`
+  adds two SECURITY DEFINER predicates with a pinned `search_path`
+  (`current_customer_id()`, `current_user_is_office()`), RESTRICTIVE policies on
+  the customer-owned tables, and a BEFORE trigger on `users` that refuses any
+  self-escalation of `role` (the second half of the reported defect). A NULL
+  `customer_id` means "no portal customer", so a tenant-less row is not a
+  cross-customer path. The office/ERP side is exempt, and `cars` stays
+  tenant-scoped (it is a catalogue, not customer-owned).
+- **`revoke execute ... from anon` on the predicate helpers.** A SECURITY DEFINER
+  predicate that `anon` may execute is a callable oracle; the 004 posture is the
+  model. The harness asserts anon is DENIED (privilege), not merely that it sees
+  0 rows - the stronger claim.
+- **`scopeToTenant` (and `scopeToCompany`) are fail-closed.** A caller whose
+  tenant could not be resolved is confined to `IS NULL`, never left unfiltered;
+  only a global super admin reads unfiltered. `scopeToTenant` delegates to
+  `scopeToTenantColumn` so there is ONE tenant predicate, not two that can
+  disagree - it was exported but unused, which is exactly why the next caller
+  would have inherited the hole.
+- **The fail-open shape is banned and scanned for.** `if (context.tenantId)
+  query = query.eq("tenant_id", ...)` leaves the query UNFILTERED when the tenant
+  is unresolved. It was an invoice IDOR in `/api/invoices/[id]` (GET and DELETE)
+  and `/api/invoices/[id]/reverse`, and a cross-tenant history read in
+  `/api/financial/report-format?what=history`. The correct shape is the
+  fail-closed ternary falling back to `.is("tenant_id", null)`.
+  `tests/security-tenant-isolation.test.ts` scans every `src/app/api/**/route.ts`
+  for the banned shape and fails on a new one.
+- **A tenant-owned row is stamped with the session tenant at creation.**
+  `/api/users` POST created the auth user and let the profile trigger create the
+  `users` row with no `tenant_id`, so the account landed in the NULL-tenant
+  bucket. `users` is tenant-owned (002's tenant table list). The stamp comes from
+  the session, never the body, and the auth user is rolled back if it fails. The
+  list endpoint is fail-closed too: only a global super admin enumerates every
+  account; an unresolved tenant yields no accounts.
+- **The capture tooling needs one session per area.** `capture-screenshots.mjs`
+  signed in as `super_admin` only and then visited ERP pages. Since Exec 69 the
+  area boundary is server-enforced, so those pages (correctly) redirect to
+  `/access-denied`. It now builds three contexts - anonymous, `platform`
+  (`super_admin`), `erp` (company `admin`) - and picks the session per shot from
+  the shot name. A masked failure before Exec 69; a real one now.
+- **Real browser evidence on the release commit:** `docs/screenshots/exec70/`
+  holds 82 screenshots (41 shots x desktop 1440x1000 / mobile 390x900) with
+  `MANIFEST.json`, captured against the local Supabase stub
+  (`scripts/dev/local-supabase-stub.mjs`) - never a live system. The capture
+  fails on a duplicate image so a blank frame cannot be committed as evidence.
+- Harnesses: `supabase/tests/016_harness/run.sh` (39/39) applies 016, re-applies
+  it idempotently, rolls it back, and asserts cross-customer denial plus anon
+  denial. Baseline after Exec 70: **1552 tests / 1546 pass / 6 skipped / 0 fail**;
+  typecheck 0 errors; lint clean; production build green.

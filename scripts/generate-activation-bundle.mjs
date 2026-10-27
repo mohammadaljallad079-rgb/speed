@@ -1011,3 +1011,87 @@ order by ok, item;
 fs.writeFileSync(OUT_016, header016, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_016)}`);
 console.log(`  016 sha256 ${h016}`);
+
+// ---------------------------------------------------------------------------
+// 017 — booking overlap guard. Appended after 016: it is independent of the
+// policy work, but it is applied LAST because it refuses new overlapping rental
+// contracts, and an operator should have the reconciliation query from 013
+// available first.
+// ---------------------------------------------------------------------------
+const b017 = read("017_booking_overlap_guard.sql");
+const h017 = sha(b017);
+const OUT_017 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_017.sql");
+
+const header017 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (017)
+-- Booking overlap guard: a car cannot be double-booked.
+--
+-- Apply AFTER 016, as the last step of
+--   supabase/PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005_006 -> 007
+--   -> 008 -> ... -> 016 -> 017
+-- on project chlkmdobhvfnldqkgdji.
+--
+-- This file embeds migration 017 VERBATIM between a read-only PRE-FLIGHT and a
+-- read-only POST-FLIGHT. Do not edit the embedded body; edit
+-- supabase/migrations/017_booking_overlap_guard.sql and regenerate this file:
+--
+--     node scripts/generate-activation-bundle.mjs
+--
+-- The body is byte-identical to the migration (verified by
+-- tests/activation-package-integrity.test.ts, which recomputes this hash).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- PRE-FLIGHT (read-only). Run this first and read the output.
+-- ----------------------------------------------------------------------------
+select 'PRE: rental_contracts has car_id/start_date/end_date' as item,
+       (select count(*) from information_schema.columns
+        where table_schema='public' and table_name='rental_contracts'
+          and column_name in ('car_id','start_date','end_date')) = 3 as ok
+union all select 'PRE: btree_gist available (optional - the trigger covers it)',
+       exists (select 1 from pg_available_extensions where name='btree_gist')
+union all select 'PRE: no overlapping blocking contracts yet',
+       not exists (
+         select 1 from public.rental_contracts a
+         join public.rental_contracts b
+           on a.car_id = b.car_id and a.id < b.id
+          and coalesce(a.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
+            = coalesce(b.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
+         where lower(coalesce(a.status,'')) in ('pending','active','confirmed','reserved','approved','ongoing','rented')
+           and lower(coalesce(b.status,'')) in ('pending','active','confirmed','reserved','approved','ongoing','rented')
+           and daterange(a.start_date, a.end_date, '[)') && daterange(b.start_date, b.end_date, '[)')
+       )
+order by ok, item;
+
+${sep}
+-- BEGIN 017_booking_overlap_guard.sql
+-- SHA-256 (body): ${h017}
+${sep}
+
+${b017}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only - proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'the status helper exists' as item,
+       exists (select 1 from pg_proc where proname = 'booking_blocks_car') as ok
+union all select 'the double-booking trigger is installed',
+       exists (select 1 from pg_trigger where tgname = 'rental_contracts_no_double_booking') as ok
+union all select 'the exclusion constraint exists OR btree_gist was unavailable',
+       exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
+       or not exists (select 1 from pg_extension where extname = 'btree_gist') as ok
+union all select 'the guard functions are not callable by a client',
+       (select count(*) from information_schema.routine_privileges
+        where routine_name in ('booking_blocks_car', 'prevent_car_double_booking')
+          and grantee in ('anon', 'authenticated', 'PUBLIC')) = 0 as ok
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (017)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_017, header017, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_017)}`);
+console.log(`  017 sha256 ${h017}`);

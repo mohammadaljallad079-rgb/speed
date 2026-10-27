@@ -27,6 +27,7 @@ const PKG_013 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_013.sql");
 const PKG_014 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_014.sql");
 const PKG_015 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_015.sql");
 const PKG_016 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_016.sql");
+const PKG_017 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_017.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -511,6 +512,25 @@ const LATER_PACKAGES: Array<{
     allowsSecurityDefiner: true,
     definerFunctions: ["current_customer_id", "is_erp_user", "prevent_self_privilege_escalation"],
   },
+  {
+    n: "017",
+    file: "017_booking_overlap_guard.sql",
+    pkg: PKG_017,
+    migration: "017_booking_overlap_guard.sql",
+    rollback: "017_booking_overlap_guard_rollback.sql",
+    mustMention: [
+      /PRODUCTION_ACTIVATION_001_002_003\.sql/,
+      /016/,
+      /chlkmdobhvfnldqkgdji/,
+      /rental_contracts_no_car_overlap/,
+    ],
+    // `prevent_car_double_booking` is SECURITY DEFINER on purpose: it must see
+    // every booking of the car to detect the overlap, and RLS would otherwise
+    // filter that read. It reads only `rental_contracts`, returns NEW, and is
+    // revoked from anon/authenticated, so it is not a client-reachable probe.
+    allowsSecurityDefiner: true,
+    definerFunctions: ["prevent_car_double_booking"],
+  },
 ];
 
 for (const p of LATER_PACKAGES) {
@@ -558,18 +578,36 @@ for (const p of LATER_PACKAGES) {
       test("a definer function is only the ones this package declares", () => {
         const declared = p.definerFunctions ?? [];
         assert.ok(declared.length > 0, "a definer opt-in must name its functions");
-        const defined = [...text.matchAll(/create or replace function public\.(\w+)\s*\(/g)].map((m) => m[1]);
+        // Only the embedded body may define a function. Scanning the whole file
+        // would also read the PRE-/POST-FLIGHT queries, and `security definer`
+        // is then attributed to whichever function is textually nearest - which
+        // is how this check used to pass while pointing at the wrong function.
+        const { body: embeddedBody } = embedded(text, begin, "-- POST-FLIGHT");
+        const defined = [...embeddedBody.matchAll(/create or replace function public\.(\w+)\s*\(/g)].map((m) => m[1]);
+        // The property that matters is that no UNDECLARED function is a definer
+        // function: that would be a privilege boundary nobody reviewed. A plain
+        // (invoker) helper next to a declared definer one is fine and common -
+        // 017's `booking_blocks_car` is a pure immutable predicate.
+        const functionBody = (fn: string) => {
+          const at = embeddedBody.indexOf(`function public.${fn}(`);
+          assert.ok(at >= 0, `${fn} is not defined in the embedded body`);
+          return embeddedBody.slice(at, embeddedBody.indexOf("$$;", at));
+        };
         for (const fn of defined) {
-          assert.ok(declared.includes(fn), `undeclared definer function: ${fn}`);
+          if (declared.includes(fn)) continue;
+          assert.doesNotMatch(
+            functionBody(fn),
+            /security\s+definer/i,
+            `undeclared definer function: ${fn}`,
+          );
         }
         // Each declared function must actually be defined, and each definition
         // must carry `security definer` and a pinned search_path.
         for (const fn of declared) {
           assert.ok(defined.includes(fn), `declared but not defined: ${fn}`);
-          const block = text.slice(text.indexOf(`function public.${fn}(`));
-          const body = block.slice(0, block.indexOf("$$;"));
-          assert.match(body, /security\s+definer/i, `${fn} must be security definer`);
-          assert.match(body, /set\s+search_path\s*=\s*public/i, `${fn} must pin search_path`);
+          const fnBody = functionBody(fn);
+          assert.match(fnBody, /security\s+definer/i, `${fn} must be security definer`);
+          assert.match(fnBody, /set\s+search_path\s*=\s*public/i, `${fn} must pin search_path`);
         }
       });
 

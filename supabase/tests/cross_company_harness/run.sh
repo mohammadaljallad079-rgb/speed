@@ -83,6 +83,7 @@ MIGRATIONS=(
   014_tenant_chart_of_accounts
   015_strict_accounting_integrity
   016_customer_row_isolation
+  017_booking_overlap_guard
 )
 
 echo "== recreating $DB =="

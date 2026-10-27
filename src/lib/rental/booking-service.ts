@@ -147,6 +147,28 @@ function isIsoDate(value: unknown): value is string {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+/**
+ * Whether a write error is migration 017's double-booking guard.
+ *
+ * The guard raises `exclusion_violation` (SQLSTATE 23P01) from the trigger, and
+ * the exclusion constraint raises the same code, so the code alone is enough.
+ * The message is checked too because PostgREST does not always surface
+ * `code` on a constraint violation, and a false negative here would show the
+ * customer a 500 instead of "already booked".
+ */
+export function isOverlapViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const e = error as { code?: unknown; message?: unknown; details?: unknown };
+  if (String(e.code ?? "") === "23P01") return true;
+  const haystack = `${e.message ?? ""} ${e.details ?? ""}`.toLowerCase();
+  return (
+    haystack.includes("already booked") ||
+    haystack.includes("exclusion") ||
+    haystack.includes("conflicting contract") ||
+    haystack.includes("rental_contracts_no_car_overlap")
+  );
+}
+
 function assertDateRange(start: unknown, end: unknown): void {
   if (!isIsoDate(start) || !isIsoDate(end)) throw badRequest("startDate and endDate are required (YYYY-MM-DD)");
   if (end <= start) throw badRequest("endDate must be after startDate");
@@ -414,7 +436,17 @@ export async function createBooking(
     .insert(row)
     .select("id,contract_number")
     .single();
-  if (insertError) throw insertError;
+  if (insertError) {
+    // The application check above is a check-then-act: two simultaneous requests
+    // can both read "free". Migration 017 closes that with an exclusion
+    // constraint and a trigger, which reject the loser at write time. Translate
+    // that database rejection into the SAME 409 the pre-check returns, so a
+    // customer who lost the race sees "already booked" rather than a 500.
+    if (isOverlapViolation(insertError)) {
+      throw new ApiError(409, "car_unavailable", "This car is already booked for the selected period");
+    }
+    throw insertError;
+  }
 
   const record = (created ?? {}) as Row;
   return {

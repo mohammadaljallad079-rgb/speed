@@ -79,68 +79,65 @@ select
 --    regardless, so the race is still closed. Reconcile these to gain the
 --    declarative guard.
 --
---    The predicate is the same one 017 uses, and it is written out per precision
---    because SQL cannot select a column that may not exist.
+--    The predicate is the same one 017 uses. It is assembled with dynamic SQL
+--    because a plain statement cannot reference a column that may not exist -
+--    which is exactly the tenant-less shape this script has to be able to
+--    inspect. Read-only: the generated statement is a single SELECT.
 -- ----------------------------------------------------------------------------
-with cols as (
-  select column_name from information_schema.columns
-  where table_schema = 'public' and table_name = 'rental_contracts'
-),
-p as (
+do $pf$
+declare
+  v_tz    boolean;
+  v_ts    boolean;
+  v_tm    boolean;
+  v_ten   boolean;
+  v_pred  text;
+  v_expr  text;
+  v_n     bigint;
+begin
   select
-    exists (select 1 from cols where column_name = 'start_at')  as tz,
-    exists (select 1 from cols where column_name = 'start_ts')  as ts,
-    exists (select 1 from cols where column_name = 'start_time') as tm
-)
-select
-  case
-    when (select tz from p) then 'timestamptz'
-    when (select ts from p) then 'timestamp'
-    when (select tm from p) then 'date+time'
-    else 'date'
-  end as precision_checked,
-  case
-    when (select tz from p) then (
-      select count(*) from public.rental_contracts a
-      join public.rental_contracts b
-        on a.car_id = b.car_id and a.id < b.id
-       and coalesce(a.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-         = coalesce(b.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-       and a.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and b.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and tstzrange(a.start_at, a.end_at, '[)') && tstzrange(b.start_at, b.end_at, '[)'))
-    when (select ts from p) then (
-      select count(*) from public.rental_contracts a
-      join public.rental_contracts b
-        on a.car_id = b.car_id and a.id < b.id
-       and coalesce(a.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-         = coalesce(b.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-       and a.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and b.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and tsrange(a.start_ts, a.end_ts, '[)') && tsrange(b.start_ts, b.end_ts, '[)'))
-    when (select tm from p) then (
-      select count(*) from public.rental_contracts a
-      join public.rental_contracts b
-        on a.car_id = b.car_id and a.id < b.id
-       and coalesce(a.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-         = coalesce(b.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-       and a.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and b.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and tsrange(a.start_date + coalesce(a.start_time,'00:00'::time),
-                   a.end_date   + coalesce(a.end_time,  '00:00'::time), '[)')
-        && tsrange(b.start_date + coalesce(b.start_time,'00:00'::time),
-                   b.end_date   + coalesce(b.end_time,  '00:00'::time), '[)'))
-    else (
-      select count(*) from public.rental_contracts a
-      join public.rental_contracts b
-        on a.car_id = b.car_id and a.id < b.id
-       and coalesce(a.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-         = coalesce(b.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-       and a.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and b.status in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-       and tsrange(a.start_date::timestamp, a.end_date::timestamp, '[)')
-        && tsrange(b.start_date::timestamp, b.end_date::timestamp, '[)'))
-  end as pre_existing_overlaps;
+    exists (select 1 from information_schema.columns where table_schema='public'
+            and table_name='rental_contracts' and column_name='start_at'),
+    exists (select 1 from information_schema.columns where table_schema='public'
+            and table_name='rental_contracts' and column_name='start_ts'),
+    exists (select 1 from information_schema.columns where table_schema='public'
+            and table_name='rental_contracts' and column_name='start_time'),
+    exists (select 1 from information_schema.columns where table_schema='public'
+            and table_name='rental_contracts' and column_name='tenant_id')
+  into v_tz, v_ts, v_tm, v_ten;
+
+  -- The tenant equality is part of the predicate only when the column exists.
+  v_pred := case when v_ten
+    then 'and coalesce(a.tenant_id, ''00000000-0000-0000-0000-000000000000''::uuid)'
+         || ' = coalesce(b.tenant_id, ''00000000-0000-0000-0000-000000000000''::uuid)'
+    else '' end;
+
+  v_expr := case
+    when v_tz then 'tstzrange(a.start_at, a.end_at, ''[)'') && tstzrange(b.start_at, b.end_at, ''[)'')'
+    when v_ts then 'tsrange(a.start_ts, a.end_ts, ''[)'') && tsrange(b.start_ts, b.end_ts, ''[)'')'
+    when v_tm then 'tsrange(a.start_date + coalesce(a.start_time,''00:00''::time),'
+                || ' a.end_date + coalesce(a.end_time,''00:00''::time), ''[)'')'
+                || ' && tsrange(b.start_date + coalesce(b.start_time,''00:00''::time),'
+                || ' b.end_date + coalesce(b.end_time,''00:00''::time), ''[)'')'
+    else 'tsrange(a.start_date::timestamp, a.end_date::timestamp, ''[)'')'
+      || ' && tsrange(b.start_date::timestamp, b.end_date::timestamp, ''[)'')'
+  end;
+
+  execute format(
+    'select count(*) from public.rental_contracts a'
+    ' join public.rental_contracts b'
+    '   on a.car_id = b.car_id and a.id < b.id %s'
+    -- The status list is written out rather than calling booking_blocks_car:
+    -- that helper is created BY 017, so it does not exist before activation.
+    '  and a.status in (''pending'',''active'',''confirmed'',''reserved'',''approved'',''ongoing'',''rented'')'
+    '  and b.status in (''pending'',''active'',''confirmed'',''reserved'',''approved'',''ongoing'',''rented'')'
+    '  and %s', v_pred, v_expr)
+  into v_n;
+
+  raise notice '017 PRE-FLIGHT: precision=%, tenant_id=%, pre_existing_overlaps=%',
+    case when v_tz then 'timestamptz' when v_ts then 'timestamp' when v_tm then 'date+time' else 'date' end,
+    case when v_ten then 'present' else 'absent (tenant-less install)' end,
+    v_n;
+end $pf$;
 
 -- ----------------------------------------------------------------------------
 -- 4. Is 017 already applied? (Idempotence check - re-running is safe either way.)

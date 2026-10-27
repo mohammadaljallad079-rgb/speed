@@ -230,6 +230,28 @@ test("017 reports which guard is active rather than implying the strongest one",
   assert.match(pkg, /active_guard/, "the POST-FLIGHT must report the active guard");
 });
 
+test("the preflight inspects the tenant-less shape it exists to report on", () => {
+  const sql = read(PREFLIGHT);
+  // The preflight runs BEFORE 017, so `booking_blocks_car` does not exist yet and
+  // must not be called; and a plain statement cannot name a tenant column that may
+  // be absent, so the overlap predicate is assembled dynamically.
+  assert.doesNotMatch(
+    executableSql(sql),
+    /public\.booking_blocks_car\s*\(/,
+    "the preflight must not call a helper that 017 has not created yet",
+  );
+  assert.match(sql, /execute\s+format\(/, "the overlap predicate must be assembled dynamically");
+  assert.match(sql, /v_ten/, "the preflight must detect whether tenant_id exists");
+  assert.match(sql, /case when v_ten[\s\S]{0,40}then 'and coalesce\(a\.tenant_id/,
+    "the tenant equality must be emitted only when the column exists");
+  assert.match(sql, /else '' end/, "and must be empty when it does not");
+  // Still read-only after the rewrite.
+  const exec = executableSql(sql);
+  for (const re of [/\binsert\b/i, /\bupdate\b/i, /\bdelete\b/i, /\bdrop\b/i, /\balter\b/i, /\btruncate\b/i]) {
+    assert.doesNotMatch(exec, re, `the preflight must stay read-only: ${re}`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 4. The frozen package
 // ---------------------------------------------------------------------------

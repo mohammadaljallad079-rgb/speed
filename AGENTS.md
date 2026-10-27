@@ -2410,6 +2410,13 @@ that applies the filters it is given and returns only affected rows.
   tenant-less table and asserts exactly one session commits).
 - **Lesson:** a migration harness that only models the tenanted schema cannot see
   a defect that only appears without the column. Model the *live* shape too.
-- Baseline after Exec 72.1: 1614 tests / 1608 pass / 0 fail / 6 skipped; typecheck
+- **The read-only preflight had the same tenant-less defect, twice over.** Its
+  overlap predicate named `a.tenant_id`/`b.tenant_id` unconditionally (failing on
+  the shape it exists to inspect), and it called `public.booking_blocks_car(...)`
+  - a helper that **017 creates**, so it does not exist before activation. It now
+  assembles the predicate with dynamic SQL (still a single read-only SELECT),
+  emits the tenant equality only when `v_ten`, and writes the blocking-status list
+  out inline. It reports the precision and whether `tenant_id` is present.
+- Baseline after Exec 72.2: 1615 tests / 1609 pass / 0 fail / 6 skipped; typecheck
   0 errors; lint clean; all six harnesses pass (isolation 17, 004, 005 10, 007 15,
   017 39, cross-company 47) plus the 19-assertion two-session race harness.

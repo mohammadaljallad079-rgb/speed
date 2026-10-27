@@ -178,6 +178,10 @@ export async function writeJournal(
   // already stamped a different tenant on the header or a line is a bug (or an
   // attack) - it is refused rather than silently overwritten, because a silent
   // overwrite would move a journal out of the company that built it.
+  if (!tenantId) {
+    throw new Error("Cannot post a journal without a company tenantId.");
+  }
+
   if (tenantId) {
     const headerTenant = journal.header.tenant_id;
     if (headerTenant !== undefined && headerTenant !== null && headerTenant !== tenantId) {
@@ -208,22 +212,9 @@ export async function writeJournal(
     // path, which compensates a failed line write by deleting the orphan header.
   }
 
-  const { data: header, error: headerErr } = await client
-    .from("journal_entries")
-    .insert(journal.header)
-    .select("id")
-    .single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
-  return journalId;
+  throw new Error(
+    "Atomic journal posting is required: post_journal_entry RPC is unavailable."
+  );
 }
 
 /**

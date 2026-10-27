@@ -110,6 +110,11 @@ begin
   begin
     v_tenant := nullif(p_header->>'tenant_id','')::uuid;
 
+    if v_tenant is null then
+      raise exception 'post_journal_entry: tenant_id is required for new journals'
+        using errcode = 'not_null_violation';
+    end if;
+
     -- ---- Validate the line set before touching the database. ----------------
     if p_lines is null or jsonb_typeof(p_lines) <> 'array' or jsonb_array_length(p_lines) = 0 then
       raise exception 'post_journal_entry: a journal must have at least one line'
@@ -214,7 +219,7 @@ begin
         ) t
         left join public.accounts a on a.id = t.aid
         where a.id is null
-           or (v_has_acct_tenant and a.tenant_id is not null and a.tenant_id <> v_tenant)
+           or (v_has_acct_tenant and a.tenant_id is distinct from v_tenant)
            or (v_has_acct_postable and a.is_postable is false)
            or (v_has_acct_active and a.is_active is false);
 
@@ -274,11 +279,20 @@ begin
       v_line_sel  := v_line_sel  || ', nullif(elem->>''line_order'','''')::int';
     end if;
     if v_has_line_tenant then
-      -- A line belongs to the same company as its header, always. $3 is the
-      -- header tenant as TEXT: `coalesce` cannot unify text and uuid, so the
-      -- parameter is cast rather than left as uuid.
+      -- Every line inherits the validated header tenant.
+      -- Never trust a separately supplied line tenant.
+      if exists (
+        select 1
+        from jsonb_array_elements(p_lines) elem
+        where nullif(elem->>'tenant_id', '') is not null
+          and (elem->>'tenant_id')::uuid is distinct from v_tenant
+      ) then
+        raise exception 'post_journal_entry: line tenant differs from journal tenant'
+          using errcode = 'check_violation';
+      end if;
+
       v_line_cols := v_line_cols || ', tenant_id';
-      v_line_sel  := v_line_sel  || ', coalesce(nullif(elem->>''tenant_id'',''''), $3::text)::uuid';
+      v_line_sel  := v_line_sel || ', $3::uuid';
     end if;
 
     execute format(

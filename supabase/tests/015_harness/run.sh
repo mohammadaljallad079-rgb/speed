@@ -104,6 +104,7 @@ create table public.invoices (
 insert into public.accounts (id, code, tenant_id, is_active, is_postable) values
   ('00000000-0000-0000-0000-00000000a001', '11001', '00000000-0000-0000-0000-0000000000a1', true, true),
   ('00000000-0000-0000-0000-00000000a002', '12001', '00000000-0000-0000-0000-0000000000a1', true, true),
+  ('00000000-0000-0000-0000-00000000a003', '41002', '00000000-0000-0000-0000-0000000000a1', true, true),
   ('00000000-0000-0000-0000-00000000b001', '11001', '00000000-0000-0000-0000-0000000000b1', true, true),
   ('00000000-0000-0000-0000-00000000b002', '12001', '00000000-0000-0000-0000-0000000000b1', true, true),
   -- shared (NULL-tenant) chart, usable by anyone
@@ -158,24 +159,33 @@ expect_eq "a tenanted journal on its OWN account posts" \
   "$(q "select public.post_journal_entry(
      '{\"journal_number\":\"JV-OWN\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
      '[{\"account_id\":\"00000000-0000-0000-0000-00000000a001\",\"debit\":10,\"credit\":0},
-       {\"account_id\":\"00000000-0000-0000-0000-0000000000f1\",\"debit\":0,\"credit\":10}]'::jsonb
+       {\"account_id\":\"00000000-0000-0000-0000-00000000a003\",\"debit\":0,\"credit\":10}]'::jsonb
    ) is not null")" "t"
 
-expect_eq "a tenanted journal on the SHARED chart posts" \
+expect_refused "a tenanted journal on the SHARED chart is refused" \
   "$(q "select public.post_journal_entry(
      '{\"journal_number\":\"JV-SHARED\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
      '[{\"account_id\":\"00000000-0000-0000-0000-0000000000f1\",\"debit\":5,\"credit\":0},
        {\"account_id\":\"00000000-0000-0000-0000-00000000a002\",\"debit\":0,\"credit\":5}]'::jsonb
    ) is not null")" "t"
 
-# The legacy single-tenant install must keep working EXACTLY as before: a
-# NULL-tenant journal is exempt from the ownership rule.
-expect_eq "a NULL-tenant journal is exempt and still posts" \
-  "$(q "select public.post_journal_entry(
+# Historical NULL-tenant journals remain stored, but new ones are refused.
+expect_refused "a NEW NULL-tenant journal is refused" \
+  "select public.post_journal_entry(
      '{\"journal_number\":\"JV-LEGACY\"}'::jsonb,
      '[{\"account_id\":\"00000000-0000-0000-0000-0000000000f1\",\"debit\":1,\"credit\":0},
        {\"account_id\":\"00000000-0000-0000-0000-0000000000f2\",\"debit\":0,\"credit\":1}]'::jsonb
-   ) is not null")" "t"
+   )"
+
+# Reject a line that claims to belong to another company.
+expect_refused "a journal with a FOREIGN line tenant is refused" \
+  "select public.post_journal_entry(
+     '{\"journal_number\":\"JV-LINE-MISMATCH\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000a1\"}'::jsonb,
+     '[{\"account_id\":\"00000000-0000-0000-0000-00000000a001\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000b1\",\"debit\":10,\"credit\":0},
+       {\"account_id\":\"00000000-0000-0000-0000-00000000a003\",\"debit\":0,\"credit\":10}]'::jsonb)"
+
+expect_eq "a mismatched line left NO journal header" \
+  "$(q "select count(*) from public.journal_entries where journal_number='JV-LINE-MISMATCH'")" "0"
 
 # --- 3. THE key property: an atomic receipt -------------------------------
 expect_eq "a receipt writes payment + journal + settlement in one call" \

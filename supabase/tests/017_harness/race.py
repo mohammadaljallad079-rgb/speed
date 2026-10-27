@@ -114,6 +114,21 @@ create table public.rental_contracts (
 );
 """
 
+# A tenant-less shape: the trigger and the constraint must still work, and the
+# function body must not reference `new.tenant_id` (which would be a runtime
+# error the moment it fired).
+BASE_TENANTLESS = """
+create extension if not exists btree_gist;
+create table public.rental_contracts (
+  id uuid primary key default gen_random_uuid(),
+  contract_number text,
+  car_id uuid,
+  start_date date,
+  end_date date,
+  status text default 'pending'
+);
+"""
+
 PLAIN_SELECT_TRIGGER = """
 create or replace function public.booking_blocks_car(p_status text)
 returns boolean language sql immutable as $$
@@ -157,7 +172,17 @@ def reset_rows():
     c.close()
 
 
+TENANTLESS = {"on": False}
+
+
 def insert(cur, num, car=CAR, sd="2026-03-01", ed="2026-03-05", st=None, et=None):
+    if TENANTLESS["on"]:
+        cur.execute(
+            "insert into public.rental_contracts"
+            " (contract_number, car_id, start_date, end_date, status)"
+            " values (%s,%s,%s,%s,'pending')",
+            (num, car, sd, ed))
+        return
     cur.execute(
         "insert into public.rental_contracts"
         " (contract_number, car_id, start_date, end_date, start_time, end_time, status, tenant_id)"
@@ -318,6 +343,23 @@ def main():
         insert(cur, "RC-3", car=CAR2, sd="2026-03-01", ed="2026-03-05")
     c.close()
     check("another car in the same window is accepted", count_rows() == 3, f"rows={count_rows()}")
+
+    print("\n-- tenant-less install: the guard works without a tenant_id column --")
+    recreate(); apply_sql(BASE_TENANTLESS)
+    TENANTLESS["on"] = True
+    try:
+        try:
+            apply_migration()
+            check("017 applies on a tenant-less rental_contracts", True)
+        except Exception as exc:  # noqa: BLE001
+            check("017 applies on a tenant-less rental_contracts", False, str(exc).splitlines()[0][:70])
+        check("the trigger is installed without tenant_id", count_trigger() == 1)
+        check("the exclusion constraint is installed without tenant_id", count_constraint() == 1)
+        outcome, n = race()
+        print(f"     outcome={outcome} rows={n}")
+        check("the tenant-less guard lets exactly ONE session commit", n == 1, f"rows={n}")
+    finally:
+        TENANTLESS["on"] = False
 
     print("\n-- fail-closed: a rental_contracts with no usable window column --")
     recreate("speed_race_nw")

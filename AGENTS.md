@@ -2393,6 +2393,23 @@ that applies the filters it is given and returns only affected rows.
   at what precision. Exit 0 = satisfied, 1 = missing, **2 = NOT VERIFIED** (no
   usable credentials). Exit 2 is deliberately not success: an unreadable schema is
   never reported as a verified one.
-- Baseline after Exec 72.1: 1610 tests / 1604 pass / 0 fail / 6 skipped; typecheck
+- **A tenant-LESS `rental_contracts` was a second, independent defect, and it
+  silently no-opped the whole migration.** The trigger's `update of` list, the
+  exclusion constraint and the duplicate-scan query all named `tenant_id`
+  unconditionally. On a schema without that column (which is the *live* shape
+  today, and the shape a fresh install gets) PostgreSQL raised
+  `column "tenant_id" ... does not exist`, so 017 applied **nothing** while the
+  package reported success. Fixing only the DDL was not enough: the function
+  *body* also referenced `new.tenant_id`, which creates a trigger that raises
+  `record "new" has no field "tenant_id"` the first time it fires. Every tenant
+  reference is now emitted through `format()` only when `v_tenant` is true - the
+  lock key becomes the bare sentinel and the conflict predicate's tenant equality
+  becomes empty. Harnesses all had a `tenant_id` column, which is exactly why
+  they missed it; both now cover the tenant-less shape explicitly
+  (`017_harness/run.sh` section 10, four assertions per variant; `race.py` races a
+  tenant-less table and asserts exactly one session commits).
+- **Lesson:** a migration harness that only models the tenanted schema cannot see
+  a defect that only appears without the column. Model the *live* shape too.
+- Baseline after Exec 72.1: 1614 tests / 1608 pass / 0 fail / 6 skipped; typecheck
   0 errors; lint clean; all six harnesses pass (isolation 17, 004, 005 10, 007 15,
-  017 31, cross-company 47) plus the 15-assertion two-session race harness.
+  017 39, cross-company 47) plus the 19-assertion two-session race harness.

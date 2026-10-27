@@ -80,7 +80,7 @@ select
 
 -- ==========================================================================
 -- BEGIN 017_booking_overlap_guard.sql
--- SHA-256 (body): bb509c85d5fead647593a5e15702f4c257c8a209258fc6690452d7b79a7c2dea
+-- SHA-256 (body): 738c04d7098df594f88da8f3081f26f602ce319a8d579f393bcd9529a98c9f18
 -- ==========================================================================
 
 -- ============================================================================
@@ -195,12 +195,16 @@ declare
   v_ts         boolean;   -- start_ts / end_ts are timestamp
   v_date       boolean;   -- start_date / end_date
   v_time       boolean;   -- start_time / end_time
+  v_tenant     boolean;   -- tenant_id (absent on a tenant-less install)
   v_precision  text;
   v_range_type text;
   v_new_expr   text;
   v_row_expr   text;
   v_col_expr   text;
   v_guard_cols text;
+  v_upd_cols   text;
+  v_tenant_key text;   -- the caller's tenant, as a lock-key text
+  v_tenant_pred text;  -- the conflict predicate's tenant equality (or empty)
   v_fn         text;
   v_gist       boolean;
   v_dupes      int;
@@ -234,8 +238,10 @@ begin
     exists (select 1 from information_schema.columns where table_schema='public'
             and table_name='rental_contracts' and column_name='start_time')
       and exists (select 1 from information_schema.columns where table_schema='public'
-            and table_name='rental_contracts' and column_name='end_time')
-    into v_car, v_tz, v_ts, v_date, v_time;
+            and table_name='rental_contracts' and column_name='end_time'),
+    exists (select 1 from information_schema.columns where table_schema='public'
+            and table_name='rental_contracts' and column_name='tenant_id')
+    into v_car, v_tz, v_ts, v_date, v_time, v_tenant;
 
   -- FAIL CLOSED: a table we cannot express a window for is an activation error,
   -- not a silent success. The old version returned here and guarded nothing.
@@ -279,6 +285,24 @@ begin
   -- reduced to its bare column form for that one use.
   v_col_expr := replace(v_row_expr, 'c.', '');
 
+  -- The trigger's `update of` list must name only columns that exist. Naming
+  -- `tenant_id` on a tenant-less install is a hard error that would abort the
+  -- whole migration, so it is added only when the column is really there.
+  v_upd_cols := 'car_id, ' || v_guard_cols || ', status'
+                || case when v_tenant then ', tenant_id' else '' end;
+
+  -- `new.tenant_id` cannot be referenced at all on a tenant-less install: the
+  -- trigger would be created but raise "record new has no field tenant_id" the
+  -- first time it fired. The tenant is therefore expressed as a coalesce when
+  -- the column exists, and as the bare sentinel when it does not.
+  if v_tenant then
+    v_tenant_key  := format('coalesce(new.tenant_id, %s)', v_sentinel);
+    v_tenant_pred := format('and coalesce(c.tenant_id, %s) = coalesce(new.tenant_id, %s)', v_sentinel, v_sentinel);
+  else
+    v_tenant_key  := v_sentinel;
+    v_tenant_pred := '';
+  end if;
+
   raise notice '017: booking precision = % (guard columns: %)', v_precision, v_guard_cols;
 
   -- --------------------------------------------------------------------------
@@ -320,7 +344,7 @@ begin
   -- transaction ends, so a rolled-back insert releases it too.
   perform pg_advisory_xact_lock(
     hashtextextended(
-      coalesce(new.tenant_id, %3$s)::text || ':' || new.car_id::text,
+      %3$s::text || ':' || new.car_id::text,
       0
     )
   );
@@ -329,7 +353,7 @@ begin
   from public.rental_contracts c
   where c.car_id = new.car_id
     and c.id is distinct from new.id
-    and coalesce(c.tenant_id, %3$s) = coalesce(new.tenant_id, %3$s)
+    %5$s
     and public.booking_blocks_car(c.status)
     and %4$s && v_window
   limit 1;
@@ -344,7 +368,7 @@ begin
   return new;
 end;
 $body$;
-$fn$, v_range_type, v_new_expr, v_sentinel, v_row_expr);
+$fn$, v_range_type, v_new_expr, v_tenant_key, v_row_expr, v_tenant_pred);
 
   execute v_fn;
 
@@ -354,11 +378,11 @@ $fn$, v_range_type, v_new_expr, v_sentinel, v_row_expr);
   execute 'drop trigger if exists rental_contracts_no_double_booking on public.rental_contracts';
   execute format($t$
     create trigger rental_contracts_no_double_booking
-      before insert or update of car_id, %1$s, status, tenant_id
+      before insert or update of %1$s
       on public.rental_contracts
       for each row
       execute function public.prevent_car_double_booking()
-  $t$, v_guard_cols);
+  $t$, v_upd_cols);
 
   -- --------------------------------------------------------------------------
   -- 2b. The declarative guard, when it can exist. Optional by design: the
@@ -385,6 +409,8 @@ $fn$, v_range_type, v_new_expr, v_sentinel, v_row_expr);
 
   -- A pre-existing overlap would make the constraint fail. Report it loudly
   -- rather than aborting: the trigger guard is already in place and working.
+  -- The tenant equality is part of the predicate only when the column exists;
+  -- on a tenant-less install naming `a.tenant_id` is a hard error.
   execute format($q$
     select count(*) from (
       select 1
@@ -392,12 +418,14 @@ $fn$, v_range_type, v_new_expr, v_sentinel, v_row_expr);
       join public.rental_contracts b
         on a.car_id = b.car_id
        and a.id < b.id
-       and coalesce(a.tenant_id, %1$s) = coalesce(b.tenant_id, %1$s)
+       %1$s
        and public.booking_blocks_car(a.status)
        and public.booking_blocks_car(b.status)
        and %2$s && %3$s
     ) x
-  $q$, v_sentinel,
+  $q$, case when v_tenant
+            then format('and coalesce(a.tenant_id, %s) = coalesce(b.tenant_id, %s)', v_sentinel, v_sentinel)
+            else '' end,
        replace(v_row_expr, 'c.', 'a.'),
        replace(v_row_expr, 'c.', 'b.'))
   into v_dupes;
@@ -412,11 +440,13 @@ $fn$, v_range_type, v_new_expr, v_sentinel, v_row_expr);
       add constraint rental_contracts_no_car_overlap
       exclude using gist (
         car_id with =,
-        (coalesce(tenant_id, %1$s)) with =,
+        %1$s
         (%2$s) with &&
       )
       where (public.booking_blocks_car(status))
-  $c$, v_sentinel, v_col_expr);
+  $c$,
+  case when v_tenant then format('(coalesce(tenant_id, %s)) with =,', v_sentinel) else '' end,
+  v_col_expr);
 
   raise notice '017: rental_contracts_no_car_overlap created';
 exception

@@ -208,9 +208,19 @@ test("the tenant-less install is protected by coalescing the tenant", () => {
   // still be a real key, so without a sentinel two NULL-tenant bookings for the
   // same car would not conflict - the exact hole the guard must close.
   assert.match(sql, /00000000-0000-0000-0000-000000000000/, "the sentinel UUID must be present");
-  assert.match(sql, /coalesce\(\s*(c\.|new\.)?tenant_id\s*,\s*(%1\$s|v_sentinel|'''00000000)/,
-    "the tenant must be coalesced to the sentinel in the conflict check");
-  assert.match(sql, /coalesce\(new\.tenant_id/, "the advisory lock key must coalesce the tenant");
+  // The predicate is built with format() so the column is named ONLY when it
+  // exists - a literal `new.tenant_id` would be a runtime error on a tenant-less
+  // install the moment the trigger fired.
+  assert.match(
+    sql,
+    /coalesce\(c\.tenant_id, %s\) = coalesce\(new\.tenant_id, %s\)/,
+    "the conflict predicate must compare the caller's tenant, coalesced to the sentinel",
+  );
+  assert.match(sql, /coalesce\(new\.tenant_id, %s\)/, "the advisory lock key must coalesce the tenant");
+  // And the whole thing must be conditional on the column really existing.
+  assert.match(sql, /if v_tenant then[\s\S]{0,200}coalesce\(new\.tenant_id/,
+    "the tenant reference must be guarded by a v_tenant check");
+  assert.match(sql, /v_tenant_pred := ''/, "a tenant-less install must use an empty tenant predicate");
 });
 
 test("the frozen activation package 017 embeds the migration byte-identically", () => {

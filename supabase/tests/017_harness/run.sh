@@ -207,7 +207,49 @@ fi
 "${PSQL[@]}" -c "drop database if exists ${DB}_nw" >/dev/null 2>&1
 
 echo
-echo "== 10. Rollback =="
+echo "== 10. A tenant-LESS rental_contracts still gets the guard =="
+# The trigger's `update of` list and the constraint both used to name `tenant_id`
+# unconditionally, so on a schema without that column the migration ABORTED and
+# installed nothing - a silent no-op on the single-tenant install, which is the
+# live shape today. Each variant must apply and install BOTH guards.
+for variant in tenantless tenantless_time; do
+  NW="${DB}_${variant}"
+  "${PSQL[@]}" -c "drop database if exists $NW" -c "create database $NW" >/dev/null
+  if [ "$variant" = "tenantless_time" ]; then
+    COLS="start_date date, end_date date, start_time time, end_time time"
+  else
+    COLS="start_date date, end_date date"
+  fi
+  "${PSQL[@]}" -d "$NW" >/dev/null <<SQL
+create extension if not exists pgcrypto;
+create table public.rental_contracts (
+  id uuid primary key default gen_random_uuid(), contract_number text, car_id uuid,
+  status text default 'pending', $COLS);
+SQL
+  out=$("${PSQL[@]}" -d "$NW" -f - < "$ROOT/supabase/migrations/017_booking_overlap_guard.sql" 2>&1)
+  if echo "$out" | grep -qiE "ERROR"; then
+    bad "K1 ($variant) 017 applies without tenant_id" "$(echo "$out" | grep -iE 'ERROR' | head -1)"
+  else
+    ok "K1 ($variant) 017 applies without tenant_id"
+  fi
+  expect_eq "K2 ($variant) the trigger is installed" "1" \
+    "$(psql -X -q -tAc "select count(*) from pg_trigger where tgname='rental_contracts_no_double_booking'" -d "$NW" 2>&1)"
+  expect_eq "K3 ($variant) the exclusion constraint is installed" "1" \
+    "$(psql -X -q -tAc "select count(*) from pg_constraint where conname='rental_contracts_no_car_overlap'" -d "$NW" 2>&1)"
+  # And the guard actually refuses an overlap on the tenant-less install.
+  car=ca000000-0000-0000-0000-00000000000f
+  psql -X -q -v ON_ERROR_STOP=1 -d "$NW" -c "insert into public.rental_contracts (contract_number,car_id,start_date,end_date,status) values ('N1','$car','2026-05-01','2026-05-05','pending');" >/dev/null 2>&1
+  o2=$(psql -X -q -v ON_ERROR_STOP=1 -d "$NW" -c "insert into public.rental_contracts (contract_number,car_id,start_date,end_date,status) values ('N2','$car','2026-05-03','2026-05-08','pending');" 2>&1)
+  if echo "$o2" | grep -qiE "exclusion|already booked|conflicting"; then
+    ok "K4 ($variant) the guard refuses a NULL-tenant overlap"
+  else
+    bad "K4 ($variant) the guard refuses a NULL-tenant overlap" "$o2"
+  fi
+  "${PSQL[@]}" -c "drop database if exists $NW" >/dev/null 2>&1
+done
+
+echo
+echo "== 11. Rollback =="
 before=$(q "select count(*) from public.rental_contracts")
 if ! out=$("${PSQL[@]}" -d "$DB" -f - < "$ROOT/supabase/migrations/017_booking_overlap_guard_rollback.sql" 2>&1); then
   echo " FAIL | the rollback did not apply"; echo "$out" | grep -iE "error" | head -3; fail=$((fail+1))

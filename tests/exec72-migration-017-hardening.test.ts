@@ -155,6 +155,55 @@ test("the fallback window is built with the same expression the constraint uses"
 });
 
 // ---------------------------------------------------------------------------
+// 2b. A tenant-LESS install (the live shape today) must still be guarded
+// ---------------------------------------------------------------------------
+test("017 never names a tenant column unconditionally", () => {
+  // `new.tenant_id` / `a.tenant_id` cannot be referenced on a schema without the
+  // column. Doing so either aborts the migration (the trigger's `update of`
+  // list, the constraint, the dupes query) or creates a trigger that raises the
+  // first time it fires - which is how the tenant-less case shipped broken.
+  const sql = read(MIGRATION);
+  const exec = executableSql(sql);
+  const offenders: string[] = [];
+  // Every literal reference to a tenant column must be inside a format() string
+  // (built only when v_tenant), never in the outer SQL that always runs.
+  for (const m of exec.matchAll(/(new|a|b|c)\.tenant_id/g)) {
+    const line = exec.slice(exec.lastIndexOf("\n", m.index) + 1, exec.indexOf("\n", m.index));
+    if (!/format\(|%s|v_tenant/.test(line)) offenders.push(line.trim());
+  }
+  assert.deepEqual(offenders, [], `unguarded tenant reference: ${offenders.join(" | ")}`);
+  assert.match(sql, /column_name='tenant_id'/, "017 must probe for tenant_id");
+  assert.match(sql, /v_tenant\s+boolean/, "017 must record whether tenant_id exists");
+});
+
+test("017's trigger column list is built, not hardcoded", () => {
+  const sql = read(MIGRATION);
+  assert.match(sql, /v_upd_cols\s*:=\s*'car_id, '\s*\|\|\s*v_guard_cols/);
+  assert.match(sql, /case when v_tenant then ', tenant_id' else '' end/);
+  // The trigger must consume the built list, not a literal column list.
+  assert.match(sql, /before insert or update of %1\$s/);
+  assert.doesNotMatch(executableSql(sql), /update of car_id, start_date/);
+});
+
+test("017 omits the tenant equality from the constraint when there is no column", () => {
+  const sql = read(MIGRATION);
+  assert.match(
+    sql,
+    /case when v_tenant then format\('\(coalesce\(tenant_id, %s\)\) with =,'[\s\S]{0,40}?else '' end/,
+    "the constraint's tenant equality must be emitted only when tenant_id exists",
+  );
+});
+
+test("017's duplicate scan omits the tenant join when there is no column", () => {
+  const sql = read(MIGRATION);
+  assert.match(
+    sql,
+    /case when v_tenant\s+then format\('and coalesce\(a\.tenant_id, %s\)/,
+    "the dupes query must add the tenant equality only when tenant_id exists",
+  );
+});
+
+// ---------------------------------------------------------------------------
 // 3. Fail closed
 // ---------------------------------------------------------------------------
 test("017 REFUSES activation when the table cannot be guarded", () => {

@@ -39,6 +39,8 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     op = "select";
     filters: [string, any][] = [];
     inVals: any[] | null = null;
+    orFilter: string | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -50,8 +52,13 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
+      return this;
+    }
+    or(filter: string) {
+      this.orFilter = filter;
       return this;
     }
     is(_c: string, _v: any) {
@@ -73,7 +80,14 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     }
     async _run() {
       if (this.op === "select") {
-        if (this.table === "accounts") return { data: (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
+        if (this.table === "accounts") {
+          const requestedTenant = this.orFilter?.match(/tenant_id\.eq\.([^,)]+)/)?.[1];
+          const rows = (seed.accounts ?? []).filter((a) =>
+            (this.inVals ?? []).includes((a as any)[this.inCol ?? "code"]) &&
+            (!requestedTenant || a.tenant_id === requestedTenant)
+          );
+          return { data: rows, error: null };
+        }
         // `is(col, null)` must match a column that is absent from the seed row as
         // well as one explicitly set to null - a fixture omits `tenant_id`, and a
         // strict `===` would treat that as a different value and hide the row.
@@ -110,7 +124,58 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     }
   }
 
-  return { client: { from: (t: string) => new Q(t) }, written };
+
+  const client = {
+    from: (t: string) => new Q(t),
+    rpc: async (fn: string, args: any) => {
+      if (fn !== "post_journal_entry")
+        return { data: null, error: { message: "Unexpected RPC" } };
+
+      const header = args?.p_header;
+      const journalLines = args?.p_lines;
+      const tenantId = header?.tenant_id;
+
+      if (!tenantId || !Array.isArray(journalLines) || !journalLines.length)
+        return { data: null, error: { message: "Invalid journal" } };
+
+      for (const line of journalLines) {
+        if (
+          line.tenant_id !== tenantId ||
+          !(seed.accounts ?? []).some((a: any) =>
+            a.id === line.account_id && a.tenant_id === tenantId
+          )
+        )
+          return { data: null, error: { message: "Account ownership mismatch" } };
+      }
+
+      const debit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.debit || 0), 0
+      );
+      const credit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.credit || 0), 0
+      );
+
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000))
+        return { data: null, error: { message: "Unbalanced journal" } };
+
+      // Reject the entire transaction before persisting anything.
+      if (seed.failLines)
+        return { data: null, error: { message: "line insert failed" } };
+
+      const id = `je-${++seq}`;
+      written.journal_entries.push({ ...header, id });
+
+      for (const line of journalLines)
+        written.journal_lines.push({
+          ...line,
+          journal_entry_id: id,
+        });
+
+      return { data: id, error: null };
+    },
+  };
+
+  return { client, written };
 }
 
 describe("Priority 2 - posted invoice guard", () => {
@@ -226,9 +291,10 @@ describe("Priority 3 - supplier payment posting", () => {
 
   test("postSupplierPayment writes exactly one header and two balanced lines", async () => {
     const { client, written } = makeStub({
-      accounts: [{ id: "acc-ap", code: AP_ACCOUNT_CODE }, { id: "acc-cash", code: CASH_ACCOUNT_CODE }],
+      accounts: [{ id: "acc-ap", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: AP_ACCOUNT_CODE }, { id: "acc-cash", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: CASH_ACCOUNT_CODE }],
     });
     await postSupplierPayment(client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-9", paymentNumber: "SP-9", supplierId: "sup-9",
       amount: 100, paymentDate: "2026-02-02", paymentMethod: "cash", description: "pay",
     });
@@ -243,11 +309,12 @@ describe("Priority 3 - supplier payment posting", () => {
 
   test("a failed line write removes the orphan header and throws", async () => {
     const { client, written } = makeStub({
-      accounts: [{ id: "acc-ap", code: AP_ACCOUNT_CODE }, { id: "acc-cash", code: CASH_ACCOUNT_CODE }],
+      accounts: [{ id: "acc-ap", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: AP_ACCOUNT_CODE }, { id: "acc-cash", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: CASH_ACCOUNT_CODE }],
       failLines: true,
     });
     await assert.rejects(() =>
       postSupplierPayment(client as never, {
+        tenantId: "00000000-0000-0000-0000-0000000000a1",
         journalNumber: "JV", paymentNumber: "SP", supplierId: "s",
         amount: 10, paymentDate: "d", paymentMethod: "cash", description: "x",
       }),
@@ -412,7 +479,16 @@ describe("Priority 4c - one canonical journal-line table", () => {
   });
 
   test("the manual-posting service writes lines to the canonical journal_lines table", () => {
-    assert.match(read("src/lib/accounting/manual-posting.ts"), /from\(["']journal_lines["']\)/, "the service must write lines to journal_lines");
+    assert.match(
+      read("src/lib/accounting/manual-posting.ts"),
+      /post_journal_entry/,
+      "the shared writer must use atomic posting",
+    );
+    assert.match(
+      read("supabase/migrations/011_atomic_journal_posting.sql"),
+      /INSERT\s+INTO\s+(?:public\.)?journal_lines/i,
+      "the atomic SQL function must write to the canonical journal_lines table",
+    );
   });
 
   test("no Date.now()-based journal numbers remain in the posting modules", () => {

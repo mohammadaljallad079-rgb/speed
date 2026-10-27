@@ -93,6 +93,7 @@ function makeDb(opts: { failRpc?: boolean; noRpc?: boolean; preExistingReceipt?:
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -112,7 +113,8 @@ function makeDb(opts: { failRpc?: boolean; noRpc?: boolean; preExistingReceipt?:
       this.orFilter = f;
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -149,7 +151,7 @@ function makeDb(opts: { failRpc?: boolean; noRpc?: boolean; preExistingReceipt?:
       const src = this.table === "accounts" ? accounts : this.table === "invoices" ? invoices : this.table === "payments" ? payments : [];
       if (this.op === "select") {
         let rows = src.filter((r) => this.filters.every(([c, v]) => r[c] === v));
-        if (this.inVals) rows = rows.filter((r) => this.inVals!.includes(r.code));
+        if (this.inVals) rows = rows.filter((r) => this.inVals!.includes((r as any)[this.inCol ?? "code"]));
         if (this.orFilter) rows = rows.filter((r) => this._tenantOk(r));
         else if (this.isFilters.length) rows = rows.filter((r) => this.isFilters.every(([c, v]) => (v === null ? r[c] == null : r[c] === v)));
         return { data: rows, error: null };

@@ -62,10 +62,51 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
     const entries: any[] = [];
     const lines: any[] = [];
     const accounts = [
-      { id: "acc-cash", code: "11001" },
-      { id: "acc-ar", code: "12001" },
+      { id: "acc-cash", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: "11001" },
+      { id: "acc-ar", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: "12001" },
     ];
     const client = {
+      async rpc(fn: string, args: any) {
+        if (fn !== "post_journal_entry") {
+          return { data: null, error: { message: "Unexpected RPC" } };
+        }
+
+        const header = args?.p_header;
+        const journalLines = args?.p_lines;
+        const tenant = header?.tenant_id;
+
+        if (!tenant || !Array.isArray(journalLines) || !journalLines.length) {
+          return { data: null, error: { message: "Invalid journal" } };
+        }
+
+        for (const line of journalLines) {
+          if (line.tenant_id !== tenant ||
+              !accounts.some((a) =>
+                a.id === line.account_id && a.tenant_id === tenant
+              )) {
+            return { data: null, error: { message: "Account ownership mismatch" } };
+          }
+        }
+
+        const debit = journalLines.reduce(
+          (n: number, l: any) => n + Number(l.debit || 0), 0
+        );
+        const credit = journalLines.reduce(
+          (n: number, l: any) => n + Number(l.credit || 0), 0
+        );
+
+        if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+          return { data: null, error: { message: "Unbalanced journal" } };
+        }
+
+        const id = "je-1";
+        entries.push({ ...header, id });
+        for (const line of journalLines) {
+          lines.push({ ...line, journal_entry_id: id });
+        }
+
+        return { data: id, error: null };
+      },
       from(table: string) {
         const q: any = {
           _op: "select",
@@ -74,7 +115,7 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
           _or: null as string | null,
           _in: null as any,
           select() { return q; },
-          in(_c: string, v: any[]) { q._in = v; return q; },
+          in(c: string, v: any[]) { q._inCol = c; q._in = v; return q; },
           eq(c: string, v: any) { q._filters.push([c, v]); return q; },
           is(c: string, v: any) { q._is.push([c, v]); return q; },
           or(f: string) { q._or = f; return q; },
@@ -98,7 +139,8 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
           then(res: any, rej: any) { return q._run().then(res, rej); },
           async _run() {
             if (table === "accounts" && q._op === "select") {
-              const byCode = accounts.filter((a) => (q._in ?? []).includes(a.code));
+              const col = (q as any)._inCol ?? "code";
+              const byCode = accounts.filter((a) => (q._in ?? []).includes((a as any)[col]));
               return { data: byCode.filter((a: any) => q._tenantMatch(a)), error: null };
             }
             if (q._op === "insert" && table === "journal_entries") {
@@ -117,6 +159,7 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
       },
     };
     const { journalId } = await postCustomerReceipt(client as unknown as ReceiptPostingClient, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-9",
       receiptNumber: "REC-9",
       amount: 50,

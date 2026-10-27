@@ -42,14 +42,14 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
 function makeLedgerDb() {
   const accounts = [
-    { id: "acc-cash", code: "11001", name: "Cash", name_ar: "الصندوق", type: "asset", is_active: true },
-    { id: "acc-bank", code: "11002", name: "Bank", name_ar: "البنك", type: "asset", is_active: true },
-    { id: "acc-ar", code: "12001", name: "Accounts Receivable", name_ar: "ذمم مدينة", type: "asset", is_active: true },
-    { id: "acc-vat", code: "24000", name: "Output VAT", name_ar: "ضريبة المخرجات", type: "liability", is_active: true },
-    { id: "acc-rev", code: "41002", name: "Sales Revenue", name_ar: "إيرادات المبيعات", type: "revenue", is_active: true },
-    { id: "acc-ap", code: "21001", name: "Accounts Payable", name_ar: "ذمم دائنة", type: "liability", is_active: true },
-    { id: "acc-invat", code: "24001", name: "Input VAT", name_ar: "ضريبة المدخلات", type: "asset", is_active: true },
-    { id: "acc-exp", code: "51001", name: "Rent Expense", name_ar: "مصروف الإيجار", type: "expense", is_active: true },
+    { id: "acc-cash", code: "11001", name: "Cash", name_ar: "الصندوق", type: "asset", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-bank", code: "11002", name: "Bank", name_ar: "البنك", type: "asset", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-ar", code: "12001", name: "Accounts Receivable", name_ar: "ذمم مدينة", type: "asset", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-vat", code: "24000", name: "Output VAT", name_ar: "ضريبة المخرجات", type: "liability", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-rev", code: "41002", name: "Sales Revenue", name_ar: "إيرادات المبيعات", type: "revenue", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-ap", code: "21001", name: "Accounts Payable", name_ar: "ذمم دائنة", type: "liability", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-invat", code: "24001", name: "Input VAT", name_ar: "ضريبة المدخلات", type: "asset", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
+    { id: "acc-exp", code: "51001", name: "Rent Expense", name_ar: "مصروف الإيجار", type: "expense", is_active: true, tenant_id: "00000000-0000-0000-0000-0000000000a1" },
     // NOTE: 41003 (sales-returns contra) is deliberately ABSENT. It is seeded
     // only by migration 003, which is not applied on the live project, so the
     // return MUST fall back to debiting revenue 41002 rather than fail.
@@ -65,6 +65,7 @@ function makeLedgerDb() {
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -76,7 +77,8 @@ function makeLedgerDb() {
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -119,7 +121,8 @@ function makeLedgerDb() {
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {
@@ -162,7 +165,64 @@ function makeLedgerDb() {
     }
   }
 
-  return { client: { from: (t: string) => new Q(t) }, accounts, entries, lines };
+  return {
+    client: {
+      from: (t: string) => new Q(t),
+      rpc: async (fn: string, args: any) => {
+        if (fn !== "post_journal_entry") {
+          return { data: null, error: { message: "Unexpected RPC: " + fn } };
+        }
+
+        const header = args?.p_header;
+        const journalLines = args?.p_lines;
+        const tenant = header?.tenant_id;
+
+        if (!tenant || !Array.isArray(journalLines) || journalLines.length === 0) {
+          return { data: null, error: { message: "Missing tenant or lines" } };
+        }
+
+        for (const line of journalLines) {
+          const account = accounts.find(a => a.id === line.account_id);
+          if (!account || account.tenant_id !== tenant ||
+              line.tenant_id !== tenant) {
+            return {
+              data: null,
+              error: {
+                message: `Account or tenant mismatch: account=${line.account_id}, lineTenant=${line.tenant_id}, headerTenant=${tenant}, accountTenant=${account?.tenant_id}`,
+              },
+            };
+          }
+        }
+
+        const debit = journalLines.reduce(
+          (n: number, l: any) => n + Number(l.debit ?? 0), 0
+        );
+        const credit = journalLines.reduce(
+          (n: number, l: any) => n + Number(l.credit ?? 0), 0
+        );
+
+        if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+          return { data: null, error: { message: "Unbalanced journal" } };
+        }
+
+        const id = `je-${++seq}`;
+        entries.push({ id, status: "posted", ...header });
+
+        for (const line of journalLines) {
+          lines.push({
+            id: `jl-${++seq}`,
+            journal_entry_id: id,
+            ...line,
+          });
+        }
+
+        return { data: id, error: null };
+      },
+    },
+    accounts,
+    entries,
+    lines,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -293,6 +353,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
 
     // 1. Issue the invoice: subtotal 100.000, VAT 10%, total 110.000, nothing paid up front.
     const sale = await postSaleInvoice(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-1001",
       invoiceNumber: "INV-BD99-001",
       entryDate: "2026-04-01",
@@ -309,6 +370,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
 
     // 2. Collect the full amount: Dr Cash 110.000 / Cr AR 110.000.
     await postCustomerReceipt(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-1002",
       receiptNumber: "REC-BD99-001",
       amount: 110.0,
@@ -377,6 +439,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
 
     // 1. Issue a sale: subtotal 100.000, VAT 10%, total 110.000.
     await postSaleInvoice(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3001",
       invoiceNumber: "INV-BD99-C1",
       entryDate: "2026-05-01",
@@ -392,6 +455,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
 
     // 2. Collect it in full.
     await postCustomerReceipt(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3002",
       receiptNumber: "REC-BD99-C1",
       amount: 110.0,
@@ -402,6 +466,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
 
     // 3. Pay a 30.000 expense in cash, with 3.000 input VAT (10%).
     const expense = await postExpense(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3003",
       referenceNumber: "EXP-BD99-C1",
       date: "2026-05-03",
@@ -418,6 +483,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
     // 4. A customer returns goods worth 20.000, VAT 2.000.
     //    41003 does NOT exist in this chart, so the return debits revenue 41002.
     const ret = await postSalesReturn(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3004",
       returnNumber: "SR-BD99-C1",
       date: "2026-05-04",
@@ -497,6 +563,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
 
     // 6. A retried expense and a retried return are both idempotent.
     const expense2 = await postExpense(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3005",
       referenceNumber: "EXP-BD99-C1",
       date: "2026-05-03",
@@ -510,6 +577,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
     assert.equal(expense2.created, false, "a retried expense must not post a second journal");
     assert.equal(expense2.journalId, expEntry.id);
     const ret2 = await postSalesReturn(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3006",
       returnNumber: "SR-BD99-C1",
       date: "2026-05-04",
@@ -524,6 +592,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
   test("a retried issue is idempotent and cannot double revenue", async () => {
     const db = makeLedgerDb();
     const input = {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-2001",
       invoiceNumber: "INV-BD99-002",
       entryDate: "2026-04-05",
@@ -537,7 +606,8 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
       remaining: 55.0,
     };
     const first = await postSaleInvoice(db.client as never, input);
-    const second = await postSaleInvoice(db.client as never, { ...input, journalNumber: "JV-2002" });
+    const second = await postSaleInvoice(db.client as never, {
+      ...input, journalNumber: "JV-2002" });
     assert.equal(first.created, true);
     assert.equal(second.created, false);
     assert.equal(db.entries.length, 1, "a retry must not post a second journal");
@@ -552,6 +622,7 @@ describe("BD 99 acceptance: a sale is issued, collected and reconciles to the le
   test("a part-paid sale splits between cash and AR and still balances", async () => {
     const db = makeLedgerDb();
     await postSaleInvoice(db.client as never, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-3001",
       invoiceNumber: "INV-BD99-003",
       entryDate: "2026-04-10",

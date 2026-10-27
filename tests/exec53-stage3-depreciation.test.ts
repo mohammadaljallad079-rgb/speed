@@ -52,6 +52,7 @@ function makeDb(seedAccounts = true) {
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -63,7 +64,8 @@ function makeDb(seedAccounts = true) {
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -106,7 +108,8 @@ function makeDb(seedAccounts = true) {
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {
@@ -154,7 +157,70 @@ function makeDb(seedAccounts = true) {
     }
   }
 
-  return { client: { from: (t: string) => new Q(t) }, accounts, entries, lines };
+
+  const TEST_TENANT = "00000000-0000-0000-0000-0000000000a1";
+
+  for (const account of accounts as Array<(typeof accounts)[number] & { tenant_id?: string | null }>) {
+    if (account.tenant_id === undefined) {
+      account.tenant_id = TEST_TENANT;
+    }
+  }
+
+  const client = {
+    from: (t: string) => new Q(t),
+    rpc: async (fn: string, args: any) => {
+      if (fn !== "post_journal_entry") {
+        return { data: null, error: { message: "Unexpected RPC" } };
+      }
+
+      const header = args?.p_header;
+      const journalLines = args?.p_lines;
+      const tenantId = header?.tenant_id;
+
+      if (!tenantId || !Array.isArray(journalLines) || !journalLines.length) {
+        return { data: null, error: { message: "Invalid journal" } };
+      }
+
+      for (const line of journalLines) {
+        if (
+          line.tenant_id !== tenantId ||
+          !accounts.some((a: any) =>
+            a.id === line.account_id && a.tenant_id === tenantId
+          )
+        ) {
+          return { data: null, error: { message: "Account ownership mismatch" } };
+        }
+      }
+
+      const debit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.debit ?? 0), 0
+      );
+      const credit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.credit ?? 0), 0
+      );
+
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+        return { data: null, error: { message: "Unbalanced journal" } };
+      }
+
+      const id = `je-${++seq}`;
+
+      // Simulate atomic posting: commit the header and lines together.
+      entries.push({ id, status: "posted", ...header });
+
+      for (const line of journalLines) {
+        lines.push({
+          id: `jl-${++seq}`,
+          journal_entry_id: id,
+          ...line,
+        });
+      }
+
+      return { data: id, error: null };
+    },
+  };
+
+  return { client, accounts, entries, lines };
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +394,7 @@ describe("the depreciation journal is a balanced expense/contra-asset entry", ()
 
 describe("postDepreciation writes one balanced journal and is idempotent", () => {
   const input = {
+    tenantId: "00000000-0000-0000-0000-0000000000a1",
     journalNumber: "JV-1",
     reference: "DEP-car-1-2026-12-31",
     date: "2026-12-31",
@@ -374,7 +441,7 @@ describe("postDepreciation writes one balanced journal and is idempotent", () =>
 
   test("resolveDepreciationAccounts finds both fixed codes", async () => {
     const db = makeDb();
-    const ids = await resolveDepreciationAccounts(db.client as never);
+    const ids = await resolveDepreciationAccounts(db.client as never, "00000000-0000-0000-0000-0000000000a1");
     assert.equal(ids.accumulatedAccountId, "acc-accum");
     assert.equal(ids.expenseAccountId, "acc-exp");
     assert.equal(DEPRECIATION_ACCOUNT_CODES.accumulated, "14001");
@@ -421,6 +488,7 @@ describe("posting depreciation leaves the books balanced", () => {
 
     // Depreciate it by 1,800.
     await postDepreciation(db.client as never, {
+    tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-DEP",
       reference: "DEP-car-1-2026-12-31",
       date: "2026-12-31",
@@ -458,6 +526,7 @@ describe("posting depreciation leaves the books balanced", () => {
       ])
       .single();
     await postDepreciation(db.client as never, {
+    tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-DEP",
       reference: "DEP-car-1-2026-12-31",
       date: "2026-12-31",

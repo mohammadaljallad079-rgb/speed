@@ -95,6 +95,7 @@ function makeDb(accounts: AccountRow[] = seedAccounts()) {
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     limitN: number | null = null;
     constructor(t: string) {
@@ -107,7 +108,8 @@ function makeDb(accounts: AccountRow[] = seedAccounts()) {
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -154,7 +156,7 @@ function makeDb(accounts: AccountRow[] = seedAccounts()) {
       if (this.op === "select") {
         if (this.table === "accounts") {
           let rows = accounts.slice();
-          if (this.inVals) rows = rows.filter((a) => this.inVals!.includes(a.code));
+          if (this.inVals) rows = rows.filter((a) => this.inVals!.includes((a as any)[this.inCol ?? "code"]));
           if (this.filters.length) rows = rows.filter((a) => this._eqMatch(a));
           rows = rows.filter((a) => this._tenantMatch(a));
           if (this.limitN != null) rows = rows.slice(0, this.limitN);
@@ -765,6 +767,7 @@ describe("exec64 posting works on a schema that has not yet been migrated", () =
       isFilters: [string, any][] = [];
       orFilter: string | null = null;
       inVals: any[] | null = null;
+      inCol: string | null = null;
       row: any = null;
       constructor(t: string) {
         this.table = t;
@@ -777,7 +780,8 @@ describe("exec64 posting works on a schema that has not yet been migrated", () =
         this.filters.push([c, v]);
         return this;
       }
-      in(_c: string, v: any[]) {
+      in(c: string, v: any[]) {
+        this.inCol = c;
         this.inVals = v;
         return this;
       }
@@ -811,7 +815,7 @@ describe("exec64 posting works on a schema that has not yet been migrated", () =
               error: { code: "42703", message: 'column accounts.is_postable does not exist' },
             };
           }
-          let rows = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          let rows = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[this.inCol ?? "code"]));
           rows = rows.filter((a) => this.filters.every(([c, v]) => (a as any)[c] === v));
           if (this.orFilter) {
             rows = rows.filter((a) =>
@@ -870,9 +874,9 @@ describe("exec64 posting works on a schema that has not yet been migrated", () =
     assert.equal(ids["11001"], "a-11001-A");
   });
 
-  test("a sale still posts on the un-migrated schema", async () => {
+  test("an un-migrated schema refuses non-atomic sale posting", async () => {
     const db = makePreMigrationDb();
-    const res = await postSaleInvoice(db.client as never, {
+    await assert.rejects(() => postSaleInvoice(db.client as never, {
       journalNumber: "JV-PRE",
       invoiceNumber: "INV-PRE-001",
       entryDate: "2026-03-10",
@@ -885,10 +889,10 @@ describe("exec64 posting works on a schema that has not yet been migrated", () =
       advancePayment: 0,
       remaining: BD99.gross,
       tenantId: T_A,
-    } as never);
-    assert.equal(res.created, true);
-    const sale = db.entries.find((e) => e.reference_number === "INV-PRE-001")!;
-    assert.equal(db.lines.filter((l) => l.journal_entry_id === sale.id).length, 3);
+    } as never), /Atomic journal posting is required/);
+
+    assert.equal(db.entries.length, 0, "no orphan journal header");
+    assert.equal(db.lines.length, 0, "no orphan journal lines");
   });
 
   test("only an undefined-column error triggers the fallback", () => {

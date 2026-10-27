@@ -48,6 +48,7 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -67,7 +68,8 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
       this.orFilter = f;
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -103,7 +105,8 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {
@@ -152,10 +155,86 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
       return this._run().then(res, rej);
     }
   }
-  return { client: { from: (t: string) => new Q(t) } as unknown as PostingClient, entries, lines };
+  const TEST_TENANT = "00000000-0000-0000-0000-0000000000a1";
+
+  // Give legacy test fixtures explicit ownership without changing
+  // deliberately foreign or NULL-owned accounts.
+  for (const account of accounts) {
+    if (account.tenant_id === undefined) account.tenant_id = TEST_TENANT;
+  }
+
+  const client = {
+    from: (t: string) => new Q(t),
+    rpc: async (fn: string, args: any) => {
+      if (fn !== "post_journal_entry")
+        return { data: null, error: { message: "Unexpected RPC" } };
+
+      const header = args?.p_header;
+      const journalLines = args?.p_lines;
+
+      if (!header?.tenant_id ||
+          !Array.isArray(journalLines) ||
+          journalLines.length === 0)
+        return { data: null, error: { message: "Invalid journal" } };
+
+      if (journalLines.some((line: any) =>
+        line.tenant_id !== header.tenant_id ||
+        !accounts.some((a: any) =>
+          a.id === line.account_id &&
+          a.tenant_id === header.tenant_id
+        )
+      ))
+        return { data: null, error: { message: "Account ownership mismatch" } };
+
+      const debit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.debit || 0), 0
+      );
+      const credit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.credit || 0), 0
+      );
+
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000))
+        return { data: null, error: { message: "Unbalanced journal" } };
+
+      const duplicate = entries.find((e: any) =>
+        e.tenant_id === header.tenant_id &&
+        e.entry_type === header.entry_type &&
+        e.reference_number === header.reference_number
+      );
+
+      if (duplicate && seed.guardUnique)
+        return {
+          data: null,
+          error: { message: "duplicate key value violates unique constraint" }
+        };
+
+      // A failed posting must not create either header or lines.
+      if (seed.failLines)
+        return { data: null, error: { message: "line insert failed" } };
+
+      const id = `je-${++seq}`;
+      entries.push({ ...header, id });
+
+      for (const line of journalLines)
+        lines.push({
+          ...line,
+          journal_entry_id: id,
+          id: `jl-${++seq}`
+        });
+
+      return { data: id, error: null };
+    }
+  };
+
+  return {
+    client: client as unknown as PostingClient,
+    entries,
+    lines
+  };
 }
 
 const baseInput = {
+  tenantId: "00000000-0000-0000-0000-0000000000a1",
   journalNumber: "JV-1",
   invoiceNumber: "SI-1",
   entryDate: "2026-02-01",

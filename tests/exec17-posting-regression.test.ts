@@ -204,10 +204,26 @@ describe("posting screens delegate to the server and never write the ledger", ()
     });
   }
 
-  test("the manual posting service writes to the canonical journal_lines table", () => {
+  test("manual posting uses the atomic RPC and canonical journal_lines table", () => {
     const src = read("src/lib/accounting/manual-posting.ts");
-    assert.match(src, /from\("journal_lines"\)/, "the service writes the canonical table");
-    assert.doesNotMatch(src, /journal_entry_lines/, "must not touch the orphaned table");
+    const sql = read("supabase/migrations/011_atomic_journal_posting.sql");
+
+    assert.match(src, /post_journal_entry/, "posting must use the atomic RPC");
+    assert.doesNotMatch(
+      src,
+      /\.from\(["']journal_lines["']\)\.insert\(/,
+      "manual posting must not insert journal lines directly",
+    );
+    assert.match(
+      sql,
+      /INSERT\s+INTO\s+(?:public\.)?journal_lines/i,
+      "atomic SQL must write into the canonical journal_lines table",
+    );
+    assert.doesNotMatch(
+      sql,
+      /INSERT\s+INTO\s+(?:public\.)?journal_entry_lines/i,
+      "atomic SQL must not write into the legacy table",
+    );
   });
 
   test("every built journal is balanced for a representative amount", () => {

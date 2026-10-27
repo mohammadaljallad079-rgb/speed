@@ -24,6 +24,7 @@
  */
 
 import {
+  assertAccountsUsable,
   resolveAccountIdsForTenant,
   type AccountClient,
 } from "./account-resolution";
@@ -212,6 +213,7 @@ export async function writeJournal(
     // path, which compensates a failed line write by deleting the orphan header.
   }
 
+  // No non-atomic fallback: financial posting must be all-or-nothing.
   throw new Error(
     "Atomic journal posting is required: post_journal_entry RPC is unavailable."
   );

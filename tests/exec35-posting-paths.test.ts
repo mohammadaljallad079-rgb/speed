@@ -56,6 +56,7 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     filters: [string, any][] = [];
     isFilters: [string, any][] = [];
     inVals: any[] | null = null;
+    inCol: string | null = null;
     orFilter: string | null = null;
     row: any = null;
     constructor(t: string) {
@@ -76,7 +77,8 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
       this.orFilter = f;
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -110,7 +112,8 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         const rows = (tables[this.table] ?? []).filter((r) => this.filters.every(([c, v]) => r[c] === v));
@@ -322,45 +325,72 @@ describe("resolveAccountIds (tenant-scoped chart)", () => {
   });
 });
 
-describe("writeJournal compensation", () => {
-  // The two-request fallback covers the window before migration 011 is applied.
-  test("a failed line insert removes the orphan header (pre-011 fallback)", async () => {
-    const { client, written } = makeStub({ failLines: true, noRpc: true });
-    await assert.rejects(() => writeJournal(client, {
-      header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 1, total_credit: 1, is_balanced: true },
-      lines: [
-        { account_id: "a", debit: 1, credit: 0, description: "x" },
-        { account_id: "b", debit: 0, credit: 1, description: "x" },
-      ],
-    }));
-    assert.equal(written.journal_entries.length, 1);
-    assert.equal(written.deletes.length, 1);
-    assert.equal(written.deletes[0].table, "journal_entries");
+describe("writeJournal requires atomic posting", () => {
+  const balanced = {
+    header: {
+      journal_number: "n",
+      entry_date: "d",
+      description: "x",
+      entry_type: "bank_transfer",
+      status: "posted",
+      total_debit: 1,
+      total_credit: 1,
+      is_balanced: true,
+    },
+    lines: [
+      { account_id: "a", debit: 1, credit: 0, description: "x" },
+      { account_id: "b", debit: 0, credit: 1, description: "x" },
+    ],
+  };
+
+  test("missing RPC refuses posting without partial writes", async () => {
+    const { client, written } = makeStub({
+      failLines: true,
+      noRpc: true,
+    });
+
+    await assert.rejects(
+      () => writeJournal(client, balanced, "t1"),
+      /Atomic journal posting is required/,
+    );
+
+    assert.equal(written.journal_entries.length, 0);
+    assert.equal(written.journal_lines.length, 0);
+    assert.equal(written.deletes.length, 0);
   });
 
-  test("the fallback still stamps the company on a pre-011 database", async () => {
+  test("pre-011 database cannot bypass atomic posting", async () => {
     const { client, written } = makeStub({ noRpc: true });
-    await writeJournal(client, {
-      header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 1, total_credit: 1, is_balanced: true },
-      lines: [
-        { account_id: "a", debit: 1, credit: 0, description: "x" },
-        { account_id: "b", debit: 0, credit: 1, description: "x" },
-      ],
-    }, "t1");
-    assert.equal(written.journal_entries[0].tenant_id, "t1");
-    assert.deepEqual(written.journal_lines.map((l) => l.tenant_id), ["t1", "t1"]);
+
+    await assert.rejects(
+      () => writeJournal(client, balanced, "t1"),
+      /Atomic journal posting is required/,
+    );
+
+    assert.equal(written.journal_entries.length, 0);
+    assert.equal(written.journal_lines.length, 0);
   });
 
   test("refuses an unbalanced journal before writing anything", async () => {
     const { client, written } = makeStub();
-    await assert.rejects(() => writeJournal(client, {
-      header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 2, total_credit: 1, is_balanced: true },
-      lines: [
-        { account_id: "a", debit: 2, credit: 0, description: "x" },
-        { account_id: "b", debit: 0, credit: 1, description: "x" },
-      ],
-    }));
+
+    await assert.rejects(
+      () => writeJournal(client, {
+        ...balanced,
+        header: {
+          ...balanced.header,
+          total_debit: 2,
+          total_credit: 1,
+        },
+        lines: [
+          { account_id: "a", debit: 2, credit: 0, description: "x" },
+          { account_id: "b", debit: 0, credit: 1, description: "x" },
+        ],
+      }, "t1"),
+    );
+
     assert.equal(written.journal_entries.length, 0);
+    assert.equal(written.journal_lines.length, 0);
   });
 });
 
@@ -432,7 +462,7 @@ describe("service shapes", () => {
   test("petty cash fund debits petty cash / credits main cash", async () => {
     const { client, written } = makeStub();
     await postPettyCash(client, {
-      journalNumber: "PC-1", date: "d", description: "x", amount: 30, kind: "fund",
+      journalNumber: "PC-1", tenantId: "t1", date: "d", description: "x", amount: 30, kind: "fund",
       pettyAccountId: "petty", expenseAccountId: "cash", fundDescription: "f", expenseDescription: "e",
     });
     assert.deepEqual(
@@ -444,7 +474,7 @@ describe("service shapes", () => {
   test("petty cash expense debits the expense account / credits petty cash", async () => {
     const { client, written } = makeStub();
     await postPettyCash(client, {
-      journalNumber: "PC-2", date: "d", description: "x", amount: 30, kind: "expense",
+      journalNumber: "PC-2", tenantId: "t1", date: "d", description: "x", amount: 30, kind: "expense",
       pettyAccountId: "petty", expenseAccountId: "exp", fundDescription: "f", expenseDescription: "e",
     });
     assert.deepEqual(
@@ -659,8 +689,16 @@ describe("manual journal screen: reads stay in the browser, writes move to the s
   test("the route refuses an unbalanced entry and an unavailable account", () => {
     const src = read(ROUTE);
     assert.match(src, /totalDebit !== totalCredit/, "balanced rule enforced server-side");
-    assert.match(src, /accounts are not available to this tenant/, "account must belong to the tenant or be shared");
-    assert.match(src, /\.from\("journal_entries"\)\.delete\(\)\.eq\("id", createdId\)/, "a failed line write removes the orphan header");
+    assert.match(src, /accounts are not usable by this company/, "account must belong to the tenant or be shared");
+    assert.match(src, /assertAccountsUsable\(/, "the check must be the shared ownership predicate");
+    // The orphan-header compensation now lives inside `writeJournal` (the one
+    // writer), so POST must DELEGATE rather than re-implement the two-request
+    // insert. (PUT is an update - the atomic RPC only inserts - so it keeps a
+    // snapshot/restore around its line replace.)
+    const post = src.slice(src.indexOf("export async function POST"), src.indexOf("/** Update a manual journal entry"));
+    assert.match(post, /writeJournal\(/, "POST must post through the one writer");
+    assert.doesNotMatch(post, /\.from\("journal_lines"\)\.insert\(/, "POST must not write lines itself");
+    assert.match(src, /const \{ data: previousLines \} = await supabaseAdmin/, "PUT must snapshot lines before replacing them");
   });
 
   test("DELETE scopes to the caller's tenant and refuses a system-posted entry", () => {

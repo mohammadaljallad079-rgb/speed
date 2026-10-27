@@ -215,6 +215,96 @@ export async function resolveAccountIdsForTenant(
 }
 
 /**
+ * Assert that every account in a set of ids is USABLE by the caller's company.
+ *
+ * This is the application-layer mirror of the ownership rule that migration 015
+ * enforces inside `post_journal_entry`:
+ *
+ *     usable(a) := a exists
+ *               and (a.tenant_id is null or a.tenant_id = <the journal's tenant>)
+ *               and a.is_active is not false
+ *               and a.is_postable is not false
+ *
+ * Note 015 applies that check only when the journal HAS a tenant (`if v_tenant
+ * is not null`). A tenant-less caller is refused a company-owned account here
+ * anyway, because that is exactly what `loadUsableAccounts` resolves for a
+ * tenant-less caller (`.is("tenant_id", null)` - the shared chart only). So this
+ * predicate is never WIDER than the resolver: a route cannot pass an account the
+ * resolver would not have handed it.
+ *
+ * It exists because the ATOMIC path is not the only path. `writeJournal` falls
+ * back to a two-request header+lines write when `post_journal_entry` is not
+ * deployed, and that fallback reaches the tables directly - so on a database
+ * that is behind 011 the database never performs the ownership check. Without
+ * this assert, a company journal could be posted against another company's
+ * account on exactly the installations that have the least protection, and
+ * nothing would raise: both companies' reports would simply be wrong.
+ *
+ * NULL-TOLERANT, deliberately. A `tenant_id IS NULL` account is the shared chart
+ * of the single-tenant installation and is usable by any caller, exactly as
+ * `loadUsableAccounts` resolves it and as migration 015's predicate allows. The
+ * check is NOT "the account must be owned by the caller" - that would refuse
+ * every posting on a live install whose chart is entirely NULL-tenant.
+ *
+ * Refuses a foreign account, a missing account, an inactive account and a
+ * non-postable (group heading) account, and names every offender at once.
+ */
+export async function assertAccountsUsable(
+  client: AccountClient,
+  accountIds: string[],
+  tenantId: string | null,
+): Promise<void> {
+  const wanted = [...new Set(accountIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+  if (wanted.length === 0) return;
+
+  const withPostable = "id,code,tenant_id,is_active,is_postable";
+  const withoutPostable = "id,code,tenant_id,is_active";
+
+  const run = (cols: string) => client.from("accounts").select(cols).in("id", wanted);
+
+  let { data, error } = await run(withPostable);
+  if (error && isUndefinedColumn(error)) {
+    // Pre-014 schema: no postability metadata, so nothing is refused for it.
+    ({ data, error } = await run(withoutPostable));
+  }
+  if (error) throw new Error("Could not verify the chart accounts: " + msg(error));
+
+  const rows = ((data as AccountRow[] | null) ?? []).filter((r) => r && typeof r.id === "string");
+  const byId = new Map(rows.map((r) => [r.id, r]));
+
+  const failures: ResolutionFailure[] = [];
+  for (const id of wanted) {
+    const row = byId.get(id);
+    if (!row) {
+      failures.push({ code: id, reason: "missing" });
+      continue;
+    }
+    // A company-owned account must belong to THIS company. A NULL-tenant account
+    // is the shared chart and is usable by anyone.
+    if (row.tenant_id != null && tenantId != null && row.tenant_id !== tenantId) {
+      failures.push({ code: row.code ?? id, reason: "foreign_tenant" });
+      continue;
+    }
+    if (tenantId == null && row.tenant_id != null) {
+      // A tenant-less caller may only use the shared chart; a company account
+      // belongs to a company it is not.
+      failures.push({ code: row.code ?? id, reason: "foreign_tenant" });
+      continue;
+    }
+    if (row.is_postable === false) {
+      failures.push({ code: row.code ?? id, reason: "not_postable" });
+      continue;
+    }
+    if (row.is_active === false) {
+      failures.push({ code: row.code ?? id, reason: "inactive" });
+      continue;
+    }
+  }
+
+  if (failures.length > 0) throw new AccountResolutionError(failures);
+}
+
+/**
  * Resolve codes that are OPTIONAL: a code that cannot be resolved is simply
  * absent from the result instead of failing the call.
  *

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import RecordSelect from "@/components/records/RecordSelect"
+import { isSelectablePostableAccount } from "@/lib/records/sources"
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Upload, X, Car, User, FileText, MapPin, DollarSign, Wrench, Image as ImageIcon, CreditCard } from "lucide-react"
 import Link from "next/link"
@@ -83,14 +84,13 @@ function NewRentalForm() {
   const [dropoffSuggestions, setDropoffSuggestions] = useState<PlaceSuggestion[]>([])
   const [showPickupSuggestions, setShowPickupSuggestions] = useState(false)
   const [showDropoffSuggestions, setShowDropoffSuggestions] = useState(false)
-  const [accounts, setAccounts] = useState<{code:string; name:string; name_ar:string|null; name_en:string|null}[]>([])
   const [taxOptions, setTaxOptions] = useState<{id:string; name_ar:string|null; name_en:string|null; rate:number; type:string|null}[]>([])
   const [expenses, setExpenses] = useState([
-    { id: 'exp1', expense_type: 'Insurance', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp2', expense_type: 'Registration', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp3', expense_type: 'Maintenance' },
-    { id: 'exp4', expense_type: 'Fuel', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp5', expense_type: 'Damage', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp1', expense_type: 'Insurance', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp2', expense_type: 'Registration', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp3', expense_type: 'Maintenance', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp4', expense_type: 'Fuel', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp5', expense_type: 'Damage', account_id: '', account_code: '', amount: '', vat_percent: '0' },
   ])
 
   const [contract, setContract] = useState({
@@ -149,31 +149,37 @@ function NewRentalForm() {
 
   useEffect(() => {
     const fetchData = async () => {
-      const [carsRes, customersRes, settingsRes, accountsRes, taxesRes] = await Promise.all([
+      const [carsRes, customersRes, settingsRes, taxesRes] = await Promise.all([
         supabase.from("cars").select("id,make,model,year,plate_number,daily_rate,mileage").order("make"),
         supabase.from("customers").select("id,full_name,email,phone,national_id,license_number").order("full_name"),
-        supabase.from("settings").select("company_profile").single(),
-        supabase.from("accounts").select("code,name,name_ar,name_en").eq("is_active", true).order("code"),
+        // Document branding must come from the transaction's own company. An
+        // unscoped read (or `.single()`) would stamp another tenant's identity on
+        // this contract, so the profile is resolved from the session's tenant.
+        supabase.from("settings").select("value").eq("key", "company_profile"),
         supabase.from("tax_settings").select("id,name_ar,name_en,rate,type").eq("is_active", true).order("name_ar"),
       ])
       setCars(carsRes.data || [])
       setCustomers(customersRes.data || [])
-      setAccounts(accountsRes.data || [])
       setTaxOptions(taxesRes.data || [])
       const { data: nextNumber } = await supabase.rpc('get_next_contract_number')
       if (nextNumber) setContract(prev => ({ ...prev, contract_number: nextNumber }))
-      if (settingsRes.data?.company_profile) {
-        const p = settingsRes.data.company_profile
-        setCompanySettings({ name: p.name || "", phone: p.phone || "", email: p.email || "", address: p.address || "", crNumber: p.crNumber || "" })
+      const profileRow = (settingsRes.data ?? []).find((row: any) => row?.value)?.value
+      if (profileRow) {
+        setCompanySettings({ name: profileRow.name || "", phone: profileRow.phone || "", email: profileRow.email || "", address: profileRow.address || "", crNumber: profileRow.crNumber || "" })
       }
     }
     fetchData()
   }, [])
   const addExpenseRow = () => {
-    setExpenses(prev => [...prev, { id: 'exp' + Date.now(), expense_type: '', account_code: '', amount: '', vat_percent: '0' }])
+    setExpenses(prev => [...prev, { id: 'exp' + Date.now(), expense_type: '', account_id: '', account_code: '', amount: '', vat_percent: '0' }])
   }
   const updateExpenseRow = (id: string, field: string, value: string) => {
     setExpenses(prev => prev.map(row => row.id === id ? { ...row, [field]: value } : row))
+  }
+  // The expense account comes from the shared, database-backed picker; the row
+  // keeps both the id (stable link) and the code (the shape the payload used).
+  const setExpenseAccount = (id: string, accountId: string, row: Record<string, unknown> | null) => {
+    setExpenses(prev => prev.map(r => r.id === id ? { ...r, account_id: accountId, account_code: String(row?.code ?? '') } : r))
   }
   const removeExpenseRow = (id: string) => {
     setExpenses(prev => prev.filter(row => row.id !== id))
@@ -463,6 +469,15 @@ function NewRentalForm() {
         alert((isRTL ? "تم إنشاء العقد لكن فشل توليد الفاتورة: " : "Contract created but invoice generation failed: ") + (invoiceErr?.message || ""))
       }
 
+      // Emit the real-time booking notification. The server rebuilds the content
+      // from the contract row (tenant-scoped), so a failure here never blocks the
+      // booking; it is best-effort and reported to the console only.
+      fetch("/api/notifications?op=emit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event: "booking_new", contractId: newContract.id }),
+      }).catch((e) => console.error("Notification emit failed:", e))
+
       router.push("/rentals")
     } catch (error: any) {
       console.error("Failed to create contract:", error)
@@ -502,11 +517,11 @@ function NewRentalForm() {
           <Card className="rounded-xl shadow-sm border-slate-200 dark:border-slate-700 overflow-hidden">
             <CardContent className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="space-y-1">
-                <Label className={labelClass}>{isRTL ? "العميل" : "Customer"}</Label>
                 {/* Searchable picker from the Customers module; the full
                     two-tab customer form opens as a link. */}
                 <RecordSelect
                   kind="customer"
+                  label={isRTL ? "العميل" : "Customer"}
                   value={contract.customer_id}
                   onChange={(id) => handleCustomerChange(id)}
                   createMode="inline"
@@ -514,9 +529,9 @@ function NewRentalForm() {
                 />
               </div>
               <div className="space-y-1">
-                <Label className={labelClass}>{isRTL ? "السيارة" : "Car"}</Label>
                 <RecordSelect
                   kind="car"
+                  label={isRTL ? "السيارة" : "Car"}
                   value={contract.car_id}
                   onChange={(id) => {
                     handleCarChange(id)
@@ -705,12 +720,16 @@ function NewRentalForm() {
                     <Input className={inputClass} value={row.expense_type} onChange={e => updateExpenseRow(row.id, "expense_type", e.target.value)} placeholder={isRTL ? "نوع المصروف" : "Expense type"} />
                   </div>
                   <div className="col-span-3">
-                    <select className={selectClass} value={row.account_code} onChange={e => updateExpenseRow(row.id, "account_code", e.target.value)}>
-                      <option value="">{isRTL ? "اختر حساب" : "Select account"}</option>
-                      {accounts.map(a => (
-                        <option key={a.code} value={a.code}>{a.code} — {isRTL ? (a.name_ar || a.name) : (a.name_en || a.name)}</option>
-                      ))}
-                    </select>
+                    <RecordSelect
+                      kind="account"
+                      label={isRTL ? "حساب المصروف" : "Expense account"}
+                      value={row.account_id}
+                      onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
+                      createMode="inline"
+                      eq={[['is_active', 'true']]}
+                      filter={(r) => r.type !== 'asset' && r.type !== 'liability' && isSelectablePostableAccount(r)}
+                      placeholder={isRTL ? "اختر حساب" : "Select account"}
+                    />
                   </div>
                   <div className="col-span-2">
                     <Input className={inputClass} type="number" step="0.001" value={row.amount} onChange={e => updateExpenseRow(row.id, "amount", e.target.value)} placeholder="0.000" />

@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 
 import { resolveAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { capabilitiesFor } from "@/lib/saas/entitlements";
+import { loadTenantPlan } from "@/lib/saas/tenant-plan";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +49,13 @@ export async function GET(request: Request) {
     );
   }
 
+  // The subscription package's capabilities, so a client surface can hide a
+  // control the server would refuse (exports, imports, the AI agent). This is
+  // presentation only: every route re-checks the capability server-side, so a
+  // tampered response cannot grant anything. A super admin operates the
+  // platform and holds every capability.
+  const plan = context.isSuperAdmin ? "enterprise" : await loadTenantPlan(supabaseAdmin as never, context.tenantId);
+
   return NextResponse.json({
     authUserId: context.authUserId,
     email: context.email,
@@ -54,5 +64,7 @@ export async function GET(request: Request) {
     tenantId: context.tenantId,
     isAdmin: context.isAdmin,
     isSuperAdmin: context.isSuperAdmin,
+    plan,
+    capabilities: capabilitiesFor(plan),
   });
 }

@@ -420,11 +420,10 @@ function NewExpensePageContent() {
               <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-10 rounded-xl" />
             </div>
             <div>
-              <label className="text-xs font-medium text-slate-500 mb-1 block flex items-center gap-1">
-                <Building2 className="w-3 h-3" /> Supplier *
-              </label>
               <RecordSelect
                 kind="supplier"
+                label={isRTL ? "المورد" : "Supplier"}
+                required
                 value={supplierId}
                 onChange={(id) => setSupplierId(id)}
                 createMode="inline"

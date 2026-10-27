@@ -4,6 +4,7 @@ import { Suspense, useState, useEffect, useRef } from "react"
 import { createPortal } from "react-dom"
 import DashboardLayout from "@/components/DashboardLayout"
 import { supabase } from "@/lib/supabase"
+import { buildAccountTree, isSelectableJournalAccount } from "@/lib/accounting/account-tree"
 import { formatCurrency, formatDateTime } from "@/lib/utils"
 import {
   Receipt, Save, ArrowLeft, Plus, Trash2, Calculator, CheckCircle, AlertCircle,
@@ -38,7 +39,7 @@ const ENTRY_TEMPLATES: Record<string, { name: string; lines: { description: stri
   loan_received: { name: "Loan Received", lines: [{ description: "Loan received", debit: 10000, credit: 0 }, { description: "Loan liability", debit: 0, credit: 10000 }] },
 }
 
-type Account = { id: string; name: string; name_ar?: string; code: string; parent_code: string | null; type: string }
+type Account = { id: string; name: string; name_ar?: string; code: string; parent_code: string | null; type: string; is_postable?: boolean | null }
 type VehicleItem = { id: string; make: string; model: string; plate_number: string }
 type Customer = { id: string; full_name: string }
 type Supplier = { id: string; name: string }
@@ -103,25 +104,6 @@ function getAccountLabel(accounts: Account[], id: string) {
   const parent = acc.parent_code ? getAccountByCode(accounts, acc.parent_code) : null
   if (parent) return `${parent.code} -> ${acc.code} - ${acc.name}`
   return `${acc.code} - ${acc.name}`
-}
-
-function buildAccountTree(accounts: Account[]) {
-  const parents = accounts.filter(a => !a.parent_code)
-  if (parents.length === 0) return accounts.map(acc => ({ type: "item" as const, id: acc.id, label: `${acc.code} - ${acc.name}` }))
-  const tree: { type: "header" | "item"; id: string; label: string }[] = []
-  parents.forEach(parent => {
-    tree.push({ type: "header", id: `hdr-${parent.id}`, label: `${parent.code} - ${parent.name}` })
-    const children = accounts.filter(a => a.parent_code === parent.code)
-    children.forEach(child => tree.push({ type: "item", id: child.id, label: `    ${child.code} - ${child.name}` }))
-    if (children.length === 0) tree.push({ type: "header", id: `empty-${parent.id}`, label: "    (No sub-accounts)" })
-  })
-  const knownIds = new Set(parents.map(p => p.code))
-  const orphans = accounts.filter(a => a.parent_code && !knownIds.has(a.parent_code))
-  if (orphans.length > 0) {
-    tree.push({ type: "header", id: "orphan-hdr", label: "Other Accounts" })
-    orphans.forEach(acc => tree.push({ type: "item", id: acc.id, label: `${acc.code} - ${acc.name}` }))
-  }
-  return tree
 }
 
 function getUsedColumns(lines: JournalLine[]) {
@@ -606,7 +588,7 @@ function JournalFormView({ entry, refData, onBack, onSaved }: { entry?: JournalE
     if (typeId === "custom") return
     const template = ENTRY_TEMPLATES[typeId]
     if (!template) return
-    const leafAccounts = refData.accounts.filter(a => a.parent_code)
+    const leafAccounts = refData.accounts.filter(a => isSelectableJournalAccount(a, false))
     const defaultAccount = leafAccounts.length > 0 ? leafAccounts[0] : refData.accounts[0]
     setLines(template.lines.map((line, idx) => ({
       ...emptyLine((idx + 1).toString()),

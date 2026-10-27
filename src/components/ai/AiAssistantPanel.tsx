@@ -17,6 +17,7 @@ import {
   Send,
   ShieldAlert,
   Sparkles,
+  Wand2,
   Wrench,
   XCircle,
 } from "lucide-react"
@@ -35,8 +36,23 @@ import {
  * fingerprint are re-checked server-side; the client can never execute an action
  * its role does not permit, and the AI never applies a change on its own.
  */
-export default function AiAssistantPanel({ screen }: { screen?: string }) {
+export default function AiAssistantPanel({
+  screen,
+  variant = "company",
+  tenantLabel,
+}: {
+  screen?: string
+  /**
+   * `company` renders on the light company dashboards; `super-admin` renders on
+   * the dark global console. The behaviour, endpoints and controller are
+   * identical — only the chrome differs, so there is exactly one AI engine.
+   */
+  variant?: "company" | "super-admin"
+  /** Shown in the header on the global console so the operator knows the scope. */
+  tenantLabel?: string
+}) {
   const { isRTL } = useLanguage()
+  const dark = variant === "super-admin"
 
   const t = (ar: string, en: string) => (isRTL ? ar : en)
 
@@ -90,18 +106,61 @@ export default function AiAssistantPanel({ screen }: { screen?: string }) {
     }
   }
 
+  // ---- Real write commands -------------------------------------------------
+  // These are the demonstrable commands that CHANGE documents. They post to the
+  // same repair endpoints as the free-text flow; nothing is written until the
+  // operator approves, and the server re-checks the package and permission.
+  const [command, setCommand] = useState("")
+  const [commandBusy, setCommandBusy] = useState(false)
+  const [cmd, setCmd] = useState({
+    customerId: "",
+    contractId: "",
+    amount: "",
+    vat: "",
+    discount: "",
+    paymentMethod: "cash",
+    invoiceType: "sale" as "sale" | "rental",
+    invoiceNumber: "",
+    newEndDate: "",
+  })
+
+  const runCommand = async (text: string, params?: Record<string, unknown>) => {
+    if (!text.trim() || commandBusy) return
+    setCommandBusy(true)
+    setCommand(text)
+    try {
+      const c = getController()
+      await c.propose(text, undefined, params)
+    } finally {
+      setCommandBusy(false)
+    }
+  }
+
   const proposal = repair?.proposal ?? null
   const result = repair?.result ?? null
+  const isFinancialAction =
+    proposal?.action === "invoice_issue" ||
+    proposal?.action === "invoice_reverse" ||
+    proposal?.action === "contract_extend"
 
   return (
-    <section id="ai-assistant" className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+    <section
+      id="ai-assistant"
+      className={
+        dark
+          ? "rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-sm"
+          : "rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+      }
+    >
       <div className="flex items-center gap-3">
         <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-cyan-50">
           <Bot className="h-5 w-5 text-cyan-600" />
         </span>
         <div>
-          <h2 className="text-lg font-black text-slate-900">{t("المساعد الذكي", "AI Assistant")}</h2>
-          <p className="text-sm text-slate-500">
+          <h2 className={dark ? "text-lg font-black text-white" : "text-lg font-black text-slate-900"}>
+            {t("المساعد الذكي", "AI Assistant")}
+          </h2>
+          <p className={dark ? "text-sm text-slate-400" : "text-sm text-slate-500"}>
             {t(
               "اسأل عن أرقامك، أو اطلب إصلاحًا آمنًا مع معاينة وموافقة قبل التنفيذ.",
               "Ask about your figures, or request a safe repair with preview and approval before it runs.",
@@ -152,6 +211,138 @@ export default function AiAssistantPanel({ screen }: { screen?: string }) {
             )}
           </div>
         )}
+      </div>
+
+      {/* Real write commands — demonstrable document changes */}
+      <div className="mt-5 rounded-xl border border-cyan-100 bg-cyan-50/40 p-4">
+        <p className="flex items-center gap-2 text-sm font-bold text-slate-700">
+          <Wand2 className="h-4 w-4 text-cyan-600" />
+          {t("أوامر تُغيّر المستندات فعليًا", "Commands that change documents")}
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          {t(
+            "تُنشئ/تعكس فواتير وتُمدّد العقود عبر نفس خدمات الترحيل — بمعاينة وموافقة وتحقق.",
+            "Issue/reverse invoices and extend contracts through the same posting services — with preview, approval and verification.",
+          )}
+        </p>
+
+        {/* Issue an invoice */}
+        <div className="mt-3 rounded-lg border border-cyan-100 bg-white p-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-cyan-700">
+            {t("إصدار فاتورة", "Issue an invoice")}
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <input
+              value={cmd.customerId}
+              onChange={(e) => setCmd({ ...cmd, customerId: e.target.value })}
+              placeholder={t("معرّف العميل", "Customer id")}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <input
+              value={cmd.amount}
+              onChange={(e) => setCmd({ ...cmd, amount: e.target.value })}
+              inputMode="decimal"
+              placeholder={t("المبلغ", "Amount")}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <input
+              value={cmd.vat}
+              onChange={(e) => setCmd({ ...cmd, vat: e.target.value })}
+              inputMode="decimal"
+              placeholder={t("الضريبة", "VAT")}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <input
+              value={cmd.discount}
+              onChange={(e) => setCmd({ ...cmd, discount: e.target.value })}
+              inputMode="decimal"
+              placeholder={t("الخصم", "Discount")}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <select
+              value={cmd.invoiceType}
+              onChange={(e) => setCmd({ ...cmd, invoiceType: e.target.value as "sale" | "rental" })}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            >
+              <option value="sale">{t("مبيعات", "Sale")}</option>
+              <option value="rental">{t("إيجار", "Rental")}</option>
+            </select>
+            <select
+              value={cmd.paymentMethod}
+              onChange={(e) => setCmd({ ...cmd, paymentMethod: e.target.value })}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            >
+              <option value="cash">{t("نقدًا", "Cash")}</option>
+              <option value="bank">{t("بنك", "Bank")}</option>
+            </select>
+          </div>
+          {cmd.invoiceType === "rental" && (
+            <input
+              value={cmd.contractId}
+              onChange={(e) => setCmd({ ...cmd, contractId: e.target.value })}
+              placeholder={t("معرّف عقد الإيجار", "Rental contract id")}
+              className="mt-2 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+          )}
+          <button
+            onClick={() => void runCommand(t("أصدر فاتورة جديدة", "Issue a new invoice"), { ...cmd })}
+            disabled={commandBusy || !cmd.customerId || !cmd.amount}
+            className="mt-2 flex items-center gap-2 rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-cyan-700 disabled:opacity-60"
+          >
+            {commandBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wand2 className="h-3.5 w-3.5" />}
+            {t("أصدر الفاتورة", "Issue invoice")}
+          </button>
+        </div>
+
+        {/* Reverse an invoice */}
+        <div className="mt-3 rounded-lg border border-cyan-100 bg-white p-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-cyan-700">
+            {t("عكس فاتورة مرحّلة", "Reverse a posted invoice")}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <input
+              value={cmd.invoiceNumber}
+              onChange={(e) => setCmd({ ...cmd, invoiceNumber: e.target.value })}
+              placeholder={t("رقم الفاتورة", "Invoice number")}
+              className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <button
+              onClick={() => void runCommand(t("اعكس الفاتورة", "Reverse the invoice"), { ...cmd, amount: cmd.amount || "0" })}
+              disabled={commandBusy || !cmd.invoiceNumber}
+              className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-60"
+            >
+              {t("اعكس", "Reverse")}
+            </button>
+          </div>
+        </div>
+
+        {/* Extend a contract */}
+        <div className="mt-3 rounded-lg border border-cyan-100 bg-white p-3">
+          <p className="text-xs font-bold uppercase tracking-widest text-cyan-700">
+            {t("تمديد عقد", "Extend a contract")}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <input
+              value={cmd.contractId}
+              onChange={(e) => setCmd({ ...cmd, contractId: e.target.value })}
+              placeholder={t("معرّف العقد", "Contract id")}
+              className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <input
+              type="date"
+              value={cmd.newEndDate}
+              onChange={(e) => setCmd({ ...cmd, newEndDate: e.target.value })}
+              className="rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-cyan-500"
+            />
+            <button
+              onClick={() => void runCommand(t("مدّد العقد", "Extend the contract"), { ...cmd, amount: cmd.amount || "0" })}
+              disabled={commandBusy || !cmd.contractId || !cmd.newEndDate}
+              className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-bold text-white hover:bg-slate-800 disabled:opacity-60"
+            >
+              {t("مدّد", "Extend")}
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Repair workflow */}

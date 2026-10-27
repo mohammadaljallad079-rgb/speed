@@ -7,6 +7,7 @@ import type {
   AiProviderConfig,
   AiProviderId,
   AiTaskKind,
+  AiUsage,
 } from "./types";
 
 /**
@@ -30,6 +31,28 @@ export const DEFAULT_MODELS: Record<AiProviderId, string> = {
 const OPENAI_BASE = "https://api.openai.com/v1";
 
 /**
+ * Redacts anything credential-shaped from a provider error before it is shown
+ * or stored. A provider echoes the request back in its error body often enough
+ * that an unredacted message would leak the very key it is complaining about.
+ */
+export function sanitizeProviderError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? "Unknown provider error");
+  return raw
+    .replace(/\b(sk|key|api)[-_][A-Za-z0-9._-]{8,}/gi, "[redacted-key]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted]")
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
+/** True when the error indicates a rate limit rather than a configuration fault. */
+export function isRateLimitError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\b429\b|rate.?limit|quota|too many requests/i.test(message);
+}
+
+/**
  * Default per-call deadline. A provider that hangs must not hang the request:
  * the call is aborted and the caller's fallback/degradation path takes over.
  */
@@ -43,6 +66,10 @@ export interface ProviderCallInput {
   signal?: AbortSignal;
   /** Per-call deadline; defaults to DEFAULT_TIMEOUT_MS. */
   timeoutMs?: number;
+  /** Extra non-secret headers (e.g. OpenRouter attribution). */
+  headers?: Record<string, string>;
+  /** Attempts after the first on a transient failure; defaults to 1 (no retry). */
+  retries?: number;
 }
 
 /**
@@ -152,6 +179,7 @@ async function callOpenAiLike(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${input.apiKey}`,
+      ...(input.headers ?? {}),
     },
     body: JSON.stringify({
       model,
@@ -199,6 +227,111 @@ export async function completeWithProvider(
     input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     input.signal,
   );
+}
+
+/**
+ * A provider call with a bounded retry.
+ *
+ * Only a transient failure is retried — a network blip or a provider 5xx/429.
+ * A 4xx that names a bad key or an unknown model is NOT retried: retrying a
+ * configuration error just multiplies the latency before the operator is told
+ * what is wrong. The attempt count is small and explicit; there is no unbounded
+ * backoff loop that could hold a request open.
+ */
+export async function completeWithRetry(
+  provider: AiProviderId,
+  input: ProviderCallInput,
+): Promise<AiCompletionResult> {
+  const attempts = Math.max(1, Math.min(input.retries ?? 1, 3));
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await completeWithProvider(provider, input);
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      const retryable = /\b(429|500|502|503|504)\b|timed out|network|fetch failed|aborted/i.test(message);
+      if (attempt >= attempts || !retryable) break;
+      // Short, bounded pause before the single retry.
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+  }
+  throw lastError ?? new Error("Provider call failed");
+}
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  latencyMs: number;
+  model: string;
+  /** The provider's own reply length, proving a real completion came back. */
+  replyChars: number;
+  replyPreview: string;
+  usage: AiUsage;
+  errorSanitized: string | null;
+  /** True when the failure was a rate limit (the free tier being busy). */
+  rateLimited: boolean;
+}
+
+/**
+ * Performs a REAL round-trip against the configured provider.
+ *
+ * This is what makes "Test Connection" meaningful: it sends a one-token prompt
+ * and reports the provider's own answer. It is never satisfied by a local check
+ * of the configuration, and it never fabricates a success — a failure is
+ * returned as a sanitized reason so the operator can act on it.
+ *
+ * The prompt asks for a specific token so an empty or truncated response is
+ * visible as a failure rather than counted as success.
+ */
+export async function testProviderConnection(input: {
+  provider: AiProviderId;
+  apiKey: string;
+  baseUrl?: string | null;
+  model: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}): Promise<ConnectionTestResult> {
+  const started = Date.now();
+  try {
+    const result = await completeWithProvider(input.provider, {
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      model: input.model,
+      headers: input.headers,
+      signal: input.signal,
+      // A test must fail fast rather than hold the console open.
+      timeoutMs: input.timeoutMs ?? 20_000,
+      request: {
+        system: "You are a connectivity probe. Reply with the single word: OK",
+        messages: [{ role: "user", content: "Reply with exactly: OK" }],
+        maxTokens: 16,
+        temperature: 0,
+      },
+    });
+    const text = (result.text ?? "").trim();
+    return {
+      ok: text.length > 0,
+      latencyMs: Date.now() - started,
+      model: input.model,
+      replyChars: text.length,
+      replyPreview: text.slice(0, 80),
+      usage: result.usage,
+      errorSanitized: text.length > 0 ? null : "The provider returned an empty response",
+      rateLimited: false,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      latencyMs: Date.now() - started,
+      model: input.model,
+      replyChars: 0,
+      replyPreview: "",
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: null, model: input.model, provider: input.provider },
+      errorSanitized: sanitizeProviderError(error),
+      rateLimited: isRateLimitError(error),
+    };
+  }
 }
 
 export interface RoutedResult extends AiCompletionResult {

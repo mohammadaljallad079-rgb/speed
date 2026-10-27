@@ -5,11 +5,7 @@ import PublicNavbar from '@/components/PublicNavbar'
 import { MapPin, Phone, Mail, Clock, Send, CheckCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { createClient } from '@supabase/supabase-js'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-const supabase = createClient(supabaseUrl, supabaseAnonKey)
+import { PLATFORM_BRANDING } from '@/lib/branding/platform'
 
 interface CompanyData {
   name: string
@@ -23,39 +19,16 @@ export default function ContactPage() {
   const { isRTL } = useLanguage()
   const [sent, setSent] = useState(false)
   const [form, setForm] = useState({ name: '', phone: '', email: '', message: '' })
-  const [company, setCompany] = useState<CompanyData>({
-    name: '',
-    phone: '+973 1234 5678',
-    email: 'info@speed.bh',
-    address: isRTL ? 'المنامة، مملكة البحرين' : 'Manama, Kingdom of Bahrain',
+  // The contact page is part of the SPEED platform's public website, so it shows
+  // the platform's own identity — never a subscriber's `company_profile`, which
+  // is what an unscoped `settings` read used to return.
+  const company: CompanyData = {
+    name: PLATFORM_BRANDING.name,
+    phone: PLATFORM_BRANDING.phone ?? '',
+    email: PLATFORM_BRANDING.email ?? '',
+    address: isRTL ? 'المنامة، مملكة البحرين' : (PLATFORM_BRANDING.address ?? ''),
     crNumber: '',
-  })
-
-  useEffect(() => {
-    async function fetchSettings() {
-      try {
-        const { data } = await supabase
-          .from('settings')
-          .select('*')
-          .eq('key', 'company_profile')
-          .single()
-
-        if (data?.value) {
-          const v = data.value
-          setCompany({
-            name: v.name || '',
-            phone: v.phone || '+973 1234 5678',
-            email: v.email || 'info@speed.bh',
-            address: v.address || (isRTL ? 'المنامة، مملكة البحرين' : 'Manama, Kingdom of Bahrain'),
-            crNumber: v.crNumber || '',
-          })
-        }
-      } catch (err) {
-        console.error('Contact settings fetch error:', err)
-      }
-    }
-    fetchSettings()
-  }, [isRTL])
+  }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()

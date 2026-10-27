@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import { applyReportScope } from '@/lib/auth/scope'
 import { useReportScope, effectiveReportScope } from '@/lib/hooks/use-report-scope'
 import { buildAccountStatement, buildTrialBalance, type AccountStatement } from '@/lib/reporting/ledger'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 import { formatCurrency } from '@/lib/utils'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -15,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import {
-  ArrowLeft, BookOpen, Printer, RefreshCw, Calendar, Search, TrendingUp, TrendingDown, Scale,
+  ArrowLeft, BookOpen, Printer, RefreshCw, Calendar, Search, TrendingUp, TrendingDown, Scale, Download,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -61,6 +62,7 @@ function GeneralLedgerContent() {
   const [toDraft, setToDraft] = useState(yearEnd)
   const [balanced, setBalanced] = useState(true)
   const [difference, setDifference] = useState(0)
+  const [exporting, setExporting] = useState(false)
 
   const scopeState = useReportScope()
   const currentScope =
@@ -169,6 +171,68 @@ function GeneralLedgerContent() {
     }
   }
 
+  /**
+   * Export what the user is looking at: the selected account's statement when
+   * one is open (the detailed view), otherwise the trial-balance list. The rows
+   * come from the already-scoped state, so the file can never contain another
+   * tenant's accounts.
+   */
+  async function exportExcel() {
+    setExporting(true)
+    try {
+      const period = `${fromDate || t('البداية', 'Start')} — ${toDate || t('اليوم', 'Today')}`
+      const selected = accounts.find((a) => a.id === selectedId)
+      const spec = statement && selected
+        ? {
+            titleAr: `دفتر الأستاذ — ${selected.nameAr || selected.name}`,
+            titleEn: `General Ledger — ${selected.name || selected.nameAr}`,
+            periodLabel: period,
+            rtl: isRTL,
+            columns: [
+              { key: 'date', labelAr: 'التاريخ', labelEn: 'Date', type: 'date' as const },
+              { key: 'journalNumber', labelAr: 'رقم القيد', labelEn: 'Journal', type: 'text' as const, width: 18 },
+              { key: 'reference', labelAr: 'المرجع', labelEn: 'Reference', type: 'text' as const, width: 20 },
+              { key: 'description', labelAr: 'البيان', labelEn: 'Description', type: 'text' as const, width: 40 },
+              { key: 'debit', labelAr: 'مدين', labelEn: 'Debit', type: 'currency' as const },
+              { key: 'credit', labelAr: 'دائن', labelEn: 'Credit', type: 'currency' as const },
+              { key: 'balance', labelAr: 'الرصيد', labelEn: 'Balance', type: 'currency' as const },
+            ],
+            rows: statement.rows as unknown as Record<string, unknown>[],
+            totals: [
+              { labelAr: 'إجمالي مدين', labelEn: 'Total debit', columnKey: 'debit', value: statement.totalDebit },
+              { labelAr: 'إجمالي دائن', labelEn: 'Total credit', columnKey: 'credit', value: statement.totalCredit },
+            ],
+          }
+        : {
+            titleAr: 'ميزان المراجعة / دفتر الأستاذ',
+            titleEn: 'Trial Balance / General Ledger',
+            periodLabel: period,
+            rtl: isRTL,
+            columns: [
+              { key: 'code', labelAr: 'الرمز', labelEn: 'Code', type: 'text' as const, width: 14 },
+              { key: 'name', labelAr: 'الحساب', labelEn: 'Account', type: 'text' as const, width: 40 },
+              { key: 'type', labelAr: 'النوع', labelEn: 'Type', type: 'text' as const, width: 16 },
+              { key: 'openingBalance', labelAr: 'الرصيد الافتتاحي', labelEn: 'Opening', type: 'currency' as const },
+              { key: 'totalDebit', labelAr: 'مدين', labelEn: 'Debit', type: 'currency' as const },
+              { key: 'totalCredit', labelAr: 'دائن', labelEn: 'Credit', type: 'currency' as const },
+              { key: 'closingBalance', labelAr: 'الرصيد الختامي', labelEn: 'Closing', type: 'currency' as const },
+            ],
+            rows: filtered as unknown as Record<string, unknown>[],
+            totals: [
+              { labelAr: 'إجمالي مدين', labelEn: 'Total debit', columnKey: 'totalDebit', value: filtered.reduce((s, a) => s + a.totalDebit, 0) },
+              { labelAr: 'إجمالي دائن', labelEn: 'Total credit', columnKey: 'totalCredit', value: filtered.reduce((s, a) => s + a.totalCredit, 0) },
+            ],
+          }
+
+      const buffer = await buildReportWorkbook(spec)
+      downloadWorkbook(buffer, exportFilename(statement && selected ? `general-ledger-${selected.code}` : 'general-ledger', period))
+    } catch (err) {
+      console.error('General Ledger export error:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const filtered = accounts.filter((a) => {
     const q = search.trim().toLowerCase()
     if (!q) return true
@@ -203,6 +267,10 @@ function GeneralLedgerContent() {
             <Button variant="outline" size="sm" onClick={() => void loadAccounts()} className="rounded-xl gap-1.5">
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">{t('تحديث', 'Refresh')}</span>
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void exportExcel()} disabled={exporting || accounts.length === 0} className="rounded-xl gap-1.5">
+              <Download className="w-4 h-4" />
+              <span className="hidden sm:inline">{exporting ? t('جاري التصدير...', 'Exporting...') : t('تصدير Excel', 'Export Excel')}</span>
             </Button>
             <Button variant="outline" size="sm" onClick={() => window.print()} className="rounded-xl gap-1.5">
               <Printer className="w-4 h-4" />

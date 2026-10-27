@@ -6,6 +6,8 @@ import Link from "next/link"
 
 import { supabase } from "@/lib/supabase"
 import { useLanguage } from "@/lib/LanguageContext"
+import AiAssistantPanel from "@/components/ai/AiAssistantPanel"
+import AiControlCenter from "@/components/super-admin/AiControlCenter"
 import {
   Building2,
   Users,
@@ -193,6 +195,35 @@ export default function SuperAdminPage() {
     [load],
   )
 
+  // A role is company-scoped and may never be `super_admin` (the console cannot
+  // grant or revoke the global role - that is a provisioning action, enforced
+  // again in `assertRoleChangeAllowed` and by migration 004).
+  const changeRole = useCallback(
+    async (user: TenantUser, role: string) => {
+      setBusyUser(user.id)
+      setError(null)
+      try {
+        const res = await fetch(`/api/super-admin/users/${user.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role }),
+        })
+        if (res.ok) {
+          setTenantUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, role } : u)))
+          void load()
+        } else {
+          const body = await res.json().catch(() => null)
+          setError(body?.error ?? t("تعذر تغيير الدور.", "Could not change the role."))
+        }
+      } catch {
+        setError(t("تعذر الاتصال بالخادم.", "Could not reach the server."))
+      } finally {
+        setBusyUser(null)
+      }
+    },
+    [load, t],
+  )
+
   const setCompanyActive = useCallback(
     async (tenant: TenantSummary, active: boolean) => {
       setBusyUser("__company__")
@@ -337,11 +368,17 @@ export default function SuperAdminPage() {
                 users={allUsers}
                 onOpen={openTenant}
                 onToggle={toggleUser}
+                onRoleChange={changeRole}
                 busyUser={busyUser}
                 t={t}
               />
             )}
-            {tab === "ai" && <AiTab ai={ai} t={t} />}
+            {tab === "ai" && (
+              <div className="space-y-6">
+                <AiControlCenter isRTL={isRTL} t={t} />
+                <AiTab ai={ai} t={t} />
+              </div>
+            )}
             {tab === "subscriptions" && overview && <SubscriptionsTab overview={overview} t={t} />}
             {tab === "settings" && <SettingsTab t={t} />}
           </div>
@@ -565,6 +602,7 @@ function UsersTab({
   users,
   onOpen,
   onToggle,
+  onRoleChange,
   busyUser,
   t,
 }: {
@@ -573,6 +611,7 @@ function UsersTab({
   users: TenantUser[]
   onOpen: (t: TenantSummary) => void
   onToggle: (u: TenantUser) => void
+  onRoleChange: (u: TenantUser, role: string) => void
   busyUser: string | null
   t: (a: string, e: string) => string
 }) {
@@ -604,22 +643,41 @@ function UsersTab({
             </h3>
             <ul className="mt-3 divide-y divide-white/5">
               {users.map((u) => (
-                <li key={u.id} className="flex items-center justify-between py-3">
+                <li key={u.id} className="flex items-center justify-between gap-3 py-3">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-white">{u.fullName || u.email}</p>
-                    <p className="truncate text-xs text-slate-400">
-                      {u.email} · {u.role}
-                    </p>
+                    <p className="truncate text-xs text-slate-400">{u.email}</p>
                   </div>
-                  <button
-                    disabled={busyUser === u.id}
-                    onClick={() => void onToggle(u)}
-                    className={`rounded px-3 py-1.5 text-xs font-bold ${
-                      u.isActive ? "bg-green-600/20 text-green-300" : "bg-slate-700 text-slate-300"
-                    }`}
-                  >
-                    {busyUser === u.id ? "…" : u.isActive ? t("تعطيل", "Disable") : t("تفعيل", "Enable")}
-                  </button>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    {u.role === "super_admin" ? (
+                      // The global role is not company-scoped and is never
+                      // managed here; show it, do not offer to change it.
+                      <span className="rounded bg-red-500/15 px-2 py-1 text-[11px] font-bold text-red-300">
+                        {t("مدير عام", "Super admin")}
+                      </span>
+                    ) : (
+                      <select
+                        aria-label={t(`دور ${u.email}`, `Role for ${u.email}`)}
+                        value={u.role}
+                        disabled={busyUser === u.id}
+                        onChange={(e) => onRoleChange(u, e.target.value)}
+                        className="rounded border border-white/10 bg-slate-800 px-2 py-1.5 text-xs font-semibold text-slate-200 disabled:opacity-50"
+                      >
+                        <option value="admin">{t("مدير الشركة", "Company admin")}</option>
+                        <option value="staff">{t("موظف", "Staff")}</option>
+                        <option value="client">{t("عميل", "Customer")}</option>
+                      </select>
+                    )}
+                    <button
+                      disabled={busyUser === u.id}
+                      onClick={() => void onToggle(u)}
+                      className={`rounded px-3 py-1.5 text-xs font-bold ${
+                        u.isActive ? "bg-green-600/20 text-green-300" : "bg-slate-700 text-slate-300"
+                      }`}
+                    >
+                      {busyUser === u.id ? "…" : u.isActive ? t("تعطيل", "Disable") : t("تفعيل", "Enable")}
+                    </button>
+                  </div>
                 </li>
               ))}
               {users.length === 0 && <li className="py-3 text-sm text-slate-500">{t("لا مستخدمون.", "No users.")}</li>}
@@ -676,6 +734,8 @@ function AiTab({ ai, t }: { ai: AiOversight | null; t: (a: string, e: string) =>
         </ul>
       </div>
 
+      <AiAssistantPanel screen="super-admin" variant="super-admin" />
+
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="w-full text-sm">
           <thead className="bg-slate-900 text-slate-400">
@@ -719,21 +779,117 @@ function AiTab({ ai, t }: { ai: AiOversight | null; t: (a: string, e: string) =>
   )
 }
 
+/**
+ * Subscription packages.
+ *
+ * A package is a capability set stored per tenant (settings key `tenant_plan`),
+ * not a billing record. The operator assigns one here and the AI layer reads it
+ * server-side to decide whether a company may use the assistant, the agent and
+ * financial writes. Each row loads its own package from
+ * `/api/super-admin/tenants/:id/plan`, so the value shown is the stored one.
+ */
 function SubscriptionsTab({ overview, t }: { overview: Overview; t: (a: string, e: string) => string }) {
+  const [plans, setPlans] = useState<Record<string, string>>({})
+  const [packages, setPackages] = useState<Array<{ id: string; nameAr: string; nameEn: string; capabilities: Record<string, boolean> }>>([])
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadPlans = useCallback(async () => {
+    const entries = await Promise.all(
+      overview.tenants.map(async (x) => {
+        try {
+          const res = await fetch(`/api/super-admin/tenants/${x.id}/plan`, { cache: "no-store" })
+          if (!res.ok) return [x.id, "free"] as const
+          const json = await res.json()
+          if (json.packages) setPackages(json.packages)
+          return [x.id, String(json.plan ?? "free")] as const
+        } catch {
+          return [x.id, "free"] as const
+        }
+      }),
+    )
+    setPlans(Object.fromEntries(entries))
+  }, [overview.tenants])
+
+  useEffect(() => {
+    void loadPlans()
+  }, [loadPlans])
+
+  const assign = useCallback(
+    async (tenantId: string, plan: string) => {
+      setSavingId(tenantId)
+      setError(null)
+      try {
+        const res = await fetch(`/api/super-admin/tenants/${tenantId}/plan`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ plan }),
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok) {
+          setError(json?.error ?? t("تعذر تعيين الباقة.", "Could not assign the package."))
+          return
+        }
+        setPlans((prev) => ({ ...prev, [tenantId]: plan }))
+      } finally {
+        setSavingId(null)
+      }
+    },
+    [t],
+  )
+
+  const CAPS: Array<{ key: string; ar: string; en: string }> = [
+    { key: "aiAssistant", ar: "المساعد", en: "Assistant" },
+    { key: "aiAgent", ar: "الوكيل", en: "Agent" },
+    { key: "aiFinancialWrites", ar: "كتابة مالية", en: "Financial writes" },
+    { key: "imports", ar: "استيراد", en: "Import" },
+    { key: "exports", ar: "تصدير", en: "Export" },
+  ]
+
   return (
     <div className="space-y-6">
-      <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+      <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-200">
         {t(
-          "الخطط المدفوعة غير مفعّلة في هذه النسخة. تُعرض حالة الاشتراك كـ «مجاني» بصدق، دون اختراع وظائف غير موجودة.",
-          "Paid plans are not implemented in this build. Subscription state is reported honestly as \"free\"; no capability is invented.",
+          "الباقة تحدد قدرات الذكاء الاصطناعي لكل شركة. تُقرأ من الخادم؛ لا يمكن للشركة منح نفسها قدرة.",
+          "The package decides each company's AI capabilities. It is read server-side; a company cannot grant itself a capability.",
         )}
       </div>
+
+      {error && <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</div>}
+
+      {packages.length > 0 && (
+        <div className="overflow-x-auto rounded-xl border border-white/10">
+          <table className="w-full text-sm">
+            <thead className="bg-slate-900 text-slate-400">
+              <tr>
+                <th className="px-4 py-3 text-start">{t("الباقة", "Package")}</th>
+                {CAPS.map((c) => (
+                  <th key={c.key} className="px-4 py-3 text-start">{t(c.ar, c.en)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {packages.map((p) => (
+                <tr key={p.id}>
+                  <td className="px-4 py-3 font-semibold text-slate-200">{t(p.nameAr, p.nameEn)}</td>
+                  {CAPS.map((c) => (
+                    <td key={c.key} className="px-4 py-3">
+                      {p.capabilities[c.key] ? <CheckCircle2 className="h-4 w-4 text-emerald-400" /> : <XCircle className="h-4 w-4 text-slate-600" />}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-xl border border-white/10">
         <table className="w-full text-sm">
           <thead className="bg-slate-900 text-slate-400">
             <tr>
               <th className="px-4 py-3 text-start">{t("الشركة", "Company")}</th>
-              <th className="px-4 py-3 text-start">{t("الخطة", "Plan")}</th>
+              <th className="px-4 py-3 text-start">{t("الباقة", "Package")}</th>
               <th className="px-4 py-3 text-start">{t("الحالة", "Status")}</th>
               <th className="px-4 py-3 text-start">{t("المستخدمون", "Users")}</th>
             </tr>
@@ -742,7 +898,18 @@ function SubscriptionsTab({ overview, t }: { overview: Overview; t: (a: string, 
             {overview.tenants.map((x) => (
               <tr key={x.id}>
                 <td className="px-4 py-3 text-slate-200">{x.name}</td>
-                <td className="px-4 py-3 text-slate-300">{x.plan}</td>
+                <td className="px-4 py-3">
+                  <select
+                    value={plans[x.id] ?? "free"}
+                    onChange={(e) => void assign(x.id, e.target.value)}
+                    disabled={savingId === x.id}
+                    className="rounded-lg border border-white/10 bg-slate-900 px-3 py-1.5 text-sm text-slate-200 outline-none focus:border-cyan-500 disabled:opacity-60"
+                  >
+                    {packages.map((p) => (
+                      <option key={p.id} value={p.id}>{t(p.nameAr, p.nameEn)}</option>
+                    ))}
+                  </select>
+                </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={x.status} t={t} />
                 </td>

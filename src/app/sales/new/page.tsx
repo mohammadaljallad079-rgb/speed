@@ -139,12 +139,13 @@ function NewSaleContent() {
               {isRTL ? "العميل" : "Customer"}
             </h2>
             <div className="space-y-1">
-              <label className="text-xs text-slate-500 font-semibold">{isRTL ? "العميل" : "Customer"} *</label>
               {/* Searchable picker from the Customers module. The full customer
                   form is a two-tab flow, so it opens as a link rather than an
                   invented mini-form. */}
               <RecordSelect
                 kind="customer"
+                label={isRTL ? "العميل" : "Customer"}
+                required
                 value={form.customer_id}
                 onChange={(id) => set("customer_id", id)}
                 createMode="inline"

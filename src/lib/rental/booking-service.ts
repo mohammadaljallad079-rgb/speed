@@ -80,11 +80,21 @@ export type CreatedBooking = {
 };
 
 /**
- * A car is rentable only when its status is exactly `available` (case/space
- * tolerant) and it is a rental vehicle. A `sale` car is inventory for sale, not
- * for rent, so it must never be offered as a booking option.
+ * A car is rentable when it is a rental vehicle and is not in a permanently
+ * unavailable state.
+ *
+ * Availability is NOT read off `cars.status`. That flag is a denormalised cache
+ * that the application only ever sets to `rented` and never resets when a rental
+ * finishes, so a car that completed a contract stays `rented` forever and would
+ * disappear from the booking list permanently. The authoritative "is this car
+ * out" signal is an open contract (`BLOCKING_STATUSES`), which
+ * `listAvailableCars` applies. `rented` is therefore a transient marker here,
+ * not an exclusion.
  */
 export const RENTABLE_CATEGORIES = ["rental", "both"] as const;
+
+/** Vehicle states that permanently remove a car from the rental pool. */
+export const UNRENTABLE_STATUSES = ["maintenance", "sold", "inactive", "out_of_service"] as const;
 
 /** Statuses that occupy a car and therefore block an overlapping booking. */
 export const BLOCKING_STATUSES = [
@@ -96,6 +106,9 @@ export const BLOCKING_STATUSES = [
   "ongoing",
   "rented",
 ] as const;
+
+/** Open-ended upper bound used to ask "which cars are out right now". */
+const FAR_FUTURE = "9999-12-31";
 
 const CAR_SELECT =
   "id,make,model,year,color,category,status,daily_rate,weekly_rate,monthly_rate,seats,transmission,fuel_type,image_url,location,tenant_id";
@@ -111,7 +124,7 @@ function num(value: unknown): number {
 
 export function isCarRentable(car: Row): boolean {
   const status = text(car.status ?? "available") || "available";
-  if (status !== "available") return false;
+  if ((UNRENTABLE_STATUSES as readonly string[]).includes(status)) return false;
   const category = text(car.category ?? "rental") || "rental";
   return (RENTABLE_CATEGORIES as readonly string[]).includes(category);
 }
@@ -189,17 +202,24 @@ async function busyCarIds(
 }
 
 /**
- * Cars the caller may book: available, rentable, in the caller's company, and
- * free for the requested window (when one is supplied). The window is optional
- * so the form can show a company's available cars before dates are chosen.
+ * Cars the caller may book: rentable, in the caller's company, and free.
+ *
+ * Free is decided by the rental contracts, never by `cars.status`:
+ *   - with a date window, a car holding a blocking booking that overlaps it is
+ *     hidden for that window only;
+ *   - with no window, a car that is currently out (a blocking contract whose
+ *     period has not ended) is hidden, and every other rentable car is offered.
+ *
+ * This is why the old `.eq("status", "available")` filter is gone: it excluded
+ * every car that had ever been rented, because nothing resets the flag.
  */
 export async function listAvailableCars(
   db: BookingDb,
-  scopeIn: { tenantId: string | null; start?: string | null; end?: string | null },
+  scopeIn: { tenantId: string | null; start?: string | null; end?: string | null; today?: string | null },
 ): Promise<AvailableCar[]> {
   const tenantId = scopeIn.tenantId ?? null;
 
-  const carsQuery = scope(db.from("cars").select(CAR_SELECT), tenantId).eq("status", "available");
+  const carsQuery = scope(db.from("cars").select(CAR_SELECT), tenantId);
   const { data, error } = await carsQuery.order("created_at", { ascending: false });
   if (error) throw error;
 
@@ -207,12 +227,88 @@ export async function listAvailableCars(
 
   const start = scopeIn.start ?? null;
   const end = scopeIn.end ?? null;
+  const today = isIsoDate(scopeIn.today) ? scopeIn.today : new Date().toISOString().slice(0, 10);
+
   if (isIsoDate(start) && isIsoDate(end) && end > start) {
     const busy = await busyCarIds(db, start, end, tenantId);
+    cars = cars.filter((c) => !busy.has(String(c.id)));
+  } else {
+    const busy = await busyCarIds(db, today, FAR_FUTURE, tenantId);
     cars = cars.filter((c) => !busy.has(String(c.id)));
   }
 
   return cars.map(project);
+}
+
+/**
+ * Resolves a SINGLE car for the booking form, with its availability.
+ *
+ * The booking form needs this because a car can be reached by a deep link
+ * (`/customer-dashboard?tab=booking&car=<id>`) that does not pass through the
+ * availability list. Without an explicit lookup the `<select>` silently falls
+ * back to its placeholder when the car is absent from the freshly-loaded list,
+ * which is how a customer ended up on a form that had quietly discarded their
+ * choice.
+ *
+ * The result distinguishes the three cases the UI must render differently:
+ *   - `found: false`               -> not in this company (or not rentable)
+ *   - `found: true, available: false` -> real, but busy for the requested window
+ *   - `found: true, available: true`  -> selectable
+ *
+ * Scope comes from the session, exactly as `listAvailableCars`, so a deep link
+ * cannot reference another company's car.
+ */
+export interface CarAvailability {
+  found: boolean;
+  available: boolean;
+  car: AvailableCar | null;
+  /** When unavailable, why. Shown to the customer verbatim. */
+  reason: "not_found" | "not_rentable" | "busy" | null;
+  /** Conflicting window, when the reason is `busy`. */
+  conflict?: { startDate: string | null; endDate: string | null } | null;
+}
+
+export async function getCarAvailability(
+  db: BookingDb,
+  scopeIn: { tenantId: string | null; carId: string; start?: string | null; end?: string | null },
+): Promise<CarAvailability> {
+  if (!scopeIn.carId) return { found: false, available: false, car: null, reason: "not_found" };
+
+  const query = scope(db.from("cars").select(CAR_SELECT).eq("id", scopeIn.carId), scopeIn.tenantId ?? null);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  const car = data as Row | null;
+  if (!car) return { found: false, available: false, car: null, reason: "not_found" };
+  if (!isCarRentable(car)) {
+    return { found: true, available: false, car: project(car), reason: "not_rentable" };
+  }
+
+  const start = scopeIn.start ?? null;
+  const end = scopeIn.end ?? null;
+  const today = new Date().toISOString().slice(0, 10);
+  const windowStart = isIsoDate(start) ? start : today;
+  const windowEnd = isIsoDate(end) && isIsoDate(start) && end > start ? end : FAR_FUTURE;
+
+  const conflictQuery = scope(
+    db.from("rental_contracts").select("id,start_date,end_date,status,car_id").eq("car_id", String(car.id)),
+    (car.tenant_id as string | null) ?? null,
+  ).in("status", BLOCKING_STATUSES);
+  const { data: existing, error: conflictError } = await conflictQuery;
+  if (conflictError) throw conflictError;
+
+  const conflict = ((existing ?? []) as Row[]).find((r) =>
+    periodsOverlap(windowStart, windowEnd, String(r.start_date), String(r.end_date)),
+  );
+
+  return {
+    found: true,
+    available: !conflict,
+    car: project(car),
+    reason: conflict ? "busy" : null,
+    conflict: conflict
+      ? { startDate: (conflict.start_date as string) ?? null, endDate: (conflict.end_date as string) ?? null }
+      : null,
+  };
 }
 
 /** Price for a window, computed server-side from the car's own rates. */

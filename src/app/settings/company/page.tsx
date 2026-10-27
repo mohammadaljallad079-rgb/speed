@@ -5,6 +5,7 @@ export const dynamic = "force-dynamic"
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { supabase } from '@/lib/supabase'
+import { readScopedSetting, writeScopedSetting, type ScopedSettingsClient } from '@/lib/branding/settings-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -249,37 +250,47 @@ function WebsiteSettingsContent() {
   const [aiSettings, setAiSettings] = useState<{ provider: string; apiKey: string }>({
     provider: 'anthropic', apiKey: '',
   })
+  // The tenant this editor writes for, taken from the authenticated session —
+  // never from the form. Writing an unscoped `settings` row would let one tenant
+  // overwrite another's branding.
+  const [tenantId, setTenantId] = useState<string | null>(null)
+  const [tenantReady, setTenantReady] = useState(false)
 
   useEffect(() => {
+    fetch('/api/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => { setTenantId(json?.tenantId ?? null) })
+      .catch(() => {})
+      .finally(() => setTenantReady(true))
+  }, [])
+
+  useEffect(() => {
+    if (!tenantReady) return
     async function fetchSettings() {
       setLoading(true)
       try {
-        const { data } = await supabase
-          .from('settings')
-          .select('*')
-          .in('key', ['company_profile', 'contract_defaults', 'ai_settings'])
+        const client = supabase as unknown as ScopedSettingsClient
+        const c = await readScopedSetting(client, tenantId, 'company_profile')
+        const ct = await readScopedSetting(client, tenantId, 'contract_defaults')
+        const ai = await readScopedSetting(client, tenantId, 'ai_settings')
 
-        const c = data?.find((item: any) => item.key === 'company_profile')
-        const ct = data?.find((item: any) => item.key === 'contract_defaults')
-        const ai = data?.find((item: any) => item.key === 'ai_settings')
-
-        if (c?.value) {
-          const v = c.value
+        if (c) {
+          const v = c as Record<string, string>
           setCompany({
             name: v.name || '', phone: v.phone || '', email: v.email || '',
             address: v.address || '', crNumber: v.crNumber || '',
             aboutUs: v.aboutUs || '', vision: v.vision || '',
           })
         }
-        if (ct?.value) {
-          const v = ct.value
+        if (ct) {
+          const v = ct as Record<string, string>
           setContracts({
             rentalTerms: v.rentalTerms || '', rentalClauses: v.rentalClauses || '',
             salesTerms: v.salesTerms || '', salesClauses: v.salesClauses || '',
           })
         }
-        if (ai?.value) {
-          const v = ai.value
+        if (ai) {
+          const v = ai as Record<string, string>
           setAiSettings({ provider: v.provider || 'anthropic', apiKey: v.apiKey || '' })
         }
       } catch (err) {
@@ -289,20 +300,21 @@ function WebsiteSettingsContent() {
       }
     }
     fetchSettings()
-  }, [])
+  }, [tenantReady, tenantId])
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      await supabase.from('settings').upsert({
-        key: 'company_profile', value: company, updated_at: new Date().toISOString(),
-      }, { onConflict: 'key' })
-      await supabase.from('settings').upsert({
-        key: 'contract_defaults', value: contracts, updated_at: new Date().toISOString(),
-      }, { onConflict: 'key' })
-      await supabase.from('settings').upsert({
-        key: 'ai_settings', value: aiSettings, updated_at: new Date().toISOString(),
-      }, { onConflict: 'key' })
+      const client = supabase as unknown as ScopedSettingsClient
+      const results = [
+        await writeScopedSetting(client, tenantId, 'company_profile', company),
+        await writeScopedSetting(client, tenantId, 'contract_defaults', contracts),
+        await writeScopedSetting(client, tenantId, 'ai_settings', aiSettings),
+      ]
+      if (results.some((r) => !r.ok)) {
+        console.error('Save error:', results.find((r) => !r.ok)?.error)
+        return
+      }
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (err) {

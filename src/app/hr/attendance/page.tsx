@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ArrowLeft, LogIn, LogOut, Clock, Calendar, User, Filter, Search, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import RecordSelect from '@/components/records/RecordSelect'
 
 interface Employee {
   id: string
@@ -211,16 +212,15 @@ function AttendanceContent() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Select value={checkInEmp} onValueChange={setCheckInEmp}>
-                <SelectTrigger className="h-10 rounded-lg bg-white dark:bg-slate-800">
-                  <SelectValue placeholder={isRTL ? 'اختر موظف...' : 'Select employee...'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {employees.map(emp => (
-                    <SelectItem key={emp.id} value={emp.id}>{emp.full_name} - {emp.job_title}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <RecordSelect
+                kind="employee"
+                label={isRTL ? 'الموظف' : 'Employee'}
+                required
+                value={checkInEmp}
+                onChange={(id) => setCheckInEmp(id)}
+                placeholder={isRTL ? 'اختر موظف...' : 'Select employee...'}
+                filter={(row) => row.status === undefined || row.status === null || row.status === 'active'}
+              />
               <Button 
                 onClick={handleCheckIn} 
                 disabled={saving || !checkInEmp}
@@ -239,16 +239,14 @@ function AttendanceContent() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Select value={checkOutEmp} onValueChange={setCheckOutEmp}>
-                <SelectTrigger className="h-10 rounded-lg bg-white dark:bg-slate-800">
-                  <SelectValue placeholder={isRTL ? 'اختر موظف...' : 'Select employee...'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {employees.map(emp => (
-                    <SelectItem key={emp.id} value={emp.id}>{emp.full_name} - {emp.job_title}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <RecordSelect
+                kind="employee"
+                label={isRTL ? 'الموظف' : 'Employee'}
+                required
+                value={checkOutEmp}
+                onChange={(id) => setCheckOutEmp(id)}
+                placeholder={isRTL ? 'اختر موظف...' : 'Select employee...'}
+              />
               <Button 
                 onClick={handleCheckOut} 
                 disabled={saving || !checkOutEmp}

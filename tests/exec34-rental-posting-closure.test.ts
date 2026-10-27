@@ -64,18 +64,43 @@ function makeStub(seed: { failLines?: boolean } = {}) {
     table: string;
     op = "select";
     filters: [string, any][] = [];
+    isFilters: [string, any][] = [];
+    orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) { this.table = t; }
     select() { return this; }
     eq(c: string, v: any) { this.filters.push([c, v]); return this; }
-    in(_c: string, v: any[]) { this.inVals = v; return this; }
+    is(c: string, v: any) { this.isFilters.push([c, v]); return this; }
+    or(f: string) { this.orFilter = f; return this; }
+    in(c: string, v: any[]) { this.inCol = c; this.inVals = v; return this; }
+    _tenantMatch(a: any): boolean {
+      // `IS NULL` must match a missing field too: a stub row with no tenant_id
+      // is the NULL tenant, exactly as the database sees it.
+      if (this.isFilters.length) {
+        return this.isFilters.every(([c, v]) => (v === null ? a[c] == null : a[c] === v));
+      }
+      if (this.orFilter) {
+        return this.orFilter.split(",").some((part) => {
+          const m = /tenant_id\.eq\.(.+)/.exec(part);
+          if (m) return a.tenant_id === m[1];
+          if (part.includes("tenant_id.is.null")) return a.tenant_id == null;
+          return false;
+        });
+      }
+      return true;
+    }
     limit() { return this; }
     insert(r: any) { this.op = "insert"; this.row = r; return this; }
     delete() { this.op = "delete"; return this; }
     async _run(): Promise<{ data: any; error: any }> {
       if (this.op === "select") {
-        if (this.table === "accounts") return { data: accounts.filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
+        if (this.table === "accounts") {
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
+          return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
+        }
         if (this.table === "journal_entries") {
           const rows = entries.filter((r) => this.filters.every(([c, v]) => r[c] === v));
           return { data: rows, error: null };
@@ -108,7 +133,75 @@ function makeStub(seed: { failLines?: boolean } = {}) {
     async maybeSingle() { return this.single(); }
     then(res: any, rej: any) { return this._run().then(res, rej); }
   }
-  return { client: { from: (t: string) => new Q(t) } as unknown as PostingClient, entries, lines };
+
+  const TEST_TENANT = "00000000-0000-0000-0000-0000000000a1";
+
+  for (const account of accounts as Array<(typeof accounts)[number] & { tenant_id?: string | null }>) {
+    if (account.tenant_id === undefined) account.tenant_id = TEST_TENANT;
+  }
+
+  const client = {
+    from: (t: string) => new Q(t),
+    rpc: async (fn: string, args: any) => {
+      if (fn !== "post_journal_entry")
+        return { data: null, error: { message: "Unexpected RPC" } };
+
+      const header = args?.p_header;
+      const journalLines = args?.p_lines;
+      const tenantId = header?.tenant_id;
+
+      if (!tenantId || !Array.isArray(journalLines) || !journalLines.length)
+        return { data: null, error: { message: "Invalid journal" } };
+
+      for (const line of journalLines) {
+        if (line.tenant_id !== tenantId ||
+            !accounts.some((a: any) =>
+              a.id === line.account_id && a.tenant_id === tenantId
+            ))
+          return { data: null, error: { message: "Account ownership mismatch" } };
+      }
+
+      const debit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.debit || 0), 0
+      );
+      const credit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.credit || 0), 0
+      );
+
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000))
+        return { data: null, error: { message: "Unbalanced journal" } };
+
+      const duplicate = entries.find((e: any) =>
+        e.tenant_id === tenantId &&
+        e.entry_type === header.entry_type &&
+        e.reference_number === header.reference_number
+      );
+
+      if (duplicate)
+        return {
+          data: null,
+          error: { message: "duplicate key value violates unique constraint" }
+        };
+
+      if (seed.failLines)
+        return { data: null, error: { message: "line insert failed" } };
+
+      const id = `je-${++seq}`;
+      entries.push({ ...header, id });
+
+      for (const line of journalLines)
+        lines.push({ ...line, journal_entry_id: id, id: `jl-${++seq}` });
+
+      return { data: id, error: null };
+    }
+  };
+
+  return {
+    client: client as unknown as PostingClient,
+    entries,
+    lines
+  };
+
 }
 
 const ACCOUNTS = {
@@ -163,7 +256,7 @@ describe("Exec 34 - the rental form no longer writes finance from the browser", 
 });
 
 describe("Exec 34 - the invoice API owns identity, tenant and idempotency", () => {
-  const route = read("src/app/api/invoices/route.ts");
+  const route = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
 
   test("authenticates and derives identity from the session", () => {
     assert.match(route, /requireContext\(request, \{ module: "sales", action: "create" \}/);
@@ -172,7 +265,7 @@ describe("Exec 34 - the invoice API owns identity, tenant and idempotency", () =
   });
 
   test("a rental is idempotent per contract", () => {
-    assert.match(route, /eq\("rental_contract_id", body\.rental_contract_id\)/);
+    assert.match(route, /eq\("rental_contract_id", (body|input)\.rental_contract_id\)/);
     assert.match(route, /idempotent:\s*true/, "a retry returns the existing invoice");
     assert.match(route, /invoice_type", "rental"/, "the guard is scoped to rental invoices");
   });
@@ -232,6 +325,7 @@ describe("Exec 34 - financial-year and permission gates", () => {
 
 describe("Exec 34 - a rental invoice posts a balanced, idempotent journal", () => {
   const base = {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
     amount: 100,
     discount: 0,
     vat: 10,
@@ -281,13 +375,13 @@ describe("Exec 34 - a rental invoice posts a balanced, idempotent journal", () =
   });
 
   test("a failure while writing lines does not leave a silent half-posting", async () => {
-    const { client, entries } = makeStub({ failLines: true });
+    const { client, entries, lines } = makeStub({ failLines: true });
     await assert.rejects(
       postSaleInvoice(client, { ...base, advancePayment: 0, remaining: 110 }),
-      (err: { message?: string }) => String(err?.message) === "line insert failed",
+      /Could not post the journal atomically: line insert failed/,
     );
-    // writeJournal removes the header it just created when the lines fail, so a
-    // failed posting leaves no orphan journal header behind.
+    // The atomic RPC rejects the whole posting: neither a header nor lines persist.
     assert.equal(entries.length, 0, "no orphan journal header");
+    assert.equal(lines.length, 0, "no orphan journal lines");
   });
 });

@@ -5,6 +5,8 @@ export const dynamic = "force-dynamic"
 import DashboardLayout from '@/components/DashboardLayout'
 import { useLanguage } from '@/lib/LanguageContext'
 import { supabase } from '@/lib/supabase'
+import { readScopedSetting, writeScopedSetting, type ScopedSettingsClient } from '@/lib/branding/settings-client'
+import { useTenantId } from '@/lib/hooks/use-tenant-id'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -228,6 +230,7 @@ const DEFAULT_ITEMS: SidebarItem[] = [
 
 function SidebarSettingsContent() {
   const { isRTL } = useLanguage()
+  const { tenantId, ready: tenantReady } = useTenantId()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -235,42 +238,45 @@ function SidebarSettingsContent() {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
-    fetchSettings()
-  }, [])
-
-  async function fetchSettings() {
-    setLoading(true)
-    try {
-      const { data } = await supabase
-        .from('settings')
-        .select('*')
-        .eq('key', 'sidebar_menu_v2')
-        .single()
-
-      if (data?.value && Array.isArray(data.value)) {
-        const merged = DEFAULT_ITEMS.map(def => {
-          const found = data.value.find((i: SidebarItem) => i.id === def.id)
-          return found ? { ...def, ...found, children: found.children || def.children } : def
-        })
-        setItems(merged.sort((a, b) => a.order - b.order))
-      } else {
-        setItems([...DEFAULT_ITEMS])
+    if (!tenantReady) return
+    let cancelled = false
+    async function fetchSettings() {
+      setLoading(true)
+      try {
+        const value = await readScopedSetting(
+          supabase as unknown as ScopedSettingsClient,
+          tenantId,
+          'sidebar_menu_v2',
+        )
+        if (cancelled) return
+        if (Array.isArray(value)) {
+          const merged = DEFAULT_ITEMS.map(def => {
+            const found = value.find((i: SidebarItem) => i.id === def.id)
+            return found ? { ...def, ...found, children: found.children || def.children } : def
+          })
+          setItems(merged.sort((a, b) => a.order - b.order))
+        } else {
+          setItems([...DEFAULT_ITEMS])
+        }
+      } catch {
+        if (!cancelled) setItems([...DEFAULT_ITEMS])
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-    } catch {
-      setItems([...DEFAULT_ITEMS])
-    } finally {
-      setLoading(false)
     }
-  }
+    fetchSettings()
+    return () => { cancelled = true }
+  }, [tenantReady, tenantId])
 
   async function handleSave() {
     setSaving(true)
     try {
-      await supabase.from('settings').upsert({
-        key: 'sidebar_menu_v2',
-        value: items.map((item, idx) => ({ ...item, order: idx + 1 })),
-        updated_at: new Date().toISOString(),
-      }, { onConflict: 'key' })
+      await writeScopedSetting(
+        supabase as unknown as ScopedSettingsClient,
+        tenantId,
+        'sidebar_menu_v2',
+        items.map((item, idx) => ({ ...item, order: idx + 1 })),
+      )
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (err) {

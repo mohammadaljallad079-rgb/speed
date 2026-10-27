@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
 import { ArrowLeft, Save, Loader2, Wallet, Plus, Minus, History, X, DollarSign, FileText } from 'lucide-react'
 import RecordSelect from '@/components/records/RecordSelect'
+import { isSelectablePostableAccount } from '@/lib/records/sources'
 
 interface PettyCashTransaction {
   id: string
@@ -225,15 +226,17 @@ function PettyCashContent() {
               </div>
               {modalType === 'expense' && (
                 <div className="space-y-2">
-                  <Label>{isRTL ? 'حساب المصروف *' : 'Expense Account *'}</Label>
                   {/* Chart-of-accounts selector: the expense is charged to a real
-                      ledger account, not to a free-text category. */}
+                      ledger account, not to a free-text category. The (+) beside
+                      the label creates one inline. */}
                   <RecordSelect
                     kind="account"
+                    label={isRTL ? 'حساب المصروف' : 'Expense Account'}
+                    required
                     value={expenseAccountId}
                     onChange={(id) => setExpenseAccountId(id)}
                     createMode="inline"
-                    filter={(row) => row.is_active !== false && row.type !== 'asset' && row.type !== 'liability'}
+                    filter={(row) => row.type !== 'asset' && row.type !== 'liability' && isSelectablePostableAccount(row)}
                     placeholder={isRTL ? 'اختر حساب المصروف...' : 'Select expense account...'}
                   />
                 </div>

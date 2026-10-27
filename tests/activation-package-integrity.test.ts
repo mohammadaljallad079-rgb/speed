@@ -22,6 +22,10 @@ const PKG_008 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_008.sql");
 const PKG_009 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_009.sql");
 const PKG_010 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_010.sql");
 const PKG_011 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_011.sql");
+const PKG_012 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_012.sql");
+const PKG_013 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_013.sql");
+const PKG_014 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_014.sql");
+const PKG_015 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_015.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -383,5 +387,163 @@ describe("activation package 011 (atomic journal posting)", () => {
     const rb = fs.readFileSync(path.join(MIG, "011_atomic_journal_posting_rollback.sql"), "utf8");
     assert.match(rb, /drop function if exists public\.post_journal_entry/);
     assert.doesNotMatch(rb, /drop table/i);
+  });
+});
+
+describe("activation package 012 (notifications store)", () => {
+  const text = fs.readFileSync(PKG_012, "utf8");
+
+  test("the embedded body is byte-identical to the migration and the banner hash matches", () => {
+    const { hash, body } = embedded(text, "-- BEGIN 012_notifications.sql", "-- POST-FLIGHT");
+    assert.ok(hash, "no SHA-256 recorded in the banner");
+    assert.equal(hash, sha(body));
+    assert.equal(body, fs.readFileSync(path.join(MIG, "012_notifications.sql"), "utf8"));
+  });
+
+  test("the migration is embedded exactly once and the flights are present", () => {
+    const count = (re: RegExp) => (text.match(re) ?? []).length;
+    assert.equal(count(/-- BEGIN 012_notifications\.sql/g), 1);
+    assert.match(text, /-- PRE-FLIGHT/);
+    assert.match(text, /-- POST-FLIGHT/);
+    assert.match(text, /END OF PACKAGE/);
+  });
+
+  test("the package contains no destructive or privilege-widening statements", () => {
+    const nonComment = text
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("--"))
+      .join("\n");
+    for (const re of [
+      /\bdrop\s+table\b/i,
+      /\bdrop\s+column\b/i,
+      /\btruncate\b/i,
+      /\bdelete\s+from\b/i,
+      /\bdrop\s+schema\b/i,
+      /\bgrant\s+all\b/i,
+      /security\s+definer/i,
+    ]) {
+      assert.doesNotMatch(nonComment, re, `destructive or unsafe statement: ${re}`);
+    }
+  });
+
+  test("the package documents the apply order and the correct project", () => {
+    assert.match(text, /PRODUCTION_ACTIVATION_001_002_003\.sql/);
+    assert.match(text, /_011/);
+    assert.match(text, /chlkmdobhvfnldqkgdji/);
+    assert.match(text, /notifications/);
+    assert.match(text, /can_read_tenant/);
+  });
+
+  test("a rollback file exists and drops only the notifications table", () => {
+    const rb = fs.readFileSync(path.join(MIG, "012_notifications_rollback.sql"), "utf8");
+    assert.match(rb, /drop table if exists public\.notifications/);
+    assert.doesNotMatch(rb, /drop table if exists public\.(?!notifications)/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 013 / 014 / 015 — the packages that back the live receipt workflow.
+// ---------------------------------------------------------------------------
+
+const LATER_PACKAGES: Array<{ n: string; file: string; pkg: string; migration: string; rollback: string; mustMention: RegExp[] }> = [
+  {
+    n: "013",
+    file: "013_booking_invoice_idempotency.sql",
+    pkg: PKG_013,
+    migration: "013_booking_invoice_idempotency.sql",
+    rollback: "013_booking_invoice_idempotency_rollback.sql",
+    mustMention: [/PRODUCTION_ACTIVATION_001_002_003\.sql/, /012/, /chlkmdobhvfnldqkgdji/, /rental_contract_id/],
+  },
+  {
+    n: "014",
+    file: "014_tenant_chart_of_accounts.sql",
+    pkg: PKG_014,
+    migration: "014_tenant_chart_of_accounts.sql",
+    rollback: "014_tenant_chart_of_accounts_rollback.sql",
+    mustMention: [/PRODUCTION_ACTIVATION_001_002_003\.sql/, /013/, /chlkmdobhvfnldqkgdji/, /accounts/],
+  },
+  {
+    n: "015",
+    file: "015_strict_accounting_integrity.sql",
+    pkg: PKG_015,
+    migration: "015_strict_accounting_integrity.sql",
+    rollback: "015_strict_accounting_integrity_rollback.sql",
+    mustMention: [
+      /PRODUCTION_ACTIVATION_001_002_003\.sql/,
+      /014/,
+      /chlkmdobhvfnldqkgdji/,
+      /post_customer_receipt/,
+      /post_customer_receipt_reversal/,
+    ],
+  },
+];
+
+for (const p of LATER_PACKAGES) {
+  describe(`activation package ${p.n} (${p.file})`, () => {
+    const text = fs.readFileSync(p.pkg, "utf8");
+    const begin = `-- BEGIN ${p.file}`;
+
+    test("the embedded body is byte-identical to the migration and the banner hash matches", () => {
+      const { hash, body } = embedded(text, begin, "-- POST-FLIGHT");
+      assert.ok(hash, "no SHA-256 recorded in the banner");
+      assert.equal(hash, sha(body));
+      assert.equal(body, fs.readFileSync(path.join(MIG, p.migration), "utf8"));
+    });
+
+    test("the migration is embedded exactly once and both flights are present", () => {
+      const count = (needle: string) => text.split(needle).length - 1;
+      assert.equal(count(begin), 1, "the body must be embedded exactly once");
+      assert.match(text, /-- PRE-FLIGHT/);
+      assert.match(text, /-- POST-FLIGHT/);
+      assert.match(text, /END OF PACKAGE/);
+    });
+
+    test("the package contains no destructive or privilege-widening statements", () => {
+      const nonComment = text
+        .split("\n")
+        .filter((l) => !l.trimStart().startsWith("--"))
+        .join("\n");
+      for (const re of [
+        /\bdrop\s+table\b/i,
+        /\bdrop\s+column\b/i,
+        /\btruncate\b/i,
+        /\bdelete\s+from\b/i,
+        /\bdrop\s+schema\b/i,
+        /\bgrant\s+all\b/i,
+        /security\s+definer/i,
+      ]) {
+        assert.doesNotMatch(nonComment, re, `destructive or unsafe statement: ${re}`);
+      }
+    });
+
+    test("the package documents the apply order and the correct project", () => {
+      for (const re of p.mustMention) assert.match(text, re);
+    });
+
+    test("a rollback file exists", () => {
+      const rb = fs.readFileSync(path.join(MIG, p.rollback), "utf8");
+      assert.ok(rb.length > 0, `${p.rollback} is empty`);
+    });
+  });
+}
+
+describe("every migration has a frozen activation package", () => {
+  test("no migration from 001 to 015 is missing its package", () => {
+    const migrations = fs
+      .readdirSync(MIG)
+      .filter((f) => /^\d{3}_/.test(f) && !f.includes("rollback"))
+      .map((f) => f.slice(0, 3))
+      .sort();
+    const packaged = new Set(
+      fs
+        .readdirSync(path.join(ROOT, "supabase"))
+        .filter((f) => f.startsWith("PRODUCTION_ACTIVATION_"))
+        .join(" ")
+        .match(/\d{3}/g) ?? [],
+    );
+    // 001-003 are bundled into one package, so each of those digits appears.
+    for (const n of migrations) {
+      assert.ok(packaged.has(n), `migration ${n} has no PRODUCTION_ACTIVATION package`);
+    }
   });
 });

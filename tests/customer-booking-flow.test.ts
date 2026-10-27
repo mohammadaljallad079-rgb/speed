@@ -145,11 +145,14 @@ function car(overrides: Partial<Row> = {}): Row {
 // Pure rules
 // ---------------------------------------------------------------------------
 describe("booking rules are pure and date-correct", () => {
-  test("only available rental cars are rentable", () => {
+  test("only rentable vehicles are offered (status is not the availability source)", () => {
     assert.equal(isCarRentable(car()), true);
+    // A permanently unavailable vehicle is excluded...
     assert.equal(isCarRentable(car({ status: "maintenance" })), false);
-    assert.equal(isCarRentable(car({ status: "rented" })), false);
     assert.equal(isCarRentable(car({ status: "sold" })), false);
+    // ...but `rented` is a transient flag that nothing resets, so it must NOT
+    // exclude a car. Open contracts decide availability (see Exec 57).
+    assert.equal(isCarRentable(car({ status: "rented" })), true);
     // A sale car is not for rent.
     assert.equal(isCarRentable(car({ category: "sale" })), false);
     assert.equal(isCarRentable(car({ category: "both" })), true);
@@ -191,7 +194,6 @@ describe("a car added by the company appears to its customer", () => {
       cars: [
         car({ id: "ok" }),
         car({ id: "maint", status: "maintenance" }),
-        car({ id: "rented", status: "rented" }),
         car({ id: "sold", status: "sold" }),
         car({ id: "sale", category: "sale" }),
       ],

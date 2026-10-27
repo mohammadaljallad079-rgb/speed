@@ -13,7 +13,8 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Checkbox } from '@/components/ui/checkbox'
-import { ArrowLeft, Save, Loader2, Users, DollarSign, Calendar, Wallet, Clock, MinusCircle, PlusCircle, ChevronDown, ChevronUp, X } from 'lucide-react'
+import { ArrowLeft, Save, Loader2, Users, DollarSign, Calendar, Wallet, Clock, MinusCircle, PlusCircle, ChevronDown, ChevronUp, X, UserPlus } from 'lucide-react'
+import QuickCreateModal from '@/components/records/QuickCreateModal'
 
 interface Employee {
   id: string
@@ -36,6 +37,7 @@ function PayrollContent() {
   const { isRTL } = useLanguage()
   const router = useRouter()
   const [employees, setEmployees] = useState<Employee[]>([])
+  const [showAddEmployee, setShowAddEmployee] = useState(false)
   const [selectedEmployees, setSelectedEmployees] = useState<Set<string>>(new Set())
   const [payrollDate, setPayrollDate] = useState(new Date().toISOString().split('T')[0])
   // A stable id for THIS run. The reference is the server's idempotency key, so
@@ -236,9 +238,14 @@ function PayrollContent() {
             <CardTitle className="text-sm font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
               <Users className="w-4 h-4" /> {isRTL ? 'الموظفين' : 'Employees'}
             </CardTitle>
-            <Button variant="outline" size="sm" onClick={selectAll} className="rounded-lg text-xs">
-              {selectedEmployees.size === employees.length ? (isRTL ? 'إلغاء الكل' : 'Deselect All') : (isRTL ? 'اختيار الكل' : 'Select All')}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setShowAddEmployee(true)} className="rounded-lg text-xs gap-1">
+                <UserPlus className="w-3.5 h-3.5" /> {isRTL ? 'موظف جديد' : 'New employee'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={selectAll} className="rounded-lg text-xs">
+                {selectedEmployees.size === employees.length ? (isRTL ? 'إلغاء الكل' : 'Deselect All') : (isRTL ? 'اختيار الكل' : 'Select All')}
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             {employees.length === 0 ? (
@@ -329,6 +336,13 @@ function PayrollContent() {
           </Card>
         )}
       </div>
+      {showAddEmployee && (
+        <QuickCreateModal
+          kind="employee"
+          onClose={() => setShowAddEmployee(false)}
+          onCreated={() => { setShowAddEmployee(false); void fetchEmployees() }}
+        />
+      )}
     </DashboardLayout>
   )
 }

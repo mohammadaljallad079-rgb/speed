@@ -35,14 +35,12 @@ type POEntry = PurchaseOrder & {
   purchase_requisition_id?: string | null
   suppliers?: { name: string }
 }
-type VehicleItem = { id: string; make: string; model: string; plate_number: string }
 
 function PurchaseOrdersPageContent() {
   const { t, isRTL } = useLanguage()
   const [mounted, setMounted] = useState(false)
   const [orders, setOrders] = useState<POEntry[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [vehicles, setVehicles] = useState<VehicleItem[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -83,7 +81,6 @@ function PurchaseOrdersPageContent() {
     setMounted(true)
     fetchOrders()
     fetchSuppliers()
-    fetchVehicles()
   }, [])
 
   async function fetchOrders() {
@@ -103,11 +100,6 @@ function PurchaseOrdersPageContent() {
   async function fetchSuppliers() {
     const { data } = await supabase.from('suppliers').select('*').order('name')
     if (data) setSuppliers(data as any)
-  }
-
-  async function fetchVehicles() {
-    const { data } = await supabase.from('cars').select('id, make, model, plate_number').order('make')
-    if (data) setVehicles(data as any)
   }
 
   function addItem() {
@@ -304,9 +296,10 @@ function PurchaseOrdersPageContent() {
             <h3 className="font-bold text-slate-900 dark:text-white">{isRTL ? 'أمر شراء جديد' : 'New Purchase Order'}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
                 <RecordSelect
                   kind="supplier"
+                  label={isRTL ? 'المورد' : 'Supplier'}
+                  required
                   value={form.supplier_id}
                   onChange={(id) => setForm({ ...form, supplier_id: id })}
                   createMode="inline"
@@ -325,11 +318,16 @@ function PurchaseOrdersPageContent() {
                 </select>
               </div>
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'السيارة (اختياري)' : 'Vehicle (optional)'}</label>
-                <select value={form.car_id} onChange={(e) => setForm({ ...form, car_id: e.target.value })} className="h-11 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 w-full px-3 text-sm">
-                  <option value="">{isRTL ? '— بدون —' : '— None —'}</option>
-                  {vehicles.map(v => <option key={v.id} value={v.id}>{v.make} {v.model} - {v.plate_number}</option>)}
-                </select>
+                {/* The vehicle is a record reference: picked from the vehicle
+                    module and creatable inline, like the supplier beside it. */}
+                <RecordSelect
+                  kind="car"
+                  label={isRTL ? 'السيارة (اختياري)' : 'Vehicle (optional)'}
+                  value={form.car_id}
+                  onChange={(id) => setForm({ ...form, car_id: id })}
+                  createMode="inline"
+                  placeholder={isRTL ? '— بدون —' : '— None —'}
+                />
               </div>
               <div className="md:col-span-2">
                 <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'ملاحظات' : 'Notes'}</label>

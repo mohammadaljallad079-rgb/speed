@@ -42,10 +42,6 @@ const PUBLIC_VEHICLE_COLUMNS = [
   "image_url",
   "gallery_images",
   "plate_number",
-  "body_type",
-  "condition",
-  "description",
-  "features",
 ].join(", ");
 
 export async function GET(request: NextRequest) {

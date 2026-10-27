@@ -1,4 +1,9 @@
 import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+import {
+  resolveAccountIdsForTenant,
+  AccountResolutionError,
+  type AccountClient,
+} from "./account-resolution";
 
 /**
  * Unified sales posting service.
@@ -214,6 +219,7 @@ type QueryResult = { data: unknown; error: unknown };
 type Builder = {
   select: (cols?: string) => Builder;
   eq: (col: string, val: unknown) => Builder;
+  is: (col: string, val: unknown) => Builder;
   in: (col: string, vals: unknown[]) => Builder;
   insert: (row: unknown) => Builder;
   delete: () => Builder;
@@ -226,25 +232,43 @@ export type PostingClient = { from: (table: string) => Builder };
 
 const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 
-/** Resolve the fixed sale accounts by code; throws if any is missing. */
+/** Resolve the fixed sale accounts by code, scoped to the posting company. */
 export async function resolveSaleAccounts(
   client: PostingClient,
   paymentMethod: string,
   revenueCode: string = SALE_ACCOUNT_CODES.revenue,
+  tenantId: string | null = null,
 ): Promise<SaleAccountIds> {
   const cashCode = cashBankCodeForMethod(paymentMethod);
-  const { data, error } = await client
-    .from("accounts")
-    .select("id,code")
-    .in("code", [cashCode, SALE_ACCOUNT_CODES.ar, revenueCode, SALE_ACCOUNT_CODES.vat]);
-  if (error) throw new Error("Could not load sale accounts: " + msg(error));
-  const rows = (data as Array<{ id: string; code: string }>) || [];
-  const by = (code: string) => rows.find((a) => a.code === code)?.id;
+  // Tenant-scoped: migration 014 lets two companies hold the same code, so a
+  // code-only lookup could resolve into another company's account.
+  const byCode = await resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    [cashCode, SALE_ACCOUNT_CODES.ar, revenueCode, SALE_ACCOUNT_CODES.vat],
+    tenantId,
+    // The tax account is optional on a zero-VAT sale, so it is resolved but not
+    // required to be present.
+    { requirePostable: true, requireActive: true },
+  ).catch(async (e: unknown) => {
+    if (e instanceof AccountResolutionError) {
+      const fatal = e.failures.filter((f) => f.code !== SALE_ACCOUNT_CODES.vat);
+      if (fatal.length > 0) throw e;
+      // Re-resolve without the optional tax account so a chart that lacks it
+      // still posts a zero-VAT sale.
+      return resolveAccountIdsForTenant(
+        client as unknown as AccountClient,
+        [cashCode, SALE_ACCOUNT_CODES.ar, revenueCode],
+        tenantId,
+      );
+    }
+    throw e;
+  });
+
   const ids: SaleAccountIds = {
-    revenueAccountId: by(revenueCode) as string,
-    vatAccountId: by(SALE_ACCOUNT_CODES.vat) as string,
-    arAccountId: by(SALE_ACCOUNT_CODES.ar) as string,
-    cashAccountId: by(cashCode) as string,
+    revenueAccountId: byCode[revenueCode] as string,
+    vatAccountId: byCode[SALE_ACCOUNT_CODES.vat] as string,
+    arAccountId: byCode[SALE_ACCOUNT_CODES.ar] as string,
+    cashAccountId: byCode[cashCode] as string,
   };
   if (!ids.revenueAccountId || !ids.arAccountId || !ids.cashAccountId) {
     throw new Error("Cannot post a sale without the revenue/AR/cash accounts present in the chart.");
@@ -257,15 +281,19 @@ export async function findPostedJournal(
   client: PostingClient,
   entryType: SaleEntryType,
   referenceNumber: string,
+  tenantId?: string | null,
 ): Promise<{ id: string } | null> {
   if (!referenceNumber) return null;
-  const { data, error } = await client
+  // TENANT-SCOPED. An invoice number is unique within a company, not across
+  // companies: without the tenant filter, a retry in one company could match
+  // another company's journal for the same number and skip its own posting.
+  let query = client
     .from("journal_entries")
     .select("id")
     .eq("entry_type", entryType)
-    .eq("reference_number", referenceNumber)
-    .limit(1)
-    .maybeSingle();
+    .eq("reference_number", referenceNumber);
+  query = tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+  const { data, error } = await query.limit(1).maybeSingle();
   if (error || !data) return null;
   return data as { id: string };
 }
@@ -276,8 +304,8 @@ export async function findPostedJournal(
  * all take the same atomic route (migration 011's `post_journal_entry`). A
  * private second writer here is exactly the drift this consolidation removes.
  */
-const writeJournal = (client: PostingClient, journal: SaleJournal) =>
-  writeSharedJournal(client as unknown as SharedPostingClient, journal);
+const writeJournal = (client: PostingClient, journal: SaleJournal, tenantId: string | null = null) =>
+  writeSharedJournal(client as unknown as SharedPostingClient, journal, tenantId);
 
 /**
  * Post a sale invoice. Idempotent by reference: if a posted `sale_invoice`
@@ -297,16 +325,26 @@ export async function postSaleInvoice(
     entryType?: SaleEntryType;
     /** Revenue account code; defaults to 41002 (sales). */
     revenueCode?: string;
+    /**
+     * The posting company. Required for a correct chart lookup once the chart is
+     * per-company (migration 014); `null` means the shared single-tenant chart.
+     */
+    tenantId?: string | null;
   },
 ): Promise<{ journalId: string; created: boolean }> {
   const entryType = input.entryType ?? "sale_invoice";
-  const existing = await findPostedJournal(client, entryType, input.invoiceNumber);
+  const existing = await findPostedJournal(client, entryType, input.invoiceNumber, input.tenantId ?? null);
   if (existing) return { journalId: existing.id, created: false };
 
-  const accounts = await resolveSaleAccounts(client, input.paymentMethod, input.revenueCode);
+  const accounts = await resolveSaleAccounts(
+    client,
+    input.paymentMethod,
+    input.revenueCode,
+    input.tenantId ?? null,
+  );
   const journal = buildSaleJournal({ ...input, accounts, entryType });
   if (!journal) throw new Error("Cannot post a sale that does not balance (check amounts and accounts).");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, input.tenantId ?? null);
   return { journalId, created: true };
 }
 
@@ -328,19 +366,26 @@ export async function reverseSaleInvoice(
     entryType?: "sale_reversal" | "rental_reversal";
     /** Revenue account code; defaults to 41002 (sales). */
     revenueCode?: string;
+    /** The posting company (see `postSaleInvoice`). */
+    tenantId?: string | null;
   },
 ): Promise<{ journalId: string; created: boolean } | null> {
   const reversalType = input.entryType ?? "sale_reversal";
   const originalType: SaleEntryType = reversalType === "rental_reversal" ? "rental_invoice" : "sale_invoice";
-  const already = await findPostedJournal(client, reversalType, input.invoiceNumber);
+  const already = await findPostedJournal(client, reversalType, input.invoiceNumber, input.tenantId ?? null);
   if (already) return { journalId: already.id, created: false };
 
-  const posted = await findPostedJournal(client, originalType, input.invoiceNumber);
+  const posted = await findPostedJournal(client, originalType, input.invoiceNumber, input.tenantId ?? null);
   if (!posted) return null;
 
-  const accounts = await resolveSaleAccounts(client, input.paymentMethod, input.revenueCode);
+  const accounts = await resolveSaleAccounts(
+    client,
+    input.paymentMethod,
+    input.revenueCode,
+    input.tenantId ?? null,
+  );
   const journal = buildSaleReversalJournal({ ...input, accounts, entryType: reversalType });
   if (!journal) throw new Error("Cannot reverse a sale that does not balance.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, input.tenantId ?? null);
   return { journalId, created: true };
 }

@@ -45,7 +45,7 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
 type Row = Record<string, any>;
 
-function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; failLines?: boolean } = {}) {
+function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; failLines?: boolean; noRpc?: boolean } = {}) {
   const tables: Record<string, Row[]> = seed.tables ?? {};
   const written = { journal_entries: [] as Row[], journal_lines: [] as Row[], deletes: [] as Row[] };
   let seq = 0;
@@ -56,6 +56,7 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     filters: [string, any][] = [];
     isFilters: [string, any][] = [];
     inVals: any[] | null = null;
+    inCol: string | null = null;
     orFilter: string | null = null;
     row: any = null;
     constructor(t: string) {
@@ -76,7 +77,8 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
       this.orFilter = f;
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -94,7 +96,7 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     }
     _tenantMatch(row: Row): boolean {
       if (this.isFilters.length) {
-        return this.isFilters.every(([c, v]) => row[c] === v);
+        return this.isFilters.every(([c, v]) => (v === null ? row[c] == null : row[c] === v));
       }
       if (this.orFilter) {
         const parts = this.orFilter.split(",");
@@ -110,7 +112,8 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         const rows = (tables[this.table] ?? []).filter((r) => this.filters.every(([c, v]) => r[c] === v));
@@ -149,7 +152,28 @@ function makeStub(seed: { tables?: Record<string, Row[]>; accounts?: Row[]; fail
     }
   }
 
-  return { client: { from: (t: string) => new Q(t) } as unknown as PostingClient, written };
+  // The production database has migration 011 applied, so the client exposes the
+  // atomic `post_journal_entry` RPC. A tenanted journal now REQUIRES it: the
+  // two-request fallback is closed for a company (Exec 66). Modelling the real
+  // database here is what makes the shape assertions meaningful.
+  const rpc = async (fn: string, args: Record<string, any> = {}) => {
+    if (fn !== "post_journal_entry") return { data: null, error: { message: `unknown rpc ${fn}` } };
+    const header = args.p_header ?? {};
+    const lines = (args.p_lines ?? []) as Row[];
+    const debit = lines.reduce((s, l) => s + (Number(l.debit) || 0), 0);
+    const credit = lines.reduce((s, l) => s + (Number(l.credit) || 0), 0);
+    if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+      return { data: null, error: { code: "23514", message: "journal does not balance" } };
+    }
+    const entry = { id: `je-${++seq}`, status: "posted", ...header };
+    written.journal_entries.push(entry);
+    lines.forEach((l) => written.journal_lines.push({ ...l, journal_entry_id: entry.id }));
+    return { data: entry.id, error: null };
+  };
+
+  const base = { from: (t: string) => new Q(t) };
+  const client = (seed.noRpc ? base : { ...base, rpc }) as unknown as PostingClient;
+  return { client, written };
 }
 
 const ACCOUNTS: Row[] = [
@@ -301,38 +325,79 @@ describe("resolveAccountIds (tenant-scoped chart)", () => {
   });
 });
 
-describe("writeJournal compensation", () => {
-  test("a failed line insert removes the orphan header", async () => {
-    const { client, written } = makeStub({ failLines: true });
-    await assert.rejects(() => writeJournal(client, {
-      header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 1, total_credit: 1, is_balanced: true },
-      lines: [
-        { account_id: "a", debit: 1, credit: 0, description: "x" },
-        { account_id: "b", debit: 0, credit: 1, description: "x" },
-      ],
-    }));
-    assert.equal(written.journal_entries.length, 1);
-    assert.equal(written.deletes.length, 1);
-    assert.equal(written.deletes[0].table, "journal_entries");
+describe("writeJournal requires atomic posting", () => {
+  const balanced = {
+    header: {
+      journal_number: "n",
+      entry_date: "d",
+      description: "x",
+      entry_type: "bank_transfer",
+      status: "posted",
+      total_debit: 1,
+      total_credit: 1,
+      is_balanced: true,
+    },
+    lines: [
+      { account_id: "a", debit: 1, credit: 0, description: "x" },
+      { account_id: "b", debit: 0, credit: 1, description: "x" },
+    ],
+  };
+
+  test("missing RPC refuses posting without partial writes", async () => {
+    const { client, written } = makeStub({
+      failLines: true,
+      noRpc: true,
+    });
+
+    await assert.rejects(
+      () => writeJournal(client, balanced, "t1"),
+      /Atomic journal posting is required/,
+    );
+
+    assert.equal(written.journal_entries.length, 0);
+    assert.equal(written.journal_lines.length, 0);
+    assert.equal(written.deletes.length, 0);
+  });
+
+  test("pre-011 database cannot bypass atomic posting", async () => {
+    const { client, written } = makeStub({ noRpc: true });
+
+    await assert.rejects(
+      () => writeJournal(client, balanced, "t1"),
+      /Atomic journal posting is required/,
+    );
+
+    assert.equal(written.journal_entries.length, 0);
+    assert.equal(written.journal_lines.length, 0);
   });
 
   test("refuses an unbalanced journal before writing anything", async () => {
     const { client, written } = makeStub();
-    await assert.rejects(() => writeJournal(client, {
-      header: { journal_number: "n", entry_date: "d", description: "x", entry_type: "bank_transfer", status: "posted", total_debit: 2, total_credit: 1, is_balanced: true },
-      lines: [
-        { account_id: "a", debit: 2, credit: 0, description: "x" },
-        { account_id: "b", debit: 0, credit: 1, description: "x" },
-      ],
-    }));
+
+    await assert.rejects(
+      () => writeJournal(client, {
+        ...balanced,
+        header: {
+          ...balanced.header,
+          total_debit: 2,
+          total_credit: 1,
+        },
+        lines: [
+          { account_id: "a", debit: 2, credit: 0, description: "x" },
+          { account_id: "b", debit: 0, credit: 1, description: "x" },
+        ],
+      }, "t1"),
+    );
+
     assert.equal(written.journal_entries.length, 0);
+    assert.equal(written.journal_lines.length, 0);
   });
 });
 
 describe("idempotency", () => {
   test("bank transfer with an existing reference does not post again", async () => {
     const { client, written } = makeStub({
-      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-REF" }] },
+      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-REF", tenant_id: "t1" }] },
     });
     const res = await postBankTransfer(client, {
       journalNumber: "BT-1", tenantId: "t1", date: "d", description: "x",
@@ -343,18 +408,29 @@ describe("idempotency", () => {
     assert.equal(written.journal_entries.length, 0);
   });
 
-  test("findPostedManualJournal matches on entry_type + reference", async () => {
+  test("findPostedManualJournal matches on entry_type + reference, within the tenant", async () => {
     const { client } = makeStub({
-      tables: { journal_entries: [{ id: "j1", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01" }] },
+      tables: { journal_entries: [{ id: "j1", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01", tenant_id: "t1" }] },
     });
-    const found = await findPostedManualJournal(client, "payroll", "PAYROLL-2026-02-01");
+    const found = await findPostedManualJournal(client, "payroll", "PAYROLL-2026-02-01", "t1");
     assert.equal(found?.id, "j1");
-    assert.equal(await findPostedManualJournal(client, "payroll", "nope"), null);
+    assert.equal(await findPostedManualJournal(client, "payroll", "nope", "t1"), null);
+  });
+
+  test("another company's journal for the SAME reference is not seen as ours", async () => {
+    // A reference is unique within a company, not across companies. Without the
+    // tenant filter a retry in t2 would find t1's journal and skip its own
+    // posting - a silently lost financial entry.
+    const { client } = makeStub({
+      tables: { journal_entries: [{ id: "other", entry_type: "payroll", reference_number: "PAYROLL-X", tenant_id: "t1" }] },
+    });
+    assert.equal(await findPostedManualJournal(client, "payroll", "PAYROLL-X", "t2"), null);
+    assert.equal((await findPostedManualJournal(client, "payroll", "PAYROLL-X", "t1"))?.id, "other");
   });
 
   test("a retried transfer writes nothing and does not move the cache", async () => {
     const { client, written } = makeStub({
-      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-RETRY" }] },
+      tables: { journal_entries: [{ id: "existing", entry_type: "bank_transfer", reference_number: "BT-RETRY", tenant_id: "t1" }] },
     });
     const first = await postBankTransfer(client, {
       journalNumber: "BT-1", tenantId: "t1", date: "d", description: "x",
@@ -386,7 +462,7 @@ describe("service shapes", () => {
   test("petty cash fund debits petty cash / credits main cash", async () => {
     const { client, written } = makeStub();
     await postPettyCash(client, {
-      journalNumber: "PC-1", date: "d", description: "x", amount: 30, kind: "fund",
+      journalNumber: "PC-1", tenantId: "t1", date: "d", description: "x", amount: 30, kind: "fund",
       pettyAccountId: "petty", expenseAccountId: "cash", fundDescription: "f", expenseDescription: "e",
     });
     assert.deepEqual(
@@ -398,7 +474,7 @@ describe("service shapes", () => {
   test("petty cash expense debits the expense account / credits petty cash", async () => {
     const { client, written } = makeStub();
     await postPettyCash(client, {
-      journalNumber: "PC-2", date: "d", description: "x", amount: 30, kind: "expense",
+      journalNumber: "PC-2", tenantId: "t1", date: "d", description: "x", amount: 30, kind: "expense",
       pettyAccountId: "petty", expenseAccountId: "exp", fundDescription: "f", expenseDescription: "e",
     });
     assert.deepEqual(
@@ -431,7 +507,7 @@ describe("service shapes", () => {
 
   test("a retry of the same payroll reference is idempotent", async () => {
     const { client, written } = makeStub({
-      tables: { journal_entries: [{ id: "existing", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01-aaaa" }] },
+      tables: { journal_entries: [{ id: "existing", entry_type: "payroll", reference_number: "PAYROLL-2026-02-01-aaaa", tenant_id: "t1" }] },
     });
     const again = await postPayroll(client, {
       tenantId: "t1", date: "2026-02-01", description: "x", journalNumber: "PAY-3",
@@ -613,8 +689,16 @@ describe("manual journal screen: reads stay in the browser, writes move to the s
   test("the route refuses an unbalanced entry and an unavailable account", () => {
     const src = read(ROUTE);
     assert.match(src, /totalDebit !== totalCredit/, "balanced rule enforced server-side");
-    assert.match(src, /accounts are not available to this tenant/, "account must belong to the tenant or be shared");
-    assert.match(src, /\.from\("journal_entries"\)\.delete\(\)\.eq\("id", createdId\)/, "a failed line write removes the orphan header");
+    assert.match(src, /accounts are not usable by this company/, "account must belong to the tenant or be shared");
+    assert.match(src, /assertAccountsUsable\(/, "the check must be the shared ownership predicate");
+    // The orphan-header compensation now lives inside `writeJournal` (the one
+    // writer), so POST must DELEGATE rather than re-implement the two-request
+    // insert. (PUT is an update - the atomic RPC only inserts - so it keeps a
+    // snapshot/restore around its line replace.)
+    const post = src.slice(src.indexOf("export async function POST"), src.indexOf("/** Update a manual journal entry"));
+    assert.match(post, /writeJournal\(/, "POST must post through the one writer");
+    assert.doesNotMatch(post, /\.from\("journal_lines"\)\.insert\(/, "POST must not write lines itself");
+    assert.match(src, /const \{ data: previousLines \} = await supabaseAdmin/, "PUT must snapshot lines before replacing them");
   });
 
   test("DELETE scopes to the caller's tenant and refuses a system-posted entry", () => {
@@ -637,7 +721,7 @@ describe("manual journal screen: reads stay in the browser, writes move to the s
 
 describe("Exec 36 - compensation must never delete a pre-existing posting", () => {
   test("/api/invoices only compensates a journal THIS call created", () => {
-    const src = read("src/app/api/invoices/route.ts");
+    const src = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
     assert.match(src, /if \(created\) createdJournalId = journalId/, "createdJournalId is set only when created");
     // The old unconditional assignment must be gone, or a retry could delete a
     // real posting in the catch block.

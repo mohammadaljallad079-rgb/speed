@@ -155,6 +155,34 @@ expect_eq "no line was left behind by any refused post" \
 expect_eq "no orphan header exists (every header has lines)" \
   "$(q "select count(*) from public.journal_entries e where not exists (select 1 from public.journal_lines l where l.journal_entry_id=e.id)")" "0"
 
+# --- 7b. tenant persistence when the column exists (Exec 64) -----------------
+# The chart became per-company in 014, so a journal must record WHICH company it
+# belongs to; otherwise every company's ledger is the single-tenant ledger.
+q "alter table public.journal_entries add column tenant_id uuid;
+   alter table public.journal_lines add column tenant_id uuid;" >/dev/null 2>&1
+# Re-apply so the function picks up the newly-added columns.
+"${PSQL[@]}" -d "$DB" -f - < "$MIG" >/dev/null 2>&1
+expect_eq "a journal posted with a tenant posts" \
+  "$(q "select public.post_journal_entry(
+      '{\"journal_number\":\"JV-T1\",\"entry_date\":\"2026-01-02\",\"description\":\"tenant sale\",\"tenant_id\":\"00000000-0000-0000-0000-0000000000b1\"}'::jsonb,
+      '[{\"account_id\":\"00000000-0000-0000-0000-0000000000a1\",\"debit\":50,\"credit\":0,\"tenant_id\":\"00000000-0000-0000-0000-0000000000b1\"},
+        {\"account_id\":\"00000000-0000-0000-0000-0000000000a2\",\"debit\":0,\"credit\":50}]'::jsonb
+    ) is not null")" "t"
+expect_eq "the header carries its tenant" \
+  "$(q "select tenant_id::text from public.journal_entries where journal_number='JV-T1'")" \
+  "00000000-0000-0000-0000-0000000000b1"
+expect_eq "the lines carry the same tenant" \
+  "$(q "select count(*) from public.journal_lines l join public.journal_entries e on e.id=l.journal_entry_id
+          where e.journal_number='JV-T1' and l.tenant_id = '00000000-0000-0000-0000-0000000000b1'")" "2"
+expect_eq "a journal posted WITHOUT a tenant stays tenant-less" \
+  "$(q "select public.post_journal_entry(
+      '{\"journal_number\":\"JV-T0\",\"entry_date\":\"2026-01-02\"}'::jsonb,
+      '[{\"account_id\":\"00000000-0000-0000-0000-0000000000a1\",\"debit\":1,\"credit\":0},
+        {\"account_id\":\"00000000-0000-0000-0000-0000000000a2\",\"debit\":0,\"credit\":1}]'::jsonb
+    ) is not null")" "t"
+expect_eq "that header has no tenant" \
+  "$(q "select coalesce(tenant_id::text,'NULL') from public.journal_entries where journal_number='JV-T0'")" "NULL"
+
 # --- 8. rollback --------------------------------------------------------------
 echo "== rollback =="
 if "${PSQL[@]}" -d "$DB" -f - < "$ROLLBACK" >/dev/null 2>&1; then ok "rollback applies"; else bad "rollback applies" "see error"; fi

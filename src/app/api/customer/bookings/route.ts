@@ -4,6 +4,8 @@ import { requireContext } from "@/lib/auth";
 import { toErrorResponse } from "@/lib/auth/errors";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { createBooking, type BookingDb, type RentalType } from "@/lib/rental/booking-service";
+import { emitContractEvent, type ContractReader } from "@/lib/notifications/emit";
+import type { NotificationDb } from "@/lib/notifications/notification-store";
 
 export const dynamic = "force-dynamic";
 
@@ -42,10 +44,20 @@ export async function POST(request: Request) {
       },
     );
 
+    // Notify the office that a customer booked. Best-effort and never blocking:
+    // a notification store that is not migrated yet must not fail the booking.
+    const notified = await emitContractEvent(
+      supabaseAdmin as unknown as NotificationDb,
+      supabaseAdmin as unknown as ContractReader,
+      context.tenantId,
+      { event: "booking_new", contractId: booking.id },
+    );
+
     return NextResponse.json({
       id: booking.id,
       contract_number: booking.contractNumber,
       tenant_id: booking.tenantId,
+      notified: notified.ok,
     });
   } catch (error) {
     const { status, body } = toErrorResponse(error);

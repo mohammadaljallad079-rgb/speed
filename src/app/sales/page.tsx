@@ -3,6 +3,7 @@ import { Suspense } from 'react'
 export const dynamic = "force-dynamic"
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { deleteInvoice } from '@/lib/invoices/invoice-client'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -145,8 +146,16 @@ function SalesInvoicesContent() {
                         <DropdownMenuItem
                           onClick={async () => {
                             if (!confirm(isRTL ? 'هل أنت متأكد من الحذف؟' : 'Are you sure?')) return
-                            await supabase.from('invoices').delete().eq('id', inv.id)
-                            window.location.reload()
+                            try {
+                              // Guarded server-side: a posted invoice, or one
+                              // with receipts/returns, is refused. Deleting the
+                              // row here left the ledger describing a document
+                              // that no longer existed.
+                              await deleteInvoice(inv.id)
+                              window.location.reload()
+                            } catch (err: any) {
+                              alert(err?.message || (isRTL ? 'تعذر حذف الفاتورة' : 'Could not delete the invoice'))
+                            }
                           }}
                           className="flex items-center gap-2 text-red-600 cursor-pointer focus:text-red-600 text-xs"
                         >

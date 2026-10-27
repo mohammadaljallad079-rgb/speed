@@ -129,7 +129,7 @@ describe("Exec 18 - Item 2: sales serial numbers are collision-safe", () => {
   });
 
   test("the server allocates the sale number and never inserts an empty one", () => {
-    const src = read("src/app/api/invoices/route.ts");
+    const src = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
     assert.match(src, /nextDocumentNumber\([^)]*"sale_invoice"/, "server must allocate the sale number");
     assert.match(src, /invoice_number: invoiceNumber/, "must insert the allocated number");
   });

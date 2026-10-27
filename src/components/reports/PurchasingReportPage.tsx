@@ -7,6 +7,7 @@ import { formatCurrency } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { FileSearch, Download } from 'lucide-react'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 import type { PurchasingReportKind } from '@/lib/reporting/purchasing-reports'
 
 /**
@@ -82,17 +83,31 @@ function ReportContent({ kind, titleAr, titleEn, showSupplierFilter }: { kind: P
   const columns = data?.columns ?? []
   const rows = data?.rows ?? []
 
-  function exportCsv() {
+  /**
+   * Branded export through the shared engine (Exec 60, Section 6). The columns
+   * and totals come from the server response, so the file is exactly what the
+   * table shows - including the totals row, which is emitted as a real SUM.
+   */
+  async function exportExcel() {
     if (!data) return
-    const header = columns.map((c) => (isRTL ? c.labelAr : c.labelEn)).join(',')
-    const body = rows.map((row) => columns.map((c) => String(row[c.key] ?? '')).join(',')).join('\n')
-    const blob = new Blob([`\uFEFF${header}\n${body}`], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${kind}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    const spec = {
+      titleAr,
+      titleEn,
+      periodLabel: hasDates ? `${from} — ${to}` : null,
+      rtl: isRTL,
+      columns: columns.map((c) => ({
+        key: c.key,
+        labelAr: c.labelAr,
+        labelEn: c.labelEn,
+        type: (c.type === 'currency' ? 'currency' : c.type === 'number' ? 'number' : 'text') as 'currency' | 'number' | 'text',
+      })),
+      rows: rows as unknown as Record<string, unknown>[],
+      totals: columns
+        .filter((c) => data.totals?.[c.key] !== undefined)
+        .map((c) => ({ labelAr: c.labelAr, labelEn: c.labelEn, columnKey: c.key, value: Number(data.totals[c.key]) })),
+    }
+    const buffer = await buildReportWorkbook(spec)
+    downloadWorkbook(buffer, exportFilename(kind, hasDates ? `${from}_${to}` : null))
   }
 
   return (
@@ -118,9 +133,9 @@ function ReportContent({ kind, titleAr, titleEn, showSupplierFilter }: { kind: P
             <Button onClick={() => { setFrom(draftFrom); setTo(draftTo); load(draftFrom, draftTo) }}>
               {isRTL ? 'تطبيق' : 'Apply'}
             </Button>
-            <Button variant="outline" onClick={exportCsv} disabled={!data || rows.length === 0} className="gap-2">
+            <Button variant="outline" onClick={() => void exportExcel()} disabled={!data || rows.length === 0} className="gap-2">
               <Download className="w-4 h-4" />
-              {isRTL ? 'تصدير' : 'Export'}
+              {isRTL ? 'تصدير Excel' : 'Export Excel'}
             </Button>
           </div>
         </header>

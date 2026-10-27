@@ -62,25 +62,86 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
     const entries: any[] = [];
     const lines: any[] = [];
     const accounts = [
-      { id: "acc-cash", code: "11001" },
-      { id: "acc-ar", code: "12001" },
+      { id: "acc-cash", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: "11001" },
+      { id: "acc-ar", tenant_id: "00000000-0000-0000-0000-0000000000a1", code: "12001" },
     ];
     const client = {
+      async rpc(fn: string, args: any) {
+        if (fn !== "post_journal_entry") {
+          return { data: null, error: { message: "Unexpected RPC" } };
+        }
+
+        const header = args?.p_header;
+        const journalLines = args?.p_lines;
+        const tenant = header?.tenant_id;
+
+        if (!tenant || !Array.isArray(journalLines) || !journalLines.length) {
+          return { data: null, error: { message: "Invalid journal" } };
+        }
+
+        for (const line of journalLines) {
+          if (line.tenant_id !== tenant ||
+              !accounts.some((a) =>
+                a.id === line.account_id && a.tenant_id === tenant
+              )) {
+            return { data: null, error: { message: "Account ownership mismatch" } };
+          }
+        }
+
+        const debit = journalLines.reduce(
+          (n: number, l: any) => n + Number(l.debit || 0), 0
+        );
+        const credit = journalLines.reduce(
+          (n: number, l: any) => n + Number(l.credit || 0), 0
+        );
+
+        if (Math.round(debit * 1000) !== Math.round(credit * 1000)) {
+          return { data: null, error: { message: "Unbalanced journal" } };
+        }
+
+        const id = "je-1";
+        entries.push({ ...header, id });
+        for (const line of journalLines) {
+          lines.push({ ...line, journal_entry_id: id });
+        }
+
+        return { data: id, error: null };
+      },
       from(table: string) {
         const q: any = {
           _op: "select",
           _filters: [] as [string, any][],
+          _is: [] as [string, any][],
+          _or: null as string | null,
           _in: null as any,
           select() { return q; },
-          in(_c: string, v: any[]) { q._in = v; return q; },
+          in(c: string, v: any[]) { q._inCol = c; q._in = v; return q; },
           eq(c: string, v: any) { q._filters.push([c, v]); return q; },
+          is(c: string, v: any) { q._is.push([c, v]); return q; },
+          or(f: string) { q._or = f; return q; },
+          _tenantMatch(a: any) {
+            if (q._is.length) {
+              return q._is.every(([c, v]: [string, any]) => (v === null ? a[c] == null : a[c] === v));
+            }
+            if (q._or) {
+              return q._or.split(",").some((part: string) => {
+                const m = /tenant_id\.eq\.(.+)/.exec(part);
+                if (m) return a.tenant_id === m[1];
+                if (part.includes("tenant_id.is.null")) return a.tenant_id == null;
+                return false;
+              });
+            }
+            return true;
+          },
           delete() { q._op = "delete"; return q; },
           insert(row: any) { q._op = "insert"; q._row = row; return q; },
           async single() { return q._run(); },
           then(res: any, rej: any) { return q._run().then(res, rej); },
           async _run() {
             if (table === "accounts" && q._op === "select") {
-              return { data: accounts.filter((a) => (q._in ?? []).includes(a.code)), error: null };
+              const col = (q as any)._inCol ?? "code";
+              const byCode = accounts.filter((a) => (q._in ?? []).includes((a as any)[col]));
+              return { data: byCode.filter((a: any) => q._tenantMatch(a)), error: null };
             }
             if (q._op === "insert" && table === "journal_entries") {
               const row = { id: "je-1", ...q._row };
@@ -98,6 +159,7 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
       },
     };
     const { journalId } = await postCustomerReceipt(client as unknown as ReceiptPostingClient, {
+      tenantId: "00000000-0000-0000-0000-0000000000a1",
       journalNumber: "JV-9",
       receiptNumber: "REC-9",
       amount: 50,
@@ -113,12 +175,18 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
   });
 });
 
-describe("Exec 31 - rental receipt pages use the AR posting (no revenue double-count)", () => {
+describe("Exec 31/66 - rental receipt pages settle AR through the server, never revenue", () => {
+  // The pages used to post the receipt journal themselves, client-side, with the
+  // posting failure swallowed by a try/catch - so a receipt could be recorded
+  // with no accounting entry. They now call `/api/receipts`, which performs the
+  // payment + journal + settlement in ONE server-side transaction.
   for (const f of ["src/app/rentals/page.tsx", "src/app/rentals/[id]/page.tsx"]) {
-    test(`${f} posts receipts through postCustomerReceipt`, () => {
+    test(`${f} records the receipt through the server API`, () => {
       const src = read(f);
-      assert.match(src, /postCustomerReceipt\(/, `${f} must use the receipt posting service`);
+      assert.match(src, /submitReceipt\(/, `${f} must record the receipt through the server`);
+      assert.doesNotMatch(src, /postCustomerReceipt\(/, `${f} must not post the receipt journal itself`);
       assert.doesNotMatch(src, /from\(["']journal_entries["']\)\.insert/, `${f} must not write journal headers directly`);
+      assert.doesNotMatch(src, /from\(["']payments["']\)\.insert/, `${f} must not insert the payment row itself`);
       assert.doesNotMatch(src, /entry_number:/, `${f} must not use the non-canonical entry_number column`);
     });
   }
@@ -148,7 +216,7 @@ describe("Exec 31 - quotation conversion posts a tenant-scoped rental invoice", 
 });
 
 describe("Exec 31 - the invoice API is the single sale/rental posting path", () => {
-  const src = read("src/app/api/invoices/route.ts");
+  const src = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
   test("supports a rental invoice that posts to the rental revenue account", () => {
     assert.match(src, /invoice_type/, "must accept the invoice type");
     assert.match(src, /rentalRevenue/, "must post rentals to the rental revenue account");

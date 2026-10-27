@@ -289,10 +289,26 @@ describe("privileged routes enforce authorization", () => {
     // an explicit safe projection (asserted by the next test). `/api/saas/signup`
     // is public by design too: it always creates a NEW tenant and hardcodes the
     // `admin` role of that new tenant only (asserted by its own test below).
+    // `/api/me` cannot call `requireContext`: it is the route that RESOLVES the
+    // context (the login page calls it to learn its own role). It authenticates
+    // with `auth.getUser()` and 401s without a session; its service-role read is
+    // scoped by `context.tenantId`. Asserted by the test below.
     // Every other route must guard.
-    const allowed = ["customer-signup", "/api/public/", "/api/saas/signup"];
+    const allowed = ["customer-signup", "/api/public/", "/api/saas/signup", "/api/me/"];
     const offenders = unguarded.filter((f) => !allowed.some((a) => f.includes(a)));
     assert.deepEqual(offenders, [], `unguarded privileged routes: ${offenders.join(", ")}`);
+  });
+
+  test("the /api/me exemption is safe: it authenticates and scopes by the session", () => {
+    // The exemption above is only valid if /api/me really is the context
+    // resolver: it must reject a session-less caller and must scope its
+    // service-role read by the tenant it resolved (never by request input).
+    const me = fs.readFileSync(path.join(ROOT, "src/app/api/me/route.ts"), "utf8");
+    assert.match(me, /auth\.getUser\(\)/, "it must authenticate the session");
+    assert.match(me, /status:\s*401/, "a session-less caller must be rejected");
+    assert.match(me, /resolveAuthContext\(request\)/, "it resolves the app identity server-side");
+    assert.match(me, /loadTenantPlan\(supabaseAdmin as never, context\.tenantId\)/, "the service-role read must use the resolved tenant");
+    assert.doesNotMatch(me, /body\.tenant_id|searchParams\.get\("tenant/, "it must never read a tenant from the request");
   });
 
   test("routes that insert tenant-owned rows set tenant_id from the session", () => {

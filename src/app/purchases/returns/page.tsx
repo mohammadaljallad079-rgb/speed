@@ -7,7 +7,7 @@ import { useLanguage } from "@/lib/LanguageContext"
 import { supabase, DebitNote, Supplier, PurchaseInvoice } from "@/lib/supabase"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
 import RecordSelect from "@/components/records/RecordSelect"
-import { isSelectableAccount } from "@/lib/records/sources"
+import { isSelectablePostableAccount } from "@/lib/records/sources"
 import {
   RotateCcw, Plus, Search, Save, Trash2, ArrowLeft, FileText, AlertTriangle
 } from "lucide-react"
@@ -115,16 +115,20 @@ function DebitNotesPageContent() {
   }
 
   async function handleDelete(id: string) {
-    // A posted note is not deleted: its journal would be orphaned. It is
-    // cancelled (status 'cancelled') so the audit trail keeps the document.
+    // A posted note is not deleted and not silently cancelled: the SERVER
+    // mirrors its journal so the payable and the ledger stay in step. Setting
+    // `status = 'cancelled'` from the browser used to leave the note's journal
+    // in place, so the supplier balance and the books disagreed.
     if (!confirm(isRTL ? 'هل أنت متأكد من إلغاء الإشعار؟' : 'Are you sure you want to cancel this note?')) return
-    const { error } = await supabase.from('debit_notes').update({ status: 'cancelled' }).eq('id', id)
-    if (error) {
+    try {
+      const res = await fetch(`/api/debit-notes/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not cancel the note')
+      notifyDataChanged()
+      fetchNotes()
+    } catch (error: any) {
       alert(isRTL ? 'خطأ: ' + error.message : 'Error: ' + error.message)
-      return
     }
-    notifyDataChanged()
-    fetchNotes()
   }
 
   const filtered = notes.filter(n => {
@@ -183,9 +187,10 @@ function DebitNotesPageContent() {
             <h3 className="font-bold text-slate-900 dark:text-white">{isRTL ? 'إشعار مدين جديد' : 'New Debit Note'}</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
                 <RecordSelect
                   kind="supplier"
+                  label={isRTL ? 'المورد' : 'Supplier'}
+                  required
                   value={form.supplier_id}
                   onChange={(id) => setForm({ ...form, supplier_id: id, purchase_invoice_id: '' })}
                   createMode="inline"
@@ -214,12 +219,12 @@ function DebitNotesPageContent() {
                 <Input type="number" step="0.001" value={form.vat_amount} onChange={(e) => setForm({ ...form, vat_amount: e.target.value })} className="h-11 rounded-xl" placeholder="0.000" />
               </div>
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'حساب المصروف' : 'Expense account'}</label>
                 <RecordSelect
                   kind="account"
+                  label={isRTL ? 'حساب المصروف' : 'Expense account'}
                   value={form.expense_account_id}
                   onChange={(v) => setForm({ ...form, expense_account_id: v })}
-                  filter={isSelectableAccount}
+                  filter={isSelectablePostableAccount}
                   placeholder={isRTL ? 'اختر الحساب (افتراضي: مصروفات أخرى)' : 'Select account (default: other expenses)'}
                 />
               </div>

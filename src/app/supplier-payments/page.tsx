@@ -3,7 +3,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useState, useEffect } from "react"
 import DashboardLayout from "@/components/DashboardLayout"
 import { useLanguage } from "@/lib/LanguageContext"
-import { supabase, SupplierPayment, Supplier, PurchaseInvoice } from "@/lib/supabase"
+import { supabase, SupplierPayment, PurchaseInvoice } from "@/lib/supabase"
 import { formatCurrency, formatDate, getStatusColor } from "@/lib/utils"
 import RecordSelect from "@/components/records/RecordSelect"
 import {
@@ -30,7 +30,6 @@ function SupplierPaymentsPageContent() {
   const { t, isRTL } = useLanguage()
   const [mounted, setMounted] = useState(false)
   const [payments, setPayments] = useState<SupplierPayment[]>([])
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [bills, setBills] = useState<PurchaseInvoice[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -51,7 +50,6 @@ function SupplierPaymentsPageContent() {
   useEffect(() => {
     setMounted(true)
     fetchPayments()
-    fetchSuppliers()
     fetchBills()
   }, [])
 
@@ -67,11 +65,6 @@ function SupplierPaymentsPageContent() {
       console.error('Error fetching payments:', error)
     }
     setLoading(false)
-  }
-
-  async function fetchSuppliers() {
-    const { data } = await supabase.from('suppliers').select('*').order('name')
-    if (data) setSuppliers(data)
   }
 
   async function fetchBills() {
@@ -207,9 +200,10 @@ function SupplierPaymentsPageContent() {
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
                 <RecordSelect
                   kind="supplier"
+                  label={isRTL ? 'المورد' : 'Supplier'}
+                  required
                   value={form.supplier_id}
                   onChange={(id) => setForm({ ...form, supplier_id: id, purchase_invoice_id: '' })}
                   createMode="inline"

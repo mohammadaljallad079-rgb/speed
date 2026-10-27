@@ -59,7 +59,8 @@ begin
   --
   -- p_header : the journal_entries row (journal_number, entry_date, entry_type,
   --            reference_number, description, status, total_debit, total_credit,
-  --            is_balanced, ...). The caller builds it; unknown keys are ignored
+  --            is_balanced, tenant_id, ...). The caller builds it; unknown keys
+  --            are ignored
   --            by construction because the insert names its columns explicitly.
   -- p_lines  : the journal_lines rows, each without journal_entry_id (assigned
   --            here). account_id, debit, credit are required per line.
@@ -99,6 +100,8 @@ begin
     v_has_is_balanced boolean;
     v_has_total_debit boolean;
     v_has_total_credit boolean;
+    v_has_tenant       boolean;
+    v_has_line_tenant  boolean;
     v_has_line_customer boolean;
     v_has_line_order    boolean;
     v_line_cols         text;
@@ -162,41 +165,66 @@ begin
                      and column_name='total_debit'),
            exists (select 1 from information_schema.columns
                    where table_schema='public' and table_name='journal_entries'
-                     and column_name='total_credit')
+                     and column_name='total_credit'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_entries'
+                     and column_name='tenant_id')
       into v_has_entry_type, v_has_ref, v_has_status,
-           v_has_is_balanced, v_has_total_debit, v_has_total_credit;
+           v_has_is_balanced, v_has_total_debit, v_has_total_credit,
+           v_has_tenant;
 
     select exists (select 1 from information_schema.columns
                    where table_schema='public' and table_name='journal_lines'
                      and column_name='customer_id'),
            exists (select 1 from information_schema.columns
                    where table_schema='public' and table_name='journal_lines'
-                     and column_name='line_order')
-      into v_has_line_customer, v_has_line_order;
+                     and column_name='line_order'),
+           exists (select 1 from information_schema.columns
+                   where table_schema='public' and table_name='journal_lines'
+                     and column_name='tenant_id')
+      into v_has_line_customer, v_has_line_order, v_has_line_tenant;
 
     -- ---- Insert the header and its lines in ONE transaction. ----------------
-    insert into public.journal_entries (
-      journal_number,
-      entry_date,
-      description,
-      entry_type,
-      reference_number,
-      status,
-      total_debit,
-      total_credit,
-      is_balanced
-    )
-    select
-      p_header->>'journal_number',
-      coalesce((p_header->>'entry_date')::date, current_date),
-      p_header->>'description',
-      case when v_has_entry_type then coalesce(p_header->>'entry_type', 'manual') else null end,
-      case when v_has_ref        then p_header->>'reference_number' else null end,
-      case when v_has_status     then coalesce(p_header->>'status', 'posted') else null end,
-      case when v_has_total_debit  then v_total_debit  else null end,
-      case when v_has_total_credit then v_total_credit else null end,
-      case when v_has_is_balanced  then true else null end
-    returning id into v_id;
+    -- Two statements rather than one: a column may only be NAMED in the insert
+    -- when the table actually has it, and `tenant_id` is added by migration 003,
+    -- so it is absent on an un-migrated schema. The branch is chosen by the
+    -- column probe above; the statements are otherwise identical.
+    if v_has_tenant then
+      insert into public.journal_entries (
+        journal_number, entry_date, description, entry_type, reference_number,
+        status, total_debit, total_credit, is_balanced, tenant_id
+      )
+      select
+        p_header->>'journal_number',
+        coalesce((p_header->>'entry_date')::date, current_date),
+        p_header->>'description',
+        case when v_has_entry_type then coalesce(p_header->>'entry_type', 'manual') else null end,
+        case when v_has_ref        then p_header->>'reference_number' else null end,
+        case when v_has_status     then coalesce(p_header->>'status', 'posted') else null end,
+        case when v_has_total_debit  then v_total_debit  else null end,
+        case when v_has_total_credit then v_total_credit else null end,
+        case when v_has_is_balanced  then true else null end,
+        -- The journal belongs to the posting company (migration 014 makes the
+        -- chart per-company, so the ledger must record which company it is).
+        nullif(p_header->>'tenant_id','')::uuid
+      returning id into v_id;
+    else
+      insert into public.journal_entries (
+        journal_number, entry_date, description, entry_type, reference_number,
+        status, total_debit, total_credit, is_balanced
+      )
+      select
+        p_header->>'journal_number',
+        coalesce((p_header->>'entry_date')::date, current_date),
+        p_header->>'description',
+        case when v_has_entry_type then coalesce(p_header->>'entry_type', 'manual') else null end,
+        case when v_has_ref        then p_header->>'reference_number' else null end,
+        case when v_has_status     then coalesce(p_header->>'status', 'posted') else null end,
+        case when v_has_total_debit  then v_total_debit  else null end,
+        case when v_has_total_credit then v_total_credit else null end,
+        case when v_has_is_balanced  then true else null end
+      returning id into v_id;
+    end if;
 
     -- The optional line columns must be absent from the column LIST, not merely
     -- null-valued: naming a column the table lacks aborts the insert. So the
@@ -214,11 +242,18 @@ begin
       v_line_cols := v_line_cols || ', line_order';
       v_line_sel  := v_line_sel  || ', nullif(elem->>''line_order'','''')::int';
     end if;
+    if v_has_line_tenant then
+      -- A line belongs to the same company as its header, always: the line's own
+      -- tenant_id is honoured when given, otherwise it inherits the header's. A
+      -- line can therefore never end up in a different company than its journal.
+      v_line_cols := v_line_cols || ', tenant_id';
+      v_line_sel  := v_line_sel  || ', coalesce(nullif(elem->>''tenant_id'',''''), $3)::uuid';
+    end if;
 
     execute format(
       'insert into public.journal_lines (%s) select %s from jsonb_array_elements($1) as elem',
       v_line_cols, v_line_sel
-    ) using p_lines, v_id;
+    ) using p_lines, v_id, nullif(p_header->>'tenant_id','');
 
     return v_id::text;
   end;

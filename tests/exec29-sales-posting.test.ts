@@ -45,7 +45,10 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
     table: string;
     op = "select";
     filters: [string, any][] = [];
+    isFilters: [string, any][] = [];
+    orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -57,9 +60,35 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    is(c: string, v: any) {
+      this.isFilters.push([c, v]);
+      return this;
+    }
+    or(f: string) {
+      this.orFilter = f;
+      return this;
+    }
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
+    }
+    /** The RLS predicate, as PostgREST would apply it. */
+    _tenantMatch(a: any): boolean {
+      // `IS NULL` must match a missing field too: a stub row with no tenant_id
+      // is the NULL tenant, exactly as the database sees it.
+      if (this.isFilters.length) {
+        return this.isFilters.every(([c, v]) => (v === null ? a[c] == null : a[c] === v));
+      }
+      if (this.orFilter) {
+        return this.orFilter.split(",").some((part) => {
+          const m = /tenant_id\.eq\.(.+)/.exec(part);
+          if (m) return a.tenant_id === m[1];
+          if (part.includes("tenant_id.is.null")) return a.tenant_id == null;
+          return false;
+        });
+      }
+      return true;
     }
     limit(_n: number) {
       return this;
@@ -76,7 +105,9 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          return { data: accounts.filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
+          return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {
           const rows = entries.filter((r) => this.filters.every(([c, v]) => r[c] === v));
@@ -124,10 +155,86 @@ function makeStub(seed: { accounts?: any[]; failLines?: boolean; guardUnique?: b
       return this._run().then(res, rej);
     }
   }
-  return { client: { from: (t: string) => new Q(t) } as unknown as PostingClient, entries, lines };
+  const TEST_TENANT = "00000000-0000-0000-0000-0000000000a1";
+
+  // Give legacy test fixtures explicit ownership without changing
+  // deliberately foreign or NULL-owned accounts.
+  for (const account of accounts) {
+    if (account.tenant_id === undefined) account.tenant_id = TEST_TENANT;
+  }
+
+  const client = {
+    from: (t: string) => new Q(t),
+    rpc: async (fn: string, args: any) => {
+      if (fn !== "post_journal_entry")
+        return { data: null, error: { message: "Unexpected RPC" } };
+
+      const header = args?.p_header;
+      const journalLines = args?.p_lines;
+
+      if (!header?.tenant_id ||
+          !Array.isArray(journalLines) ||
+          journalLines.length === 0)
+        return { data: null, error: { message: "Invalid journal" } };
+
+      if (journalLines.some((line: any) =>
+        line.tenant_id !== header.tenant_id ||
+        !accounts.some((a: any) =>
+          a.id === line.account_id &&
+          a.tenant_id === header.tenant_id
+        )
+      ))
+        return { data: null, error: { message: "Account ownership mismatch" } };
+
+      const debit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.debit || 0), 0
+      );
+      const credit = journalLines.reduce(
+        (n: number, l: any) => n + Number(l.credit || 0), 0
+      );
+
+      if (Math.round(debit * 1000) !== Math.round(credit * 1000))
+        return { data: null, error: { message: "Unbalanced journal" } };
+
+      const duplicate = entries.find((e: any) =>
+        e.tenant_id === header.tenant_id &&
+        e.entry_type === header.entry_type &&
+        e.reference_number === header.reference_number
+      );
+
+      if (duplicate && seed.guardUnique)
+        return {
+          data: null,
+          error: { message: "duplicate key value violates unique constraint" }
+        };
+
+      // A failed posting must not create either header or lines.
+      if (seed.failLines)
+        return { data: null, error: { message: "line insert failed" } };
+
+      const id = `je-${++seq}`;
+      entries.push({ ...header, id });
+
+      for (const line of journalLines)
+        lines.push({
+          ...line,
+          journal_entry_id: id,
+          id: `jl-${++seq}`
+        });
+
+      return { data: id, error: null };
+    }
+  };
+
+  return {
+    client: client as unknown as PostingClient,
+    entries,
+    lines
+  };
 }
 
 const baseInput = {
+  tenantId: "00000000-0000-0000-0000-0000000000a1",
   journalNumber: "JV-1",
   invoiceNumber: "SI-1",
   entryDate: "2026-02-01",
@@ -281,7 +388,9 @@ describe("Exec29 Item 4 - reverseSaleInvoice", () => {
 });
 
 describe("Exec29 - route + page wiring (source assertions)", () => {
-  const invoicesRoute = read("src/app/api/invoices/route.ts");
+  // The posting invariants moved from the route into the shared service that the
+  // route and the AI agent both call; assert over the whole path.
+  const invoicesRoute = read("src/app/api/invoices/route.ts") + read("src/lib/sales/service.ts");
   const reverseRoute = read("src/app/api/invoices/[id]/reverse/route.ts");
   const newPage = read("src/app/invoices/new/page.tsx");
   const editPage = read("src/app/invoices/[id]/page.tsx");
@@ -317,7 +426,9 @@ describe("Exec29 - route + page wiring (source assertions)", () => {
   test("edit page offers reversal (not in-place edit/delete) for a posted invoice", () => {
     assert.match(editPage, /isSaleInvoicePosted/);
     assert.match(editPage, /handleReverse/);
-    assert.match(editPage, /\/reverse/);
+    // The reversal now goes through the shared helper, which owns the route.
+    assert.match(editPage, /reverseInvoice\(/);
+    assert.match(read("src/lib/invoices/invoice-client.ts"), /\/reverse/);
     assert.match(editPage, /isPosted \? \(/);
     assert.match(editPage, /disabled=\{loading \|\| isPosted\}/);
   });

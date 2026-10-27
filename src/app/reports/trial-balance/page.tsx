@@ -27,7 +27,7 @@ import {
   TrendingDown
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
-import ExcelJS from 'exceljs'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 
 interface TrialBalanceRow {
   id: string
@@ -222,107 +222,35 @@ useEffect(() => {
 
   const todayStr = new Date().toLocaleDateString(isRTL ? 'ar-BH' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
 
+  /** Branded export through the shared engine (Exec 60, Section 6). */
   async function exportExcel() {
-    const wb = new ExcelJS.Workbook()
-    const ws = wb.addWorksheet('Trial Balance')
-    ws.columns = [
-      { width: 12 }, { width: 40 },
-      { width: 16 }, { width: 16 },
-      { width: 16 }, { width: 16 },
-      { width: 16 }, { width: 16 }
-    ]
-
-    const navy = 'FF0F172A'
-    const white = 'FFFFFFFF'
-
-    function styleRow(row: ExcelJS.Row, opts: {
-      bg?: string, color?: string, bold?: boolean, size?: number,
-      align?: 'left' | 'right' | 'center', border?: boolean, numFmt?: string
-    }) {
-      row.eachCell({ includeEmpty: true }, (cell) => {
-        cell.font = { bold: !!opts.bold, size: opts.size || 10, name: 'Arial', color: { argb: opts.color || 'FF1E293B' } }
-        if (opts.bg) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } }
-        cell.alignment = { horizontal: opts.align || 'left', vertical: 'middle' }
-        if (opts.numFmt) cell.numFmt = opts.numFmt
-        if (opts.border) {
-          cell.border = {
-            top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
-          }
-        }
-      })
+    const spec = {
+      titleAr: 'ميزان المراجعة',
+      titleEn: 'Trial Balance',
+      periodLabel: `${fromDate} — ${toDate}`,
+      rtl: isRTL,
+      columns: [
+        { key: 'code', labelAr: 'الرمز', labelEn: 'Code', type: 'text' as const, width: 12 },
+        { key: 'name', labelAr: 'اسم الحساب', labelEn: 'Account name', type: 'text' as const, width: 40 },
+        { key: 'opening_debit', labelAr: 'رصيد افتتاحي مدين', labelEn: 'Opening Dr', type: 'currency' as const },
+        { key: 'opening_credit', labelAr: 'رصيد افتتاحي دائن', labelEn: 'Opening Cr', type: 'currency' as const },
+        { key: 'movement_debit', labelAr: 'حركة مدين', labelEn: 'Movement Dr', type: 'currency' as const },
+        { key: 'movement_credit', labelAr: 'حركة دائن', labelEn: 'Movement Cr', type: 'currency' as const },
+        { key: 'closing_debit', labelAr: 'رصيد ختامي مدين', labelEn: 'Closing Dr', type: 'currency' as const },
+        { key: 'closing_credit', labelAr: 'رصيد ختامي دائن', labelEn: 'Closing Cr', type: 'currency' as const },
+      ],
+      rows: rows.map((r) => ({ ...r, name: isRTL ? r.name_ar : r.name })) as unknown as Record<string, unknown>[],
+      totals: [
+        { labelAr: 'إجمالي مدين افتتاحي', labelEn: 'Total opening Dr', columnKey: 'opening_debit', value: totals.opening_debit },
+        { labelAr: 'إجمالي دائن افتتاحي', labelEn: 'Total opening Cr', columnKey: 'opening_credit', value: totals.opening_credit },
+        { labelAr: 'إجمالي حركة مدين', labelEn: 'Total movement Dr', columnKey: 'movement_debit', value: totals.movement_debit },
+        { labelAr: 'إجمالي حركة دائن', labelEn: 'Total movement Cr', columnKey: 'movement_credit', value: totals.movement_credit },
+        { labelAr: 'إجمالي رصيد ختامي مدين', labelEn: 'Total closing Dr', columnKey: 'closing_debit', value: totals.closing_debit },
+        { labelAr: 'إجمالي رصيد ختامي دائن', labelEn: 'Total closing Cr', columnKey: 'closing_credit', value: totals.closing_credit },
+      ],
     }
-
-    ws.mergeCells('A1:H1')
-    ws.getCell('A1').value = 'TRIAL BALANCE'
-    styleRow(ws.getRow(1), { bg: navy, color: white, bold: true, size: 20, align: 'center' })
-    ws.getRow(1).height = 28
-
-    ws.mergeCells('A2:H2')
-    ws.getCell('A2').value = 'Harbour Consultancies W.L.L'
-    styleRow(ws.getRow(2), { bold: true, size: 13, align: 'center' })
-
-    ws.mergeCells('A3:H3')
-    ws.getCell('A3').value = 'Period: ' + fromDate + '  to  ' + toDate
-    styleRow(ws.getRow(3), { size: 10, color: 'FF64748B', align: 'center' })
-
-    ws.addRow([])
-
-    const headerRow = ws.addRow([
-      'Code', 'Account Name',
-      'Opening Dr', 'Opening Cr',
-      'Movement Dr', 'Movement Cr',
-      'Closing Dr', 'Closing Cr'
-    ])
-    styleRow(headerRow, { bg: 'FF1E40AF', color: white, bold: true, align: 'center', border: true })
-
-    let idx = 0
-    rows.forEach(r => {
-      const dataRow = ws.addRow([
-        r.code,
-        isRTL ? r.name_ar : r.name,
-        r.opening_debit,
-        r.opening_credit,
-        r.movement_debit,
-        r.movement_credit,
-        r.closing_debit,
-        r.closing_credit
-      ])
-      const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC'
-      styleRow(dataRow, { bg, border: true })
-      dataRow.eachCell((cell, colNum) => {
-        if (colNum >= 3) {
-          cell.alignment = { horizontal: 'right', vertical: 'middle' }
-          cell.numFmt = '#,##0.000'
-        }
-      })
-      idx++
-    })
-
-    const totalRow = ws.addRow([
-      '', 'TOTAL',
-      totals.opening_debit, totals.opening_credit,
-      totals.movement_debit, totals.movement_credit,
-      totals.closing_debit, totals.closing_credit
-    ])
-    styleRow(totalRow, { bg: 'FFBFDBFE', color: 'FF1E40AF', bold: true, size: 11, border: true })
-    totalRow.eachCell((cell, colNum) => {
-      if (colNum >= 3) {
-        cell.alignment = { horizontal: 'right', vertical: 'middle' }
-        cell.numFmt = '#,##0.000'
-      }
-    })
-
-    const buffer = await wb.xlsx.writeBuffer()
-    const blob = new Blob([buffer], { type: 'application/octet-stream' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'Trial_Balance_' + fromDate + '_to_' + toDate + '.xlsx'
-    a.click()
-    window.URL.revokeObjectURL(url)
+    const buffer = await buildReportWorkbook(spec)
+    downloadWorkbook(buffer, exportFilename('trial-balance', `${fromDate}_to_${toDate}`))
   }
 
   const renderRow = (r: TrialBalanceRow) => (

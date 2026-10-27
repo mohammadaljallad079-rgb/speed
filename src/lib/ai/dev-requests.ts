@@ -1,3 +1,4 @@
+import { scopeToTenantColumn } from "@/lib/auth/policy";
 import { classifyDevRequest, isForbiddenPath, type DevClassification, type DevRisk } from "./policy";
 
 /**
@@ -207,8 +208,7 @@ export function sanitizeRequests(raw: unknown): DevRequest[] {
 }
 
 export async function loadDevRequests(db: DevRequestDb, tenantId: string | null): Promise<DevRequest[]> {
-  let query = db.from("settings").select("value").eq("key", DEV_REQUESTS_KEY);
-  if (tenantId) query = query.eq("tenant_id", tenantId);
+  const query = scopeToTenantColumn(db.from("settings").select("value").eq("key", DEV_REQUESTS_KEY), tenantId);
   const { data, error } = await query.maybeSingle();
   if (error || !data?.value) return [];
   return sanitizeRequests(data.value);

@@ -8,6 +8,7 @@ import {
   PURCHASE_ACCOUNT_CODES,
 } from "@/lib/accounting/purchase-posting";
 import { writeJournal } from "@/lib/accounting/manual-posting";
+import { resolveOptionalAccountIds } from "@/lib/accounting/account-resolution";
 import { decidePurchaseBillDeletion } from "@/lib/accounting/invoice-guards";
 import {
   assertDateInOpenFinancialYear,
@@ -182,14 +183,19 @@ export async function POST(request: Request) {
 
     const expenseCode = expenseCodeFor(body.expense_category);
     const cashCode = cashBankCodeForMethod(body.payment_type || "cash");
-    const accountCodes = [expenseCode, cashCode, PURCHASE_ACCOUNT_CODES.payable];
-    let accountQuery = supabaseAdmin.from("accounts").select("id,code,tenant_id").in("code", accountCodes);
-    accountQuery = context.tenantId
-      ? accountQuery.or(`tenant_id.eq.${context.tenantId},tenant_id.is.null`)
-      : accountQuery.is("tenant_id", null);
-    const { data: accountRows } = await accountQuery;
-    const rows = (accountRows as Array<{ id: string; code: string; tenant_id: string | null }>) || [];
-    const byCode = (code: string) => rows.find((r) => r.code === code)?.id as string;
+    const accountCodes = [expenseCode, cashCode, PURCHASE_ACCOUNT_CODES.payable, PURCHASE_ACCOUNT_CODES.inputVat];
+    // The ONE resolver. A local `rows.find(r => r.code === code)` picks whichever
+    // row PostgREST returned first, so once the chart is per-company (migration
+    // 014) a company that also holds a shared "11001" can silently post into the
+    // wrong ledger account - the balance lands in the other chart and no error is
+    // raised. The resolver prefers the company's own account, refuses an
+    // ambiguous chart, and refuses a heading or an inactive account.
+    const resolved = await resolveOptionalAccountIds(
+      supabaseAdmin as never,
+      accountCodes,
+      context.tenantId,
+    );
+    const byCode = (code: string) => resolved[code] as string;
 
     const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "journal_entry", "JV");
     const journal = buildPurchaseJournal({
@@ -203,9 +209,14 @@ export async function POST(request: Request) {
       expenseAccountId: byCode(expenseCode),
       cashAccountId: byCode(cashCode),
       payableAccountId: byCode(PURCHASE_ACCOUNT_CODES.payable),
+      // Recoverable VAT goes to the input-VAT account, not capitalised into the
+      // expense. `byCode` returns undefined when 24001 is absent, and the
+      // builder then keeps the whole amount on the expense.
+      vatAmount: vat,
+      vatAccountId: byCode(PURCHASE_ACCOUNT_CODES.inputVat) ?? null,
     });
     if (!journal) throw new Error("Cannot post a purchase without a positive total and resolvable accounts.");
-    createdJournalId = await writeJournal(supabaseAdmin as never, journal);
+    createdJournalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);
 
     await logAudit(context, {
       action: "create",

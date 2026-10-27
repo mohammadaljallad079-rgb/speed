@@ -80,6 +80,10 @@ function makeClient(opts: {
       return { data: null, error: null };
     }
     async then(res: (v: unknown) => unknown) {
+      if (this.op === "select" && this.table === "accounts") {
+        // A shared (NULL-tenant) chart: every referenced id is usable.
+        return res({ data: [{ id: "acc-cash", code: "11001", tenant_id: null }, { id: "acc-bank", code: "11002", tenant_id: null }], error: null });
+      }
       if (this.op === "insert" && this.table === "journal_lines") {
         calls.lineInsert++;
         if (opts.failLines) return res({ data: null, error: { message: "line insert failed" } });
@@ -124,7 +128,7 @@ const journal = buildBankTransferJournal({
 describe("the atomic RPC is the preferred write path", () => {
   test("when the RPC succeeds, no direct insert is made at all", async () => {
     const { client, calls } = makeClient({ rpc: "ok" });
-    const id = await writeJournal(client, journal);
+    const id = await writeJournal(client, journal, "00000000-0000-0000-0000-0000000000a1");
     assert.equal(id, "je-atomic");
     assert.equal(calls.rpc, 1);
     assert.equal(calls.headerInsert, 0, "the header must not be inserted separately when the RPC succeeded");
@@ -143,58 +147,78 @@ describe("the atomic RPC is the preferred write path", () => {
       },
     } as unknown as PostingClient;
 
-    await writeJournal(client, journal);
+    await writeJournal(client, journal, "00000000-0000-0000-0000-0000000000a1");
     assert.ok(seen, "rpc was not called");
-    assert.equal((seen as Record<string, unknown>).p_header, journal.header);
-    assert.equal((seen as Record<string, unknown>).p_lines, journal.lines);
+    assert.deepEqual((seen as Record<string, unknown>).p_header, {
+      ...journal.header,
+      tenant_id: "00000000-0000-0000-0000-0000000000a1",
+    });
+    assert.deepEqual((seen as Record<string, unknown>).p_lines,
+      journal.lines.map(line => ({
+        ...line,
+        tenant_id: "00000000-0000-0000-0000-0000000000a1",
+      }))
+    );
   });
 });
 
-describe("the fallback path is used only when the RPC is genuinely absent", () => {
-  test("an unavailable RPC falls back to the two-request write", async () => {
+describe("atomic posting is mandatory", () => {
+  const TENANT = "00000000-0000-0000-0000-0000000000a1";
+
+  test("an unavailable RPC refuses posting without direct inserts", async () => {
     const { client, calls } = makeClient({ rpc: "unavailable" });
-    const id = await writeJournal(client, journal);
-    assert.equal(id, "je-1");
+    await assert.rejects(
+      () => writeJournal(client, journal, TENANT),
+      /Atomic journal posting is required/
+    );
     assert.equal(calls.rpc, 1);
-    assert.equal(calls.headerInsert, 1);
-    assert.equal(calls.lineInsert, 1);
+    assert.equal(calls.headerInsert, 0);
+    assert.equal(calls.lineInsert, 0);
   });
 
-  test("a client with no rpc takes the two-request path", async () => {
+  test("a client without RPC refuses posting without direct inserts", async () => {
     const { client, calls } = makeClient({});
-    const id = await writeJournal(client, journal);
-    assert.equal(id, "je-1");
-    assert.equal(calls.rpc, 0);
-    assert.equal(calls.headerInsert, 1);
-    assert.equal(calls.lineInsert, 1);
+    await assert.rejects(
+      () => writeJournal(client, journal, TENANT),
+      /Atomic journal posting is required/
+    );
+    assert.equal(calls.headerInsert, 0);
+    assert.equal(calls.lineInsert, 0);
   });
 
-  test("a failed line insert still removes the orphan header", async () => {
-    const { client, calls } = makeClient({ failLines: true });
-    await assert.rejects(() => writeJournal(client, journal));
-    assert.equal(calls.headerDelete, 1, "the orphan header must be compensated");
-  });
-
-  test("a REAL rpc error is NOT swallowed into a non-atomic retry", async () => {
-    // This is the dangerous case. If a genuine failure (an unbalanced journal, a
-    // permission denial, a constraint violation) were treated as "RPC missing",
-    // the code would retry with the weaker two-request path and could post a
-    // journal the database had just refused.
+  test("an RPC database error never triggers direct insertion", async () => {
     const { client, calls } = makeClient({ rpc: "error" });
-    await assert.rejects(() => writeJournal(client, journal), /atomically/);
+    await assert.rejects(
+      () => writeJournal(client, journal, TENANT),
+      /atomically/
+    );
     assert.equal(calls.rpc, 1);
-    assert.equal(calls.headerInsert, 0, "a refused post must not be retried with a direct insert");
-    assert.equal(calls.lineInsert, 0, "a refused post must not be retried with a direct insert");
+    assert.equal(calls.headerInsert, 0);
+    assert.equal(calls.lineInsert, 0);
   });
 
-  test("an unbalanced journal is refused before any write, on either path", async () => {
+  test("posting without tenant is refused before any database call", async () => {
+    const { client, calls } = makeClient({ rpc: "ok" });
+    await assert.rejects(
+      () => writeJournal(client, journal),
+      /without a company tenantId/
+    );
+    assert.equal(calls.rpc, 0);
+    assert.equal(calls.headerInsert, 0);
+    assert.equal(calls.lineInsert, 0);
+  });
+
+  test("unbalanced journals are rejected before the RPC", async () => {
     const { client, calls } = makeClient({ rpc: "ok" });
     const unbalanced = {
       ...journal,
       header: { ...journal.header, total_debit: 100, total_credit: 90 },
     };
-    await assert.rejects(() => writeJournal(client, unbalanced), /unbalanced/);
-    assert.equal(calls.rpc, 0, "the RPC must not be called for an unbalanced journal");
+    await assert.rejects(
+      () => writeJournal(client, unbalanced, TENANT),
+      /unbalanced/
+    );
+    assert.equal(calls.rpc, 0);
     assert.equal(calls.headerInsert, 0);
   });
 });

@@ -171,12 +171,13 @@ function NewInvoiceContent() {
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
-                <label className="text-xs text-slate-500 font-semibold">{isRTL ? "العميل" : "Customer"} *</label>
                 {/* Searchable picker from the Customers module; the full
                     two-tab customer form opens as a link so the canonical form
                     is reused rather than duplicated. */}
                 <RecordSelect
                   kind="customer"
+                  label={isRTL ? "العميل" : "Customer"}
+                  required
                   value={form.customer_id}
                   onChange={(id) => set("customer_id", id)}
                   createMode="inline"

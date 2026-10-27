@@ -38,6 +38,11 @@ export async function nextDocumentNumber(
   docType: string,
   fallbackPrefix: string,
 ): Promise<string> {
+  // A client with no `rpc` at all is a database the migration has not reached;
+  // take the fallback rather than throwing, so numbering never blocks a write.
+  if (typeof (client as { rpc?: unknown } | null)?.rpc !== "function") {
+    return fallbackNumber(fallbackPrefix);
+  }
   const { data, error } = await client.rpc("generate_document_number", {
     p_doc_type: docType,
   });

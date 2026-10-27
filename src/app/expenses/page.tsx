@@ -178,7 +178,14 @@ function ExpensesPageContent() {
 
   async function addSupplier() {
     if (!newSupplierName.trim()) return
-    const { data } = await supabase.from("suppliers").insert([{ name: newSupplierName.trim() }]).select().single()
+    // Server-side create: `suppliers` is tenant-owned, so the tenant must come
+    // from the session rather than a browser insert.
+    const supplierRes = await fetch("/api/suppliers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: newSupplierName.trim() }),
+    })
+    const data = supplierRes.ok ? await supplierRes.json() : null
     if (data) {
       setSuppliers([...suppliers, data])
       setNewSupplierName("")
@@ -188,15 +195,21 @@ function ExpensesPageContent() {
 
   async function addAccount() {
     if (!newAccountName.trim() || !newAccountCode.trim()) return
-    const { data } = await supabase.from("expense_accounts").insert([
-      {
+    // Server-side create: `expense_accounts` is tenant-owned, so a browser
+    // insert would leave a NULL-tenant orphan. The route stamps the session tenant.
+    const res = await fetch("/api/expense-accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         name: newAccountName.trim(),
         name_ar: newAccountName.trim(),
         code: newAccountCode.trim(),
         parent_id: newAccountParent || null,
         is_indirect: newAccountIndirect,
-      }
-    ]).select().single()
+      }),
+    })
+    const data = res.ok ? await res.json() : null
+    if (!res.ok) console.error("Error saving expense account:", data)
     if (data) {
       setAccounts([...accounts, data])
       setNewAccountName("")
@@ -251,9 +264,24 @@ function ExpensesPageContent() {
         }
 
         if (editingExpense) {
-          await supabase.from("expenses").update(payload).eq("id", editingExpense.id)
+          // The SERVER writes the row and its balanced journal together. A
+          // browser insert used to leave the expense out of the ledger entirely,
+          // so P&L, trial balance and balance sheet never saw the money leave.
+          const res = await fetch(`/api/expenses/${encodeURIComponent(editingExpense.id)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+          const err = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(err?.error || "Could not save the expense")
         } else {
-          await supabase.from("expenses").insert([payload])
+          const res = await fetch("/api/expenses", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          })
+          const err = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(err?.error || "Could not create the expense")
         }
       }
       setShowForm(false)
@@ -286,7 +314,15 @@ function ExpensesPageContent() {
 
   async function handleDelete(id: string) {
     if (!confirm("Are you sure you want to delete this expense?")) return
-    await supabase.from("expenses").delete().eq("id", id)
+    // Deleting the row alone would orphan its journal and leave the ledger
+    // describing money that the expense list no longer shows. The server
+    // removes both together.
+    const res = await fetch(`/api/expenses/${encodeURIComponent(id)}`, { method: "DELETE" })
+    const err = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      alert(err?.error || "Could not delete the expense")
+      return
+    }
     fetchData()
   }
 

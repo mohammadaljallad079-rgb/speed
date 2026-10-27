@@ -39,7 +39,9 @@ import {
 import { formatDate } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useLanguage } from '@/lib/LanguageContext'
+import NotificationBell from '@/components/notifications/NotificationBell'
 import { supabase } from '@/lib/supabase'
+import { readScopedSetting, type ScopedSettingsClient } from '@/lib/branding/settings-client'
 
 
 
@@ -325,6 +327,19 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [pendingCount, setPendingCount] = useState(0)
   const [menuItems, setMenuItems] = useState<SidebarItemData[]>(DEFAULT_ITEMS)
   const [menuLoading, setMenuLoading] = useState(true)
+  // The company identity this dashboard belongs to. Resolved server-side from
+  // the session by /api/branding/company; it is never read from a cookie,
+  // localStorage or a URL parameter.
+  const [brand, setBrand] = useState<{ name: string; logoUrl: string | null } | null>(null)
+  // The signed-in user's own identity. This was previously the literal string
+  // "Admin" / "Administrator" for every account — a staff member and a
+  // super admin both saw a name that belonged to neither. It now comes from
+  // `/api/me`, which resolves it server-side from the session.
+  const [identity, setIdentity] = useState<{ fullName: string | null; email: string | null; role: string | null }>({
+    fullName: null,
+    email: null,
+    role: null,
+  })
 
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -344,11 +359,23 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     async function fetchSidebarConfig() {
       try {
-        const { data } = await supabase
-          .from('settings')
-          .select('*')
-          .eq('key', 'sidebar_menu_v2')
-          .single()
+        // `settings` is tenant-owned: an unscoped read returns whichever tenant's
+        // row the database hands back first, so one company would render another
+        // company's sidebar. The tenant comes from the session via /api/me.
+        const me = await fetch('/api/me').then((r) => (r.ok ? r.json() : null)).catch(() => null)
+        if (me) {
+          setIdentity({
+            fullName: typeof me.fullName === 'string' ? me.fullName : null,
+            email: typeof me.email === 'string' ? me.email : null,
+            role: typeof me.role === 'string' ? me.role : null,
+          })
+        }
+        const value = await readScopedSetting(
+          supabase as unknown as ScopedSettingsClient,
+          me?.tenantId ?? null,
+          'sidebar_menu_v2',
+        )
+        const data = value ? { value: value as SidebarItemData[] } : null
 
         if (data?.value && Array.isArray(data.value)) {
           // Merge with defaults to ensure all fields exist
@@ -382,6 +409,35 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
     }
     fetchSidebarConfig()
   }, [])
+
+  useEffect(() => {
+    let active = true
+    fetch('/api/branding/company')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!active || !json?.data?.name) return
+        setBrand({ name: json.data.name, logoUrl: json.data.logoUrl ?? null })
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [])
+
+  // A human-readable role, localized. `role` is the server-resolved role from
+  // `/api/me`; it is never inferred from a client value.
+  const identityRoleLabel = (() => {
+    const labels: Record<string, { en: string; ar: string }> = {
+      super_admin: { en: 'Platform Administrator', ar: 'مسؤول المنصة' },
+      admin: { en: 'Company Administrator', ar: 'مسؤول الشركة' },
+      staff: { en: 'Staff', ar: 'موظف' },
+      accountant: { en: 'Accountant', ar: 'محاسب' },
+      client: { en: 'Customer', ar: 'عميل' },
+    }
+    const found = identity.role ? labels[identity.role] : undefined
+    if (found) return isRTL ? found.ar : found.en
+    return isRTL ? 'مستخدم' : 'User'
+  })()
+
+  const identityInitial = (identity.fullName || identity.email || 'U').trim().charAt(0).toUpperCase() || 'U'
 
   const isRouteActive = (href?: string) => {
     if (!href || href === '#') return false
@@ -505,10 +561,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <div className="flex items-center justify-between h-20 px-6 border-b border-slate-100">
           {sidebarOpen && (
             <Link href="/dashboard" className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center shadow-lg shadow-red-600/20">
-                <CarIcon className="w-6 h-6 text-white" />
-              </div>
-              <span className="font-bold text-slate-900 text-xl tracking-tight">{t.appName}</span>
+              {brand?.logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={brand.logoUrl} alt={brand.name} className="w-10 h-10 rounded-xl object-contain" />
+              ) : (
+                <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center shadow-lg shadow-red-600/20">
+                  <CarIcon className="w-6 h-6 text-white" />
+                </div>
+              )}
+              <span className="font-bold text-slate-900 text-xl tracking-tight">{brand?.name || t.appName}</span>
             </Link>
           )}
           <button
@@ -546,11 +607,13 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <div className="mt-4 flex items-center justify-between px-2">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-600 font-bold border border-red-100">
-                  A
+                  {identityInitial}
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-slate-800 leading-none">Admin</p>
-                  <p className="text-xs text-slate-500 mt-1">Administrator</p>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-800 leading-none truncate">
+                    {identity.fullName || identity.email || (isRTL ? 'مستخدم' : 'User')}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">{identityRoleLabel}</p>
                 </div>
               </div>
               <button onClick={handleLogout} className="p-2 text-slate-500 hover:text-red-400 transition-colors">
@@ -565,10 +628,15 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-slate-100" dir={isRTL ? 'rtl' : 'ltr'}>
         <div className="flex items-center justify-between h-16 px-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center">
-              <CarIcon className="w-6 h-6 text-white" />
-            </div>
-            <span className="font-bold text-slate-900">{t.appName}</span>
+            {brand?.logoUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={brand.logoUrl} alt={brand.name} className="w-10 h-10 rounded-xl object-contain" />
+            ) : (
+              <div className="w-10 h-10 rounded-xl bg-red-600 flex items-center justify-center">
+                <CarIcon className="w-6 h-6 text-white" />
+              </div>
+            )}
+            <span className="font-bold text-slate-900">{brand?.name || t.appName}</span>
           </div>
           <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="p-2 rounded-lg text-slate-400">
             {mobileMenuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
@@ -652,10 +720,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               <Globe className="w-4 h-4" />
               <span>{lang === 'ar' ? 'English' : 'العربية'}</span>
             </button>
-            <button className="relative p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shadow-sm">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-red-500 rounded-full border-2 border-white dark:border-slate-800"></span>
-            </button>
+            <NotificationBell />
           </div>
         </header>
 

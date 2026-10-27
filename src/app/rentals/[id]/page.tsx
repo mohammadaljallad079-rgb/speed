@@ -16,7 +16,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ArrowLeft, FileText, User, Car, Calendar, DollarSign, CheckCircle, XCircle, Clock, CreditCard, Save, Loader2, Receipt } from 'lucide-react'
 import Link from 'next/link'
 import { nextDocumentNumber } from '@/lib/numbering'
-import { postCustomerReceipt } from '@/lib/accounting/receipt-posting'
+import { carStatusForContractChange } from '@/lib/rental/car-status'
+import { submitReceipt } from '@/lib/sales/receipt-client'
+import { notifyDataChanged } from '@/lib/hooks/use-report-refresh'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -25,6 +27,8 @@ const supabase = createClient(
 
 function PageContent() {
   const { t, language } = useLanguage()
+  // The posting company is resolved SERVER-side from the session by
+  // `/api/receipts`; the page no longer needs it for a financial write.
   const router = useRouter()
   const params = useParams()
   const id = params?.id as string
@@ -59,35 +63,50 @@ function PageContent() {
 
   async function updateStatus(status: string) {
     setApproving(true)
-    await supabase.from('rental_contracts').update({ status }).eq('id', id)
-    if (status === 'active') {
-      const { data: existingInvoice } = await supabase.from('invoices').select('id').eq('rental_contract_id', id).maybeSingle()
-      if (!existingInvoice) {
-        // Issue through the single server-side posting path: a row-locked number
-        // from the numbering RPC (not a row count that collides) plus its
-        // balanced journal and tenant from the session (Exec 33, Item 2/10).
-        const res = await fetch('/api/invoices', {
+    try {
+      if (status === 'active') {
+        // Confirmation is server-authoritative and idempotent: one call
+        // activates the contract AND issues its invoice through the single
+        // sales posting path. The browser used to update the status and then
+        // check-then-create the invoice, which two concurrent approvals could
+        // both pass — billing the same rental twice.
+        const res = await fetch('/api/rentals/confirm', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            customer_id: contract?.customer_id,
-            rental_contract_id: id,
-            invoice_date: new Date().toISOString().split('T')[0],
-            due_date: contract?.end_date || null,
-            amount: contract?.subtotal ?? contract?.total_amount ?? 0,
-            discount: contract?.discount_amount ?? 0,
-            vat: contract?.vat_amount ?? 0,
-            invoice_type: 'rental',
-            rental_days: contract?.total_days ?? undefined,
-            payment_method: contract?.payment_type || 'cash',
-          }),
+          body: JSON.stringify({ contract_id: id }),
         })
         const payload = await res.json().catch(() => ({}))
-        if (!res.ok) throw new Error(payload?.error || 'Failed to create the rental invoice')
+        if (!res.ok) throw new Error(payload?.error || 'Failed to confirm the booking')
+      } else {
+        const { error } = await supabase.from('rental_contracts').update({ status }).eq('id', id)
+        if (error) throw error
       }
+
+      // Emit the matching operational notification (best-effort; the server
+      // rebuilds the content from the contract row, tenant-scoped).
+      const notifyEvent = status === 'active' ? 'booking_confirmed' : status === 'cancelled' ? 'booking_cancelled' : null
+      if (notifyEvent) {
+        fetch('/api/notifications?op=emit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ event: notifyEvent, contractId: id }),
+        }).catch((e) => console.error('Notification emit failed:', e))
+      }
+
+      // A terminal transition returns the vehicle to the pool; otherwise the
+      // denormalised `cars.status` flag stays `rented` forever (Exec 57).
+      const releaseStatus = carStatusForContractChange(status)
+      if (releaseStatus && contract?.car_id) {
+        await supabase.from('cars').update({ status: releaseStatus }).eq('id', contract.car_id)
+      }
+
+      await fetchContract()
+    } catch (err) {
+      console.error('Status update failed:', err)
+      alert((err as Error).message || 'Could not update the booking')
+    } finally {
+      setApproving(false)
     }
-    await fetchContract()
-    setApproving(false)
   }
 
   async function openPaymentModal() {
@@ -126,54 +145,34 @@ function PageContent() {
 
     setPaymentLoading(true)
     try {
-      const amount = parseFloat(paymentForm.amount)
-
-      const { data: payment, error: paymentError } = await supabase.from('payments').insert([{
+      // ONE server-side transaction: the payment, its ledger posting and the
+      // invoice settlement. The browser used to insert the payment, update the
+      // invoice and then post the journal in a try/catch that swallowed the
+      // failure - so a receipt could be recorded without its accounting entry
+      // and the page still reported success. That defect is closed here: the
+      // server either commits all three or refuses, and a refusal is shown.
+      const result = await submitReceipt({
         receipt_number: paymentForm.receipt_number,
         customer_id: contract?.customer_id,
         invoice_id: invoice?.id || null,
         rental_contract_id: id,
-        amount: amount,
+        amount: parseFloat(paymentForm.amount),
         payment_method: paymentForm.payment_method,
         payment_date: paymentForm.payment_date,
         payment_type: 'receipt',
-        notes: paymentForm.notes,
-        status: 'completed',
-      }]).select().single()
+        notes: paymentForm.notes || null,
+      })
 
-      if (paymentError) throw paymentError
-
-      if (invoice) {
-        const newPaid = (invoice.paid_amount || 0) + amount
-        const newStatus = newPaid >= invoice.total_amount ? 'paid' : 'pending'
-        await supabase.from('invoices').update({
-          paid_amount: newPaid,
-          status: newStatus,
-        }).eq('id', invoice.id)
-      }
-
-      // Collecting a receipt settles the receivable (Dr Cash/Bank, Cr AR). It
-      // must never credit revenue again - revenue was recognised when the
-      // invoice was issued (Exec 31, Item 10).
-      try {
-        const journalNumber = await nextDocumentNumber(supabase, 'journal_entry', 'JV')
-        await postCustomerReceipt(supabase as never, {
-          journalNumber,
-          receiptNumber: paymentForm.receipt_number,
-          amount,
-          paymentDate: paymentForm.payment_date,
-          paymentMethod: paymentForm.payment_method,
-          description: isRTL
-            ? 'قبض دفعة - ' + paymentForm.receipt_number + ' - عقد ' + contract?.contract_number
-            : 'Payment received - ' + paymentForm.receipt_number + ' - Contract ' + contract?.contract_number,
-        })
-      } catch (postErr: any) {
-        console.error('Receipt GL posting failed:', postErr)
-        alert(isRTL ? 'فشل ترحيل سند القبض: ' + (postErr?.message || '') : 'Receipt GL posting failed: ' + (postErr?.message || ''))
-      }
-
-      if (invoice && (invoice.paid_amount || 0) + amount >= invoice.total_amount) {
+      // A receipt that settles the invoice completes the contract and releases
+      // the vehicle. This is a status transition, not a financial write.
+      if (result.invoice_status === 'paid') {
         await supabase.from('rental_contracts').update({ status: 'completed' }).eq('id', id)
+        if (contract?.car_id) {
+          const releaseStatus = carStatusForContractChange('completed')
+          if (releaseStatus) {
+            await supabase.from('cars').update({ status: releaseStatus }).eq('id', contract.car_id)
+          }
+        }
       }
 
       setPaymentModalOpen(false)
@@ -185,9 +184,11 @@ function PageContent() {
         receipt_number: '',
       })
       await fetchContract()
+      notifyDataChanged()
       alert(isRTL ? 'تم تسجيل الدفعة بنجاح' : 'Payment recorded successfully')
     } catch (err: any) {
       console.error('Payment error:', err)
+      // The server refused: nothing was written, so say exactly that.
       alert(err.message || (isRTL ? 'خطأ في تسجيل الدفعة' : 'Error recording payment'))
     } finally {
       setPaymentLoading(false)

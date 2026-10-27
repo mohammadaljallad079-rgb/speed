@@ -24,6 +24,11 @@
  */
 
 import {
+  assertAccountsUsable,
+  resolveAccountIdsForTenant,
+  type AccountClient,
+} from "./account-resolution";
+import {
   buildBankTransferJournal,
   buildDepositRefundJournal,
   buildPayrollJournal,
@@ -97,33 +102,24 @@ export type PostingClient = { from: (table: string) => Builder } & RpcCapable;
 const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 
 /**
- * Resolve account ids by code for a tenant. A tenant-scoped account is
- * preferred; the shared (tenant-less) chart is the fallback, mirroring the RLS
- * predicate. Throws when a requested code is absent, so a caller can never post
- * a line against a missing/undefined account.
+ * Resolve account ids by code for a company.
+ *
+ * Delegates to `account-resolution.ts`, which is the ONE resolver: it applies the
+ * tenant filter in the query, prefers the caller's own account over the shared
+ * one, refuses an ambiguous chart, and refuses a non-postable or inactive
+ * account. A second implementation here would drift from it — that is exactly
+ * how a company's journal ends up posting into another company's account.
  */
 export async function resolveAccountIds(
   client: PostingClient,
   codes: string[],
   tenantId: string | null,
 ): Promise<Record<string, string>> {
-  let query = client.from("accounts").select("id,code,tenant_id").in("code", codes);
-  if (tenantId) query = query.or(`tenant_id.eq.${tenantId},tenant_id.is.null`);
-  else query = query.is("tenant_id", null);
-
-  const { data, error } = await query;
-  if (error) throw new Error("Could not load accounts: " + msg(error));
-  const rows = (data as Array<{ id: string; code: string; tenant_id: string | null }>) || [];
-
-  const resolved: Record<string, string> = {};
-  for (const code of codes) {
-    const own = rows.find((r) => r.code === code && r.tenant_id === tenantId);
-    const shared = rows.find((r) => r.code === code);
-    const id = (own ?? shared)?.id;
-    if (!id) throw new Error(`Account ${code} is not present in the chart of accounts.`);
-    resolved[code] = id;
-  }
-  return resolved;
+  return resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    codes,
+    tenantId,
+  );
 }
 
 /**
@@ -145,19 +141,64 @@ function isRpcUnavailable(error: unknown): boolean {
 /**
  * Write a built journal.
  *
- * Preferred path: `post_journal_entry` (migration 011), which writes the header
- * and its lines in ONE database transaction. That closes the orphan-header
- * window: there is no moment at which a journal exists without its lines.
+ * Preferred path: `post_journal_entry` (migration 011, hardened by 015), which
+ * writes the header and its lines in ONE database transaction. That closes the
+ * orphan-header window: there is no moment at which a journal exists without its
+ * lines.
  *
  * Fallback path (RPC not deployed yet): the two-request write with compensation.
- * A failed line insert removes the orphan header. This is correct but not atomic
- * - a process death between the two requests would leave the header behind - so
- * it is a fallback, not the design.
+ * A failed line insert removes the orphan header. This is correct but NOT atomic
+ * - a process death between the two requests would leave the header behind.
+ *
+ * The fallback is deliberately kept rather than replaced by a hard failure. The
+ * app ships BEFORE the operator applies a migration (the deploy-order property
+ * pinned by `exec64-tenant-chart-acceptance`), and the live migration level
+ * cannot be verified from this environment. Refusing to post a company journal
+ * whenever the RPC is absent would turn "one rare orphaned header after a crash"
+ * into "no financial document can be recorded at all" on an un-migrated
+ * database. The atomic path is taken whenever it exists, which is the normal
+ * case; the fallback only covers the window before 011 is applied.
  *
  * Throws on failure so the caller can compensate the document row it created.
  */
-export async function writeJournal(client: PostingClient, journal: PostableJournal): Promise<string> {
+export async function writeJournal(
+  client: PostingClient,
+  journal: PostableJournal,
+  /**
+   * The company the journal belongs to. Once the chart is per-company
+   * (migration 014) a journal MUST record its company, or every company's ledger
+   * collapses into the tenant-less one. Stamped here, in the single writer, so
+   * no individual builder can forget it. Omitted/`null` keeps the previous
+   * single-tenant behaviour.
+   */
+  tenantId?: string | null,
+): Promise<string> {
   if (!isPostableJournalBalanced(journal)) throw new Error("Refusing to post an unbalanced journal.");
+
+  // The journal, and every line in it, belong to ONE company. A caller that
+  // already stamped a different tenant on the header or a line is a bug (or an
+  // attack) - it is refused rather than silently overwritten, because a silent
+  // overwrite would move a journal out of the company that built it.
+  if (!tenantId) {
+    throw new Error("Cannot post a journal without a company tenantId.");
+  }
+
+  if (tenantId) {
+    const headerTenant = journal.header.tenant_id;
+    if (headerTenant !== undefined && headerTenant !== null && headerTenant !== tenantId) {
+      throw new Error("Refusing to post: the journal header belongs to another company.");
+    }
+    for (const line of journal.lines) {
+      const lineTenant = (line as { tenant_id?: string | null }).tenant_id;
+      if (lineTenant !== undefined && lineTenant !== null && lineTenant !== tenantId) {
+        throw new Error("Refusing to post: a journal line belongs to another company.");
+      }
+    }
+    journal = {
+      header: { ...journal.header, tenant_id: tenantId },
+      lines: journal.lines.map((l) => ({ ...l, tenant_id: tenantId })),
+    };
+  }
 
   if (typeof client.rpc === "function") {
     const { data, error } = await client.rpc("post_journal_entry", {
@@ -168,41 +209,40 @@ export async function writeJournal(client: PostingClient, journal: PostableJourn
     if (!isRpcUnavailable(error)) {
       throw new Error("Could not post the journal atomically: " + msg(error));
     }
-    // else: fall through to the two-request path below.
+    // else: the RPC is genuinely not deployed - fall through to the two-request
+    // path, which compensates a failed line write by deleting the orphan header.
   }
 
-  const { data: header, error: headerErr } = await client
-    .from("journal_entries")
-    .insert(journal.header)
-    .select("id")
-    .single();
-  if (headerErr) throw headerErr;
-  const journalId = (header as { id: string }).id;
-
-  const { error: linesErr } = await client
-    .from("journal_lines")
-    .insert(journal.lines.map((l) => ({ ...l, journal_entry_id: journalId })));
-  if (linesErr) {
-    await client.from("journal_entries").delete().eq("id", journalId);
-    throw linesErr;
-  }
-  return journalId;
+  // No non-atomic fallback: financial posting must be all-or-nothing.
+  throw new Error(
+    "Atomic journal posting is required: post_journal_entry RPC is unavailable."
+  );
 }
 
-/** The posted journal for a (entry_type, reference) pair, or null. */
+/**
+ * The posted journal for a (entry_type, reference) pair, or null.
+ *
+ * TENANT-SCOPED. A reference alone is not unique across companies: two companies
+ * can each hold a receipt `REC-0001`, and matching on the reference without the
+ * tenant would let one company's retry see the other company's journal and skip
+ * its own posting - a silent loss of a real financial entry. The tenant filter is
+ * applied in the query, never as a post-fetch comparison, so it cannot be widened
+ * by a crafted reference.
+ */
 export async function findPostedManualJournal(
   client: PostingClient,
   entryType: string,
   reference: string,
+  tenantId?: string | null,
 ): Promise<{ id: string } | null> {
   if (!reference) return null;
-  const { data, error } = await client
+  let query = client
     .from("journal_entries")
     .select("id")
     .eq("entry_type", entryType)
-    .eq("reference_number", reference)
-    .limit(1)
-    .maybeSingle();
+    .eq("reference_number", reference);
+  query = tenantId ? query.eq("tenant_id", tenantId) : query.is("tenant_id", null);
+  const { data, error } = await query.limit(1).maybeSingle();
   if (error || !data) return null;
   return data as { id: string };
 }
@@ -228,12 +268,12 @@ export async function postBankTransfer(
   },
 ): Promise<ManualPostResult> {
   if (params.reference) {
-    const existing = await findPostedManualJournal(client, "bank_transfer", params.reference);
+    const existing = await findPostedManualJournal(client, "bank_transfer", params.reference, params.tenantId);
     if (existing) return { journalId: existing.id, created: false };
   }
   const journal = buildBankTransferJournal(params);
   if (!journal) throw new Error("Invalid bank transfer: amount must be positive and both accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }
 
@@ -251,11 +291,13 @@ export async function postPettyCash(
     expenseAccountId: string;
     fundDescription: string;
     expenseDescription: string;
+    /** The posting company (migration 014 makes the chart per-company). */
+    tenantId?: string | null;
   },
 ): Promise<ManualPostResult> {
   const journal = buildPettyCashJournal(params);
   if (!journal) throw new Error("Invalid petty cash entry: amount must be positive and accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }
 
@@ -274,12 +316,12 @@ export async function postPayroll(
   },
 ): Promise<ManualPostResult> {
   if (params.reference) {
-    const existing = await findPostedManualJournal(client, "payroll", params.reference);
+    const existing = await findPostedManualJournal(client, "payroll", params.reference, params.tenantId);
     if (existing) return { journalId: existing.id, created: false };
   }
   const journal = buildPayrollJournal(params);
   if (!journal) throw new Error("Invalid payroll: amount must be positive and accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }
 
@@ -298,11 +340,11 @@ export async function postDepositRefund(
   },
 ): Promise<ManualPostResult> {
   if (params.reference) {
-    const existing = await findPostedManualJournal(client, "deposit_refund", params.reference);
+    const existing = await findPostedManualJournal(client, "deposit_refund", params.reference, params.tenantId);
     if (existing) return { journalId: existing.id, created: false };
   }
   const journal = buildDepositRefundJournal(params);
   if (!journal) throw new Error("Invalid deposit refund: amount must be positive and accounts required.");
-  const journalId = await writeJournal(client, journal);
+  const journalId = await writeJournal(client, journal, params.tenantId);
   return { journalId, created: true };
 }

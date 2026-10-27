@@ -106,6 +106,13 @@ const CAR_TRANSMISSION: FieldOption[] = [
   { value: "manual", ar: "عادي", en: "Manual" },
 ];
 
+const EMPLOYEE_STATUS: FieldOption[] = [
+  { value: "active", ar: "نشط", en: "Active" },
+  { value: "inactive", ar: "غير نشط", en: "Inactive" },
+  { value: "on_leave", ar: "في إجازة", en: "On leave" },
+  { value: "terminated", ar: "منتهي الخدمة", en: "Terminated" },
+];
+
 /**
  * The canonical schemas. Each mirrors the fields its module's own create form
  * uses, so the modal is the same form, not a cut-down copy.
@@ -204,6 +211,21 @@ export const RECORD_SCHEMAS: Record<RecordKind, RecordSchema> = {
       { name: "location", type: "text", ar: "الموقع", en: "Location" },
       { name: "daily_rate", type: "number", ar: "السعر اليومي", en: "Daily rate", min: 0 },
       { name: "monthly_rate", type: "number", ar: "السعر الشهري", en: "Monthly rate", min: 0 },
+    ],
+  },
+  employee: {
+    kind: "employee",
+    table: "employees",
+    module: "hr",
+    primaryFields: ["full_name", "job_title", "phone"],
+    fields: [
+      { name: "full_name", type: "text", ar: "الاسم الكامل", en: "Full name", required: true },
+      { name: "job_title", type: "text", ar: "المسمى الوظيفي", en: "Job title" },
+      { name: "position", type: "text", ar: "الوظيفة", en: "Position" },
+      { name: "phone", type: "tel", ar: "الهاتف", en: "Phone" },
+      { name: "salary", type: "number", ar: "الراتب", en: "Salary", min: 0 },
+      { name: "basic_salary", type: "number", ar: "الراتب الأساسي", en: "Basic salary", min: 0 },
+      { name: "status", type: "select", ar: "الحالة", en: "Status", options: EMPLOYEE_STATUS },
     ],
   },
 };

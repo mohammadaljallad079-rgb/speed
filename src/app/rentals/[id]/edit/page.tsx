@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useLanguage } from "@/lib/LanguageContext"
 import { ArrowLeft, Save, Loader2, User, Car, Calendar, DollarSign, MapPin, FileText, CreditCard } from "lucide-react"
 import Link from "next/link"
+import RecordSelect from "@/components/records/RecordSelect"
 
 function EditContent() {
   const { isRTL } = useLanguage()
@@ -21,9 +22,6 @@ function EditContent() {
 
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [customers, setCustomers] = useState<any[]>([])
-  const [cars, setCars] = useState<any[]>([])
-  const [accounts, setAccounts] = useState<any[]>([])
   const [taxes, setTaxes] = useState<any[]>([])
 
   const [formData, setFormData] = useState({
@@ -64,11 +62,11 @@ function EditContent() {
   async function fetchData() {
     setLoading(true)
     try {
-      const [{ data: contractData }, { data: customersData }, { data: carsData }, { data: accountsData }, { data: taxesData }] = await Promise.all([
+      // The customer and vehicle lists now come from RecordSelect, which loads
+      // them from their own modules; keeping a second copy here is what let the
+      // edit form drift from the create form.
+      const [{ data: contractData }, { data: taxesData }] = await Promise.all([
         supabase.from("rental_contracts").select("*, customers(*), cars(*)").eq("id", contractId).single(),
-        supabase.from("customers").select("id, full_name, email, phone, national_id, license_number").order("full_name"),
-        supabase.from("cars").select("id, make, model, year, plate_number, daily_rate, mileage, color").order("make"),
-        supabase.from("accounts").select("code, name, name_ar, name_en").eq("is_active", true).order("code"),
         supabase.from("tax_settings").select("id, name_ar, name_en, rate, type").eq("is_active", true).order("name_ar")
       ])
 
@@ -104,9 +102,6 @@ function EditContent() {
           notes: contractData.notes || ""
         })
       }
-      if (customersData) setCustomers(customersData)
-      if (carsData) setCars(carsData)
-      if (accountsData) setAccounts(accountsData)
       if (taxesData) setTaxes(taxesData)
     } catch (error) {
       console.error("Error:", error)
@@ -230,18 +225,27 @@ function EditContent() {
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>{isRTL ? "العميل" : "Customer"}</Label>
-                <select value={formData.customer_id} onChange={(e) => handleChange("customer_id", e.target.value)} className="w-full p-2 border rounded-lg bg-white dark:bg-slate-800">
-                  <option value="">{isRTL ? "اختر العميل" : "Select Customer"}</option>
-                  {customers.map((c: any) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-                </select>
+                {/* Both references go through the shared picker so this edit
+                    form matches the create form: searchable, and a missing
+                    customer/vehicle can be created without leaving the page. */}
+                <RecordSelect
+                  kind="customer"
+                  label={isRTL ? "العميل" : "Customer"}
+                  value={formData.customer_id}
+                  createMode="inline"
+                  placeholder={isRTL ? "اختر العميل" : "Select Customer"}
+                  onChange={(id) => handleChange("customer_id", id)}
+                />
               </div>
               <div className="space-y-2">
-                <Label>{isRTL ? "السيارة" : "Car"}</Label>
-                <select value={formData.car_id} onChange={(e) => handleChange("car_id", e.target.value)} className="w-full p-2 border rounded-lg bg-white dark:bg-slate-800">
-                  <option value="">{isRTL ? "اختر السيارة" : "Select Car"}</option>
-                  {cars.map((c: any) => <option key={c.id} value={c.id}>{c.make} {c.model} ({c.plate_number})</option>)}
-                </select>
+                <RecordSelect
+                  kind="car"
+                  label={isRTL ? "السيارة" : "Car"}
+                  value={formData.car_id}
+                  createMode="inline"
+                  placeholder={isRTL ? "اختر السيارة" : "Select Car"}
+                  onChange={(id) => handleChange("car_id", id)}
+                />
               </div>
             </CardContent>
           </Card>

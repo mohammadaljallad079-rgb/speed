@@ -6,6 +6,7 @@ import {
   VEHICLE_ACCOUNT_CODES,
 } from "@/lib/accounting/vehicle-posting";
 import { writeJournal } from "@/lib/accounting/manual-posting";
+import { resolveOptionalAccountIds } from "@/lib/accounting/account-resolution";
 import {
   assertDateInOpenFinancialYear,
   assertReferences,
@@ -162,13 +163,14 @@ export async function POST(request: Request) {
 
         const purchasePrice = num(payload.purchase_price);
         const accountCodes = [VEHICLE_ACCOUNT_CODES.fleet, VEHICLE_ACCOUNT_CODES.bank, VEHICLE_ACCOUNT_CODES.bankLoan];
-        let accountQuery = supabaseAdmin.from("accounts").select("id,code,tenant_id").in("code", accountCodes);
-        accountQuery = context.tenantId
-          ? accountQuery.or(`tenant_id.eq.${context.tenantId},tenant_id.is.null`)
-          : accountQuery.is("tenant_id", null);
-        const { data: accountRows } = await accountQuery;
-        const rows = (accountRows as Array<{ id: string; code: string }>) || [];
-        const byCode = (code: string) => rows.find((r) => r.code === code)?.id as string;
+        // The ONE resolver (see purchases): a code-only `find` can pick another
+        // company's account once the chart is per-company.
+        const resolved = await resolveOptionalAccountIds(
+          supabaseAdmin as never,
+          accountCodes,
+          context.tenantId,
+        );
+        const byCode = (code: string) => resolved[code] as string;
 
         const journalNumber = await nextDocumentNumber(supabaseAdmin as never, "journal_entry", "JV");
         const journal = buildVehiclePurchaseJournal({
@@ -184,7 +186,7 @@ export async function POST(request: Request) {
           loanAccountId: byCode(VEHICLE_ACCOUNT_CODES.bankLoan),
         });
         if (journal) {
-          createdJournalId = await writeJournal(supabaseAdmin as never, journal);
+          createdJournalId = await writeJournal(supabaseAdmin as never, journal, context.tenantId);
         }
       } catch (loanErr) {
         // Financing is best-effort: the car is already created and must not be

@@ -290,6 +290,24 @@ describe("inline creation is wired for every record kind", () => {
     }
   });
 
+  test("an inline-created customer is used for the balance, not looked up in a stale list", () => {
+    // The picker hands back the created row. Looking the customer up in the
+    // list fetched at mount cannot see a record created a moment ago, so the
+    // balance panel and the open-invoice list stayed empty for a new customer
+    // even though the form held a valid id.
+    const source = read("src/app/payments/new/page.tsx");
+    assert.match(source, /onChange=\{\(id, row\) => handleCustomerChange\(id, row\)\}/);
+    assert.match(source, /known \?\? customers\.find/);
+  });
+
+  test("the supplier-payments list does not fetch suppliers it never displays", () => {
+    // Names come from the `suppliers(name)` join on each payment row; the extra
+    // full-table read and its state were dead.
+    const source = read("src/app/supplier-payments/page.tsx");
+    assert.doesNotMatch(source, /from\(['"]suppliers['"]\)\.select/);
+    assert.doesNotMatch(source, /\bsetSuppliers\b/);
+  });
+
   test("the vehicle picker creates inline in rentals and purchases", () => {
     for (const page of ["src/app/rentals/new/page.tsx", "src/app/purchases/new/page.tsx"]) {
       const source = read(page);
@@ -318,6 +336,82 @@ describe("inline creation is wired for every record kind", () => {
       );
     }
   });
+
+  test("the vehicle expense rows pick their account from the shared chart picker", () => {
+    // `car_expenses[].account_code` was previously a raw <select> over the
+    // accounts table. It is now the same database-backed picker used everywhere
+    // else, so the row carries the account id and the code.
+    for (const page of ["src/app/cars/new/page.tsx", "src/app/rentals/new/page.tsx"]) {
+      const source = read(page);
+      assert.match(
+        source,
+        /kind="account"[\s\S]{0,400}?setExpenseAccount/,
+        `${page} should select the expense account through RecordSelect`,
+      );
+      assert.doesNotMatch(source, /accounts\.map\(/, `${page} still maps accounts into <option> elements`);
+    }
+  });
+
+  test("the bank transfer selects its cash/bank accounts through the shared picker", () => {
+    const source = read("src/app/accounting/bank-transfer/page.tsx");
+    assert.match(source, /import RecordSelect from '@\/components\/records\/RecordSelect'/);
+    assert.match(source, /kind="account"[\s\S]{0,400}?createMode="inline"/);
+    // Both legs of the transfer are DB-backed selectors, not raw <select>s.
+    assert.equal((source.match(/<RecordSelect/g) ?? []).length, 2);
+    assert.doesNotMatch(source, /accounts\.map\(/);
+  });
+});
+
+describe("read pages pick their subject through the shared record picker", () => {
+  test("supplier statements selects the supplier through RecordSelect", () => {
+    // A statement page is a read view, but its subject is still a record
+    // reference: mapping `suppliers` into <option> meant a missing supplier
+    // could only be created by leaving the page. It now uses the shared picker
+    // with inline create, like every creation form.
+    const source = read("src/app/supplier-statements/page.tsx");
+    assert.match(source, /import RecordSelect from "@\/components\/records\/RecordSelect"/);
+    assert.match(source, /kind="supplier"[\s\S]{0,400}?createMode="inline"/);
+    assert.doesNotMatch(source, /suppliers\.map\(/);
+    // The page must not keep a second supplier query of its own; the picker owns
+    // the list, and a duplicate read is what let the two drift apart.
+    assert.doesNotMatch(source, /from\(['"]suppliers['"]\)/);
+  });
+
+  test("the rental edit form picks its customer and vehicle through RecordSelect", () => {
+    // The create form and the edit form must agree: editing a contract whose
+    // customer or vehicle is missing from the list used to leave the control
+    // blank while the form still held the old id.
+    const source = read("src/app/rentals/[id]/edit/page.tsx");
+    assert.match(source, /import RecordSelect from "@\/components\/records\/RecordSelect"/);
+    assert.match(source, /kind="customer"[\s\S]{0,300}?createMode="inline"/);
+    assert.match(source, /kind="car"[\s\S]{0,300}?createMode="inline"/);
+    assert.doesNotMatch(source, /customers\.map\(/);
+    assert.doesNotMatch(source, /cars\.map\(/);
+    // No second customer/car query of its own.
+    assert.doesNotMatch(source, /from\(['"]customers['"]\)/);
+    assert.doesNotMatch(source, /from\(['"]cars['"]\)/);
+  });
+
+  test("purchase orders pick the vehicle through RecordSelect, not a raw <option> map", () => {
+    // The supplier beside it was already a picker; leaving the vehicle as a
+    // bespoke <select> meant one form carried two different interaction
+    // patterns for the same kind of field.
+    const source = read("src/app/purchase-orders/page.tsx");
+    assert.match(source, /kind="car"[\s\S]{0,400}?createMode="inline"/);
+    assert.doesNotMatch(source, /vehicles\.map\(/);
+    assert.doesNotMatch(source, /from\(['"]cars['"]\)/);
+  });
+
+  test("requisitions pick the vehicle and the convert-to-PO supplier through RecordSelect", () => {
+    const source = read("src/app/purchase-orders/requisitions/page.tsx");
+    assert.match(source, /import RecordSelect from "@\/components\/records\/RecordSelect"/);
+    assert.match(source, /kind="car"[\s\S]{0,400}?createMode="inline"/);
+    assert.match(source, /kind="supplier"[\s\S]{0,400}?createMode="inline"/);
+    assert.doesNotMatch(source, /vehicles\.map\(/);
+    assert.doesNotMatch(source, /suppliers\.map\(/);
+    assert.doesNotMatch(source, /from\(['"]cars['"]\)/);
+    assert.doesNotMatch(source, /from\(['"]suppliers['"]\)/);
+  });
 });
 
 describe("chart of accounts selector", () => {
@@ -338,5 +432,34 @@ describe("chart of accounts selector", () => {
     assert.equal(values.type, "asset");
     assert.equal(values.is_active, true);
     assert.equal(values.parent_id, "");
+  });
+});
+
+describe("selected value stays visible when it is not in the list", () => {
+  const source = read("src/components/records/RecordSelect.tsx");
+
+  test("the control resolves the selected row by id, not only from the loaded list", () => {
+    // A record created inline for a sibling field, or one the `filter` excludes,
+    // is not in `rows`. Looking it up only in `rows` leaves the control showing
+    // the placeholder while the form holds an id - it looks unset and the user
+    // re-picks or saves a value they cannot see.
+    assert.match(source, /maybeSingle\(\)/, "RecordSelect must resolve the value by id");
+    assert.match(source, /setSelectedRow/, "the resolved row must drive the label");
+  });
+
+  test("the visible label is the resolved row, never a lookup confined to the list", () => {
+    assert.doesNotMatch(
+      source,
+      /const selected = useMemo\(\(\) => rows\.find/,
+      "the label must not be derived from the filtered list alone",
+    );
+  });
+
+  test("each quick-create field's label is bound to its control", () => {
+    // Without htmlFor/id the field has no accessible name, and the modal cannot
+    // be driven (or QA-tested) by its labels.
+    const modal = read("src/components/records/QuickCreateModal.tsx");
+    assert.match(modal, /<Label htmlFor=\{controlId\}/);
+    assert.match(modal, /id=\{controlId\}/);
   });
 });

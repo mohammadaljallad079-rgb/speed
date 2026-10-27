@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ArrowLeft, Save, Loader2, Car, User, ArrowRightLeft, CheckCircle2 } from 'lucide-react'
+import { BLOCKING_STATUSES, isCarRentable } from '@/lib/rental/booking-service'
 
 interface Car {
   id: string
@@ -50,11 +51,24 @@ function ChangeCarContent() {
 
       const { data: carsData } = await supabase
         .from('cars')
-        .select('id, make, model, plate_number, daily_rate, status')
-        .eq('status', 'available')
+        .select('id, make, model, plate_number, daily_rate, status, category')
         .order('plate_number')
 
-      if (carsData) setCars(carsData as Car[])
+      // Availability is decided by the open contracts, not the `cars.status`
+      // flag (Exec 57): the flag is only ever set, never reset, so filtering on
+      // it hides cars that are genuinely free.
+      const { data: activeContracts } = await supabase
+        .from('rental_contracts')
+        .select('car_id')
+        .in('status', [...BLOCKING_STATUSES])
+
+      if (carsData) {
+        const busy = new Set((activeContracts ?? []).map((c: any) => c.car_id))
+        const rentable = (carsData as any[]).filter(
+          (c) => isCarRentable(c) && !busy.has(c.id) && c.id !== contractData?.car_id,
+        )
+        setCars(rentable as Car[])
+      }
     } catch (error) {
       console.error('Error fetching data:', error)
     }
@@ -77,13 +91,12 @@ function ChangeCarContent() {
 
       if (error) throw error
 
-      // Update old car status to available
+      // Update the old car back to available, and mark the new one rented.
+      // These are display flags only: availability is decided by the open
+      // contracts (Exec 57), so a stale flag can no longer hide a car.
       if (contract?.car_id) {
         await supabase.from('cars').update({ status: 'available' }).eq('id', contract.car_id)
       }
-
-      // Update new car status to rented
-      await supabase.from('cars').update({ status: 'rented' }).eq('id', selectedCar)
 
       alert(isRTL ? 'تم تبديل السيارة بنجاح' : 'Vehicle changed successfully')
       router.push('/rentals')

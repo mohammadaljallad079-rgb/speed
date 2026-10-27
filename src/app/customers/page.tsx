@@ -109,12 +109,20 @@ function CustomersPageContent() {
     return matchesSearch && matchesStatus && matchesPolice
   })
 
+  // The customer is written server-side: `customers` is tenant-owned, and a
+  // browser insert never set `tenant_id`, so every customer created here was an
+  // orphan visible to the single-tenant install. The route takes the tenant from
+  // the session and scopes the update by it, so a foreign id is a 404.
   async function handleSave() {
     try {
-      if (editingCustomer) {
-        await supabase.from('customers').update(formData).eq('id', editingCustomer.id)
-      } else {
-        await supabase.from('customers').insert([formData])
+      const res = await fetch(editingCustomer ? `/api/customers/${editingCustomer.id}` : '/api/customers', {
+        method: editingCustomer ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formData),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Request failed (${res.status})`)
       }
       setDialogOpen(false)
       setEditingCustomer(null)
@@ -122,17 +130,23 @@ function CustomersPageContent() {
       fetchCustomers()
     } catch (error) {
       console.error('Error saving customer:', error)
+      alert(error instanceof Error ? error.message : 'Error saving customer')
     }
   }
 
   async function handleDelete(id: string) {
     try {
-      await supabase.from('customers').delete().eq('id', id)
+      const res = await fetch(`/api/customers/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.error || `Request failed (${res.status})`)
+      }
       setDeleteDialogOpen(false)
       setCustomerToDelete(null)
       fetchCustomers()
     } catch (error) {
       console.error('Error deleting customer:', error)
+      alert(error instanceof Error ? error.message : 'Error deleting customer')
     }
   }
 

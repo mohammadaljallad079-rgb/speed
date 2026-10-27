@@ -4,6 +4,7 @@ export const dynamic = "force-dynamic"
 import { Suspense, useEffect, useState } from "react"
 import { useRouter, useParams } from "next/navigation"
 import { supabase } from "@/lib/supabase"
+import { submitReceipt } from "@/lib/sales/receipt-client"
 import DashboardLayout from "@/components/DashboardLayout"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,6 +23,7 @@ function PaymentContent() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [contract, setContract] = useState<any>(null)
+  const [invoice, setInvoice] = useState<any>(null)
   const [paymentData, setPaymentData] = useState({
     amount: "",
     payment_date: new Date().toISOString().split('T')[0],
@@ -43,6 +45,16 @@ function PaymentContent() {
 
       if (error) throw error
       setContract(data)
+
+      // The invoice this contract was billed as. Its id is what ties the
+      // receipt to a document the ledger can settle.
+      const { data: inv } = await supabase
+        .from("invoices")
+        .select("id, invoice_number, total_amount, paid_amount, status")
+        .eq("rental_contract_id", contractId)
+        .order("created_at", { ascending: false })
+        .maybeSingle()
+      setInvoice(inv)
     } catch (error) {
       console.error("Error fetching contract:", error)
     } finally {
@@ -52,30 +64,37 @@ function PaymentContent() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!contract) return
     setSaving(true)
 
     try {
-      const { error } = await supabase.from("payments").insert({
-        contract_id: contractId,
+      // ONE server-side transaction: payment + ledger posting + settlement.
+      // This page used to insert the payment row alone, so the receipt existed
+      // with NO accounting entry - the cash was never debited and the
+      // receivable never settled. The server takes the company and the
+      // permissions from the session; the browser sends neither.
+      const result = await submitReceipt({
+        customer_id: String(contract.customer_id ?? ""),
+        invoice_id: invoice?.id ?? null,
+        rental_contract_id: contractId,
         amount: parseFloat(paymentData.amount),
-        payment_date: paymentData.payment_date,
         payment_method: paymentData.payment_method,
-        notes: paymentData.notes,
-        created_at: new Date().toISOString()
+        payment_date: paymentData.payment_date,
+        payment_type: "receipt",
+        notes: paymentData.notes || null,
       })
 
-      if (error) throw error
-
-      const totalPaid = (contract.payments?.reduce((sum: number, p: any) => sum + p.amount, 0) || 0) + parseFloat(paymentData.amount)
-      if (totalPaid >= contract.total_amount) {
-        await supabase.from("rental_contracts").update({ status: "paid" }).eq("id", contractId)
+      // A status transition, not a financial write: settling the invoice
+      // completes the contract.
+      if (result.invoice_status === "paid") {
+        await supabase.from("rental_contracts").update({ status: "completed" }).eq("id", contractId)
       }
 
       router.push(`/rentals/${contractId}`)
       router.refresh()
     } catch (error) {
       console.error("Error saving payment:", error)
-      alert("Error saving payment")
+      alert(error instanceof Error ? error.message : "Error saving payment")
     } finally {
       setSaving(false)
     }

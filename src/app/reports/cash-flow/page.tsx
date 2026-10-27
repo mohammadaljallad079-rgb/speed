@@ -28,7 +28,7 @@ import {
   ArrowRightLeft
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
-import ExcelJS from 'exceljs'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 
 interface CFRow {
   id: string
@@ -201,102 +201,32 @@ useEffect(() => {
 
   const todayStr = new Date().toLocaleDateString(isRTL ? 'ar-BH' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' })
 
+  /** Branded export through the shared engine (Exec 60, Section 6). */
   async function exportExcel() {
-    const wb = new ExcelJS.Workbook()
-    const ws = wb.addWorksheet('Cash Flow')
-    ws.columns = [{ width: 55 }, { width: 22 }]
-
-    const navy = 'FF0F172A'
-    const white = 'FFFFFFFF'
-
-    function styleRow(row: ExcelJS.Row, opts: {
-      bg?: string, color?: string, bold?: boolean, size?: number,
-      align?: 'left' | 'right' | 'center', border?: boolean, numFmt?: string
-    }) {
-      row.eachCell({ includeEmpty: true }, (cell) => {
-        cell.font = { bold: !!opts.bold, size: opts.size || 11, name: 'Arial', color: { argb: opts.color || 'FF1E293B' } }
-        if (opts.bg) cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.bg } }
-        cell.alignment = { horizontal: opts.align || 'left', vertical: 'middle' }
-        if (opts.numFmt) cell.numFmt = opts.numFmt
-        if (opts.border) {
-          cell.border = {
-            top: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            left: { style: 'thin', color: { argb: 'FFCBD5E1' } },
-            right: { style: 'thin', color: { argb: 'FFCBD5E1' } }
-          }
-        }
-      })
+    const rows: Record<string, unknown>[] = []
+    for (const [label, section] of [['Operating', operating], ['Investing', investing], ['Financing', financing]] as const) {
+      for (const r of section) rows.push({ section: label, name: r.name, amount: r.amount })
     }
-
-    ws.mergeCells('A1:B1')
-    ws.getCell('A1').value = 'STATEMENT OF CASH FLOWS'
-    styleRow(ws.getRow(1), { bg: navy, color: white, bold: true, size: 20, align: 'center' })
-    ws.getRow(1).height = 28
-
-    ws.mergeCells('A2:B2')
-    ws.getCell('A2').value = 'Harbour Consultancies W.L.L'
-    styleRow(ws.getRow(2), { bold: true, size: 13, align: 'center' })
-
-    ws.mergeCells('A3:B3')
-    ws.getCell('A3').value = 'Period: ' + fromDate + '  to  ' + toDate
-    styleRow(ws.getRow(3), { size: 10, color: 'FF64748B', align: 'center' })
-
-    ws.addRow([])
-
-    const headerRow = ws.addRow(['Item', 'Amount (BHD)'])
-    styleRow(headerRow, { bg: 'FF1E40AF', color: white, bold: true, align: 'center', border: true })
-
-    function sectionRow(label: string, bg: string, color: string) {
-      const row = ws.addRow([label, ''])
-      styleRow(row, { bg, color, bold: true, size: 12, border: true })
+    const spec = {
+      titleAr: 'قائمة التدفقات النقدية',
+      titleEn: 'Statement of Cash Flows',
+      periodLabel: `${fromDate} — ${toDate}`,
+      rtl: isRTL,
+      columns: [
+        { key: 'section', labelAr: 'القسم', labelEn: 'Section', type: 'text' as const, width: 18 },
+        { key: 'name', labelAr: 'البند', labelEn: 'Item', type: 'text' as const, width: 50 },
+        { key: 'amount', labelAr: 'المبلغ', labelEn: 'Amount (BHD)', type: 'currency' as const },
+      ],
+      rows,
+      totals: [
+        { labelAr: 'صافي التدفق من الأنشطة التشغيلية', labelEn: 'Net cash from operating activities', columnKey: 'amount', value: totalOperating },
+        { labelAr: 'صافي التدفق من الأنشطة الاستثمارية', labelEn: 'Net cash from investing activities', columnKey: 'amount', value: totalInvesting },
+        { labelAr: 'صافي التدفق من الأنشطة التمويلية', labelEn: 'Net cash from financing activities', columnKey: 'amount', value: totalFinancing },
+        { labelAr: 'صافي الزيادة/(النقص) في النقد', labelEn: 'Net increase/(decrease) in cash', columnKey: 'amount', value: netCashFlow },
+      ],
     }
-    function dataRow(name: string, amount: number, idx: number) {
-      const row = ws.addRow(['    ' + name, amount])
-      const bg = idx % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC'
-      styleRow(row, { bg, border: true })
-      row.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' }
-      row.getCell(2).numFmt = '#,##0.000'
-    }
-    function totalRow(label: string, amount: number, bg: string, color: string) {
-      const row = ws.addRow([label, amount])
-      styleRow(row, { bg, color, bold: true, size: 12, border: true })
-      row.getCell(2).alignment = { horizontal: 'right', vertical: 'middle' }
-      row.getCell(2).numFmt = '#,##0.000'
-    }
-
-    let idx = 0
-
-    sectionRow('CASH FLOW FROM OPERATING ACTIVITIES', 'FFDBEAFE', 'FF1E40AF')
-    operating.forEach(r => { dataRow(r.name, r.amount, idx); idx++ })
-    totalRow('Net Cash from Operating Activities', totalOperating, 'FFBFDBFE', 'FF1E40AF')
-
-    ws.addRow([])
-
-    sectionRow('CASH FLOW FROM INVESTING ACTIVITIES', 'FFFEF3C7', 'FF92400E')
-    investing.forEach(r => { dataRow(r.name, r.amount, idx); idx++ })
-    totalRow('Net Cash from Investing Activities', totalInvesting, 'FFFDE68A', 'FF92400E')
-
-    ws.addRow([])
-
-    sectionRow('CASH FLOW FROM FINANCING ACTIVITIES', 'FFD1FAE5', 'FF065F46')
-    financing.forEach(r => { dataRow(r.name, r.amount, idx); idx++ })
-    totalRow('Net Cash from Financing Activities', totalFinancing, 'FFBBF7D0', 'FF065F46')
-
-    ws.addRow([])
-
-    const netColor = netCashFlow >= 0 ? 'FF065F46' : 'FF991B1B'
-    const netBg = netCashFlow >= 0 ? 'FFBBF7D0' : 'FFFECACA'
-    totalRow('NET INCREASE/(DECREASE) IN CASH', netCashFlow, netBg, netColor)
-
-    const buffer = await wb.xlsx.writeBuffer()
-    const blob = new Blob([buffer], { type: 'application/octet-stream' })
-    const url = window.URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'Cash_Flow_' + fromDate + '_to_' + toDate + '.xlsx'
-    a.click()
-    window.URL.revokeObjectURL(url)
+    const buffer = await buildReportWorkbook(spec)
+    downloadWorkbook(buffer, exportFilename('cash-flow', `${fromDate}_to_${toDate}`))
   }
 
   const renderRow = (r: CFRow, amountColor: string) => (

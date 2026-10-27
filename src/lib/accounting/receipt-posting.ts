@@ -1,4 +1,5 @@
 import { writeJournal as writeSharedJournal, type PostingClient as SharedPostingClient } from "./manual-posting";
+import { resolveAccountIdsForTenant, type AccountClient } from "./account-resolution";
 
 /**
  * Customer-receipt posting (Execution 31).
@@ -47,7 +48,7 @@ export type ReceiptJournal = {
     total_credit: number;
     is_balanced: true;
     status: "posted";
-    entry_type: "customer_receipt";
+    entry_type: "customer_receipt" | "customer_receipt_reversal";
   };
   lines: ReceiptJournalLine[];
 };
@@ -107,6 +108,61 @@ export type ReceiptPostingClient = { from: (table: string) => Builder };
 const msg = (e: unknown) => String((e as { message?: string })?.message ?? e);
 
 /**
+ * The mirror of a receipt: Dr Accounts Receivable / Cr Cash / Bank.
+ *
+ * Reversing a collection puts the money back and restores the receivable. It
+ * must not touch revenue - the sale's revenue stands; only the collection is
+ * undone. Same amount, same accounts, swapped sides, so the pair nets to zero.
+ *
+ * Returns null for a non-positive amount: a zero-value reversal is not a
+ * document, and posting one would add a meaningless pair of lines to the
+ * ledger.
+ */
+export function buildReceiptReversalJournal(params: {
+  journalNumber: string;
+  receiptNumber: string;
+  amount: number;
+  reversalDate: string;
+  description: string;
+  cashAccountId: string;
+  arAccountId: string;
+}): ReceiptJournal | null {
+  const amount = money(params.amount);
+  if (!(amount > 0)) return null;
+  if (!params.cashAccountId || !params.arAccountId) return null;
+
+  return {
+    header: {
+      journal_number: params.journalNumber,
+      entry_date: params.reversalDate,
+      description: params.description,
+      entry_type: "customer_receipt_reversal",
+      reference_number: params.receiptNumber,
+      status: "posted",
+      total_debit: amount,
+      total_credit: amount,
+      is_balanced: true,
+    },
+    lines: [
+      {
+        account_id: params.arAccountId,
+        debit: amount,
+        credit: 0,
+        description: params.description,
+        line_order: 1,
+      },
+      {
+        account_id: params.cashAccountId,
+        debit: 0,
+        credit: amount,
+        description: params.description,
+        line_order: 2,
+      },
+    ],
+  };
+}
+
+/**
  * Post a customer receipt to the ledger. Resolves cash/bank and AR by their
  * fixed codes, writes the header and the two lines. Throws if an account cannot
  * be resolved or a write fails, so the caller can compensate rather than leave
@@ -121,17 +177,22 @@ export async function postCustomerReceipt(
     paymentDate: string;
     paymentMethod: string;
     description: string;
+    /**
+     * The posting company. Required once the chart is per-company (migration
+     * 014): a code-only lookup could otherwise settle another company's cash
+     * account. `null` selects the shared single-tenant chart.
+     */
+    tenantId?: string | null;
   },
 ): Promise<{ journalId: string }> {
   const cashCode = cashBankCodeForMethod(params.paymentMethod);
-  const { data: accounts, error: accErr } = await client
-    .from("accounts")
-    .select("id,code")
-    .in("code", [cashCode, RECEIPT_ACCOUNT_CODES.ar]);
-  if (accErr) throw new Error("Could not load cash/AR accounts: " + msg(accErr));
-  const rows = (accounts as Array<{ id: string; code: string }>) || [];
-  const cashAccountId = rows.find((a) => a.code === cashCode)?.id;
-  const arAccountId = rows.find((a) => a.code === RECEIPT_ACCOUNT_CODES.ar)?.id;
+  const ids = await resolveAccountIdsForTenant(
+    client as unknown as AccountClient,
+    [cashCode, RECEIPT_ACCOUNT_CODES.ar],
+    params.tenantId ?? null,
+  );
+  const cashAccountId = ids[cashCode];
+  const arAccountId = ids[RECEIPT_ACCOUNT_CODES.ar];
 
   const journal = buildReceiptJournal({
     journalNumber: params.journalNumber,
@@ -146,6 +207,6 @@ export async function postCustomerReceipt(
 
   // Shared atomic writer (migration 011). A private header/lines pair here would
   // be a second posting path with its own orphan window.
-  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal);
+  const journalId = await writeSharedJournal(client as unknown as SharedPostingClient, journal, params.tenantId ?? null);
   return { journalId };
 }

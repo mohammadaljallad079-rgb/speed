@@ -162,11 +162,12 @@ function NewBillPageContent() {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المورد' : 'Supplier'} *</label>
                   {/* Searchable picker from the Suppliers module with an inline
                       (+) that reuses the module's own create form. */}
                   <RecordSelect
                     kind="supplier"
+                    label={isRTL ? 'المورد' : 'Supplier'}
+                    required
                     value={form.supplier_id}
                     onChange={(id) => setForm({ ...form, supplier_id: id })}
                     createMode="inline"
@@ -206,9 +207,9 @@ function NewBillPageContent() {
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label className="text-sm text-slate-500 mb-1 block">{isRTL ? 'المركبة' : 'Vehicle'}</label>
                   <RecordSelect
                     kind="car"
+                    label={isRTL ? 'المركبة' : 'Vehicle'}
                     value={form.car_id}
                     onChange={(id) => setForm({ ...form, car_id: id })}
                     createMode="inline"

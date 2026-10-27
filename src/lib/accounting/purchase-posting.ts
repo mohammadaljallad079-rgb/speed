@@ -16,6 +16,8 @@ export const PURCHASE_ACCOUNT_CODES = {
   cash: "11001",
   bank: "11002",
   payable: "21001",
+  /** Input (recoverable) VAT. Seeded by migration 010; may be absent live. */
+  inputVat: "24001",
 } as const;
 
 /** Expense-category -> account code, matching the purchases screen. */
@@ -78,6 +80,14 @@ export function buildPurchaseJournal(params: {
   expenseAccountId: string;
   cashAccountId: string;
   payableAccountId: string;
+  /**
+   * The recoverable VAT included in `grandTotal`. When an input-VAT account was
+   * resolved this is split out to that account instead of being capitalised into
+   * the expense - otherwise the expense account carries tax that belongs on the
+   * VAT return, and the input-VAT claim is lost.
+   */
+  vatAmount?: number;
+  vatAccountId?: string | null;
 }): PurchaseJournal | null {
   const { grandTotal, advancePayment, remainingAmount } = params;
   if (!(grandTotal > 0)) return null;
@@ -86,10 +96,20 @@ export function buildPurchaseJournal(params: {
   if (remainingAmount > 0 && !params.payableAccountId) return null;
   if (!params.journalNumber) return null;
 
+  // Split out input VAT only when an account exists for it AND the remainder
+  // stays positive. A bill with no input-VAT account still posts (the whole
+  // amount goes to the expense), matching how the rest of the chart degrades.
+  const requestedVat = round3(Math.max(params.vatAmount ?? 0, 0));
+  const vat = params.vatAccountId && requestedVat > 0 && requestedVat < grandTotal ? requestedVat : 0;
+  const taxable = round3(grandTotal - vat);
+
   const lines: PurchaseJournalLine[] = [
-    { account_id: params.expenseAccountId, debit: round3(grandTotal), credit: 0, description: "Expense", line_order: 1 },
+    { account_id: params.expenseAccountId, debit: taxable, credit: 0, description: "Expense", line_order: 1 },
   ];
   let order = 2;
+  if (vat > 0) {
+    lines.push({ account_id: params.vatAccountId as string, debit: vat, credit: 0, description: "Input VAT", line_order: order++ });
+  }
   if (advancePayment > 0) {
     lines.push({ account_id: params.cashAccountId, debit: 0, credit: round3(advancePayment), description: "Payment made", line_order: order++ });
   }

@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { writeJournal } from "@/lib/accounting/manual-posting";
+import { AccountResolutionError, assertAccountsUsable } from "@/lib/accounting/account-resolution";
 import {
   assertDateInOpenFinancialYear,
   assertWritableTenant,
@@ -114,17 +116,22 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Journal is not balanced", code: "bad_request" }, { status: 400 });
     }
 
-    // Every account must be visible to the caller (own tenant or shared chart).
+    // Every account must be USABLE by the caller: owned by the caller's company,
+    // or part of the shared (NULL-tenant) chart. The check also refuses an
+    // inactive account and a group heading, which the previous id-only check
+    // accepted - a heading cannot carry a posting. It mirrors migration 015, so
+    // this screen and the database agree on what "usable" means.
     const accountIds = [...new Set(lines.map((l) => l.account_id))];
-    let accountQuery = supabaseAdmin.from("accounts").select("id,tenant_id").in("id", accountIds);
-    accountQuery = context.tenantId
-      ? accountQuery.or(`tenant_id.eq.${context.tenantId},tenant_id.is.null`)
-      : accountQuery.is("tenant_id", null);
-    const { data: accountRows } = await accountQuery;
-    const allowed = new Set(((accountRows as Array<{ id: string }>) || []).map((a) => a.id));
-    const missing = accountIds.filter((id) => !allowed.has(id));
-    if (missing.length) {
-      return NextResponse.json({ error: "One or more accounts are not available to this tenant", code: "invalid_reference" }, { status: 422 });
+    try {
+      await assertAccountsUsable(supabaseAdmin as never, accountIds, context.tenantId);
+    } catch (error) {
+      if (error instanceof AccountResolutionError) {
+        return NextResponse.json(
+          { error: "One or more accounts are not usable by this company: " + error.failures.map((f) => `${f.code} (${f.reason})`).join(", "), code: "invalid_reference" },
+          { status: 422 },
+        );
+      }
+      throw error;
     }
 
     const tenantId = assertWritableTenant(context, (body as { tenant_id?: unknown }).tenant_id);
@@ -146,30 +153,38 @@ export async function POST(request: Request) {
     if (tenantId) header.tenant_id = tenantId;
     if (context.financialYearId) header.financial_year_id = context.financialYearId;
 
-    const { data: saved, error: headerErr } = await supabaseAdmin
-      .from("journal_entries")
-      .insert(header)
-      .select("id")
-      .single();
-    if (headerErr) throw headerErr;
-    createdId = (saved as { id: string }).id;
-
+    // ONE writer. This screen used to insert the header and its lines itself,
+    // which meant it did NOT go through `post_journal_entry`: the header and
+    // lines were two separate HTTP requests (a crash between them leaves an
+    // orphan header) and the atomic path - plus migration 015's account
+    // ownership check inside it - was bypassed entirely. Routing through
+    // `writeJournal` makes this screen use the same atomic, tenant-verified
+    // path as every other posting, and the app-layer ownership check covers the
+    // pre-011 fallback too.
     const lineRows = lines.map((l, idx) => {
-      const row: Record<string, unknown> = { journal_entry_id: createdId, debit: l.debit, credit: l.credit, line_order: idx + 1 };
+      const row: Record<string, unknown> = { debit: l.debit, credit: l.credit, line_order: idx + 1 };
       for (const col of LINE_COLUMNS) {
         if (col === "account_id") continue;
         row[col] = l.fields[col as keyof LineInput] ?? null;
       }
       row.account_id = l.account_id;
-      if (tenantId) row.tenant_id = tenantId;
       return row;
     });
-    const { error: linesErr } = await supabaseAdmin.from("journal_lines").insert(lineRows);
-    if (linesErr) {
-      await supabaseAdmin.from("journal_entries").delete().eq("id", createdId);
-      createdId = null;
-      throw linesErr;
-    }
+    createdId = await writeJournal(
+      supabaseAdmin as never,
+      {
+        header: {
+          journal_number: journalNumber,
+          entry_date: date,
+          description: String(header.description ?? ""),
+          total_debit: totalDebit,
+          total_credit: totalCredit,
+          ...header,
+        },
+        lines: lineRows as never,
+      },
+      tenantId,
+    );
 
     await logAudit(context, {
       action: "create",
@@ -221,14 +236,16 @@ export async function PUT(request: Request) {
     }
 
     const accountIds = [...new Set(lines.map((l) => l.account_id))];
-    let accountQuery = supabaseAdmin.from("accounts").select("id,tenant_id").in("id", accountIds);
-    accountQuery = context.tenantId
-      ? accountQuery.or(`tenant_id.eq.${context.tenantId},tenant_id.is.null`)
-      : accountQuery.is("tenant_id", null);
-    const { data: accountRows } = await accountQuery;
-    const allowed = new Set(((accountRows as Array<{ id: string }>) || []).map((a) => a.id));
-    if (accountIds.some((aid) => !allowed.has(aid))) {
-      return NextResponse.json({ error: "One or more accounts are not available to this tenant", code: "invalid_reference" }, { status: 422 });
+    try {
+      await assertAccountsUsable(supabaseAdmin as never, accountIds, context.tenantId);
+    } catch (error) {
+      if (error instanceof AccountResolutionError) {
+        return NextResponse.json(
+          { error: "One or more accounts are not usable by this company: " + error.failures.map((f) => `${f.code} (${f.reason})`).join(", "), code: "invalid_reference" },
+          { status: 422 },
+        );
+      }
+      throw error;
     }
 
     const year = await getActiveFinancialYear(context.tenantId);
@@ -244,6 +261,16 @@ export async function PUT(request: Request) {
       is_balanced: true,
       entry_type: typeof body.entry_type === "string" && body.entry_type ? body.entry_type : "manual",
     };
+    // Snapshot the lines before replacing them. The update is three statements
+    // (header, delete lines, insert lines) and there is no transaction around
+    // them, so a failure on the line insert would otherwise leave the entry with
+    // NO lines at all - a posted entry that no longer balances, silently. Keep
+    // the old rows so a failure can be undone.
+    const { data: previousLines } = await supabaseAdmin
+      .from("journal_lines")
+      .select("account_id,debit,credit,description,line_order")
+      .eq("journal_entry_id", id);
+
     let updateQuery = supabaseAdmin.from("journal_entries").update(header).eq("id", id);
     updateQuery = context.tenantId ? updateQuery.eq("tenant_id", context.tenantId) : updateQuery.is("tenant_id", null);
     const { error: headerErr } = await updateQuery;
@@ -261,7 +288,19 @@ export async function PUT(request: Request) {
       return row;
     });
     const { error: linesErr } = await supabaseAdmin.from("journal_lines").insert(lineRows);
-    if (linesErr) throw linesErr;
+    if (linesErr) {
+      // Restore the snapshot so the entry keeps its original, balanced lines
+      // instead of being left empty by a half-applied edit.
+      const restore = ((previousLines as Array<Record<string, unknown>> | null) ?? []).map((l) => {
+        const row: Record<string, unknown> = { ...l, journal_entry_id: id };
+        if (context.tenantId) row.tenant_id = context.tenantId;
+        return row;
+      });
+      if (restore.length) {
+        await supabaseAdmin.from("journal_lines").insert(restore);
+      }
+      throw linesErr;
+    }
 
     await logAudit(context, { action: "update", entity: "journal_entries", entityId: id, metadata: { total_debit: totalDebit } });
     return NextResponse.json({ id, total_debit: totalDebit, total_credit: totalCredit });

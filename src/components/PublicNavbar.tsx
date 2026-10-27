@@ -7,11 +7,7 @@ import { getAppUser } from '@/lib/supabase'
 import type { AppUser } from '@/lib/supabase-server'
 import { Car as CarIcon, Globe, User, LogIn, Menu, X, Phone, Mail, MapPin } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { createClient } from '@supabase/supabase-js'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-const supabase = createClient(supabaseUrl, supabaseAnonKey)
+import { PLATFORM_BRANDING } from '@/lib/branding/platform'
 
 interface CompanyData {
   name: string
@@ -20,18 +16,33 @@ interface CompanyData {
   address: string
 }
 
+/**
+ * The SPEED platform identity.
+ *
+ * The public marketing chrome belongs to the SaaS provider, so its brand is the
+ * platform constant — never a subscriber's `company_profile`. It used to fetch
+ * `/api/public/company-profile` with no tenant, which returned whichever company
+ * row came back first and rendered that customer's name as the SPEED brand.
+ * Tenant branding is resolved only where a tenant has been authoritatively
+ * established (its own dashboard or verified public route).
+ */
+const PLATFORM_PHONE = PLATFORM_BRANDING.phone ?? ''
+const PLATFORM_EMAIL = PLATFORM_BRANDING.email ?? ''
+
 export default function PublicNavbar() {
   const { lang, setLang, isRTL } = useLanguage()
   const pathname = usePathname()
   const [appUser, setAppUser] = useState<AppUser | null>(null)
   const [scrolled, setScrolled] = useState(false)
   const [mobileMenu, setMobileMenu] = useState(false)
-  const [company, setCompany] = useState<CompanyData>({
-    name: 'SPEED',
-    phone: '+973 1234 5678',
-    email: 'info@speed.bh',
-    address: isRTL ? 'المنامة، البحرين' : 'Manama, Bahrain',
-  })
+  // The platform identity is a constant; only its address is localized, which is
+  // a display choice, not an identity choice.
+  const company: CompanyData = {
+    name: PLATFORM_BRANDING.name,
+    phone: PLATFORM_PHONE,
+    email: PLATFORM_EMAIL,
+    address: isRTL ? 'المنامة، مملكة البحرين' : (PLATFORM_BRANDING.address ?? ''),
+  }
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 60)
@@ -42,29 +53,6 @@ export default function PublicNavbar() {
   useEffect(() => {
     getAppUser().then(setAppUser)
   }, [])
-
-  useEffect(() => {
-    async function fetchSettings() {
-      try {
-        // Public company profile via the server route; `settings` is RLS-protected.
-        const res = await fetch('/api/public/company-profile')
-        const { data } = await res.json()
-        const v = data
-
-        if (v) {
-          setCompany({
-            name: v.name || 'SPEED',
-            phone: v.phone || '+973 1234 5678',
-            email: v.email || 'info@speed.bh',
-            address: v.address || (isRTL ? 'المنامة، البحرين' : 'Manama, Bahrain'),
-          })
-        }
-      } catch (err) {
-        console.error('Navbar settings fetch error:', err)
-      }
-    }
-    fetchSettings()
-  }, [isRTL])
 
   const navLinks = [
     { href: '/', ar: 'الرئيسية', en: 'Home' },

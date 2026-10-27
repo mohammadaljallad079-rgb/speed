@@ -72,3 +72,18 @@ export function assertRoleChangeAllowed(nextRole: unknown): asserts nextRole is 
     throw forbidden("Unsupported role for this console");
   }
 }
+
+/**
+ * The console may not change the role of a global operator.
+ *
+ * `assertRoleChangeAllowed` inspects only the *requested* role, so on its own it
+ * stops a super_admin being *granted* but not one being *demoted* to a
+ * company-scoped role - which is the same privilege change in the other
+ * direction. The current role therefore has to be checked as well, and the global
+ * role is only ever set by provisioning (`scripts/provision-admin-accounts.mjs`).
+ */
+export function assertRoleTargetEditable(currentRole: unknown): void {
+  if (currentRole === "super_admin") {
+    throw forbidden("The super_admin role is not managed from this console");
+  }
+}

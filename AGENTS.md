@@ -1593,3 +1593,596 @@ that applies the filters it is given and returns only affected rows.
   `feat/final-hardening-round5`. Live confirmed: `/super-admin*` 404, `/fleet`
   307→`/login`, `/login` 200. Publishing is a fast-forward of `main`; deploying
   it is an operator step (no access to the VM from the sandbox).
+
+## Execution 57 invariants (customer booking availability)
+
+- **Availability is derived from contracts, never from `cars.status`.** That
+  column is a denormalised display cache: the application only ever sets it to
+  `rented` and never resets it, so a car that finished a rental stayed `rented`
+  forever and was filtered out of every future booking list. `isCarRentable`
+  now excludes only permanent states (`UNRENTABLE_STATUSES`: maintenance, sold,
+  inactive, out_of_service); `rented` is transient. `listAvailableCars` decides
+  "is this car out" from the open contracts (`BLOCKING_STATUSES`) — with a date
+  window by overlap, with no window by "out today". Never reintroduce
+  `.eq("status", "available")` as an availability filter; the change-vehicle
+  screen had the same defect and is fixed the same way.
+- **A terminal contract transition releases the car.** `carStatusForContractChange`
+  (`src/lib/rental/car-status.ts`, pure) returns `available` for
+  completed/cancelled/closed/returned and `null` for live states. The rental list
+  (payment completes) and the contract detail page apply it, so the display flag
+  cannot drift. Availability still does not depend on it.
+- **The customer tenant follows the cars.** `resolveCustomerTenantId`
+  (`src/lib/rental/customer-tenant.ts`, pure) returns the single tenant that owns
+  the rentable cars, or `null` (the tenant-less scope) when they are split or all
+  tenant-less. A bare `tenants` row is a fallback only when no cars exist.
+  Assigning a tenant that owns none of the cars is exactly what made the portal
+  appear empty; never "fix" a missing assignment by picking the only tenant that
+  exists.
+- `tests/exec57-booking-availability.test.ts` (registered in `test:core`) guards
+  all of the above. Baseline after Exec 57: 1065 tests / 1059 pass / 6 skipped /
+  0 fail; typecheck 0 new errors; lint clean; production build green.
+
+## Execution 58 invariants (one record picker for every relational field)
+
+- **One picker, no bespoke option maps.** Every field that references another
+  module's record uses `<RecordSelect kind=... createMode="inline" />`. A page
+  must not build its own `<select>` + `.map()` list for a customer, supplier,
+  vehicle or account, and must not keep a second read of that table: a duplicate
+  read is exactly what lets the control and the form's stored id drift apart.
+  Converted in Exec 58: `rentals/[id]/edit` (customer, vehicle),
+  `purchase-orders` (vehicle), `purchase-orders/requisitions` (vehicle + the
+  convert-to-PO supplier modal), plus `supplier-statements` (Exec 58a).
+- **`RecordSource.describe` exists because a record's identity is not always one
+  column.** A vehicle is "Toyota Corolla (12345)", not "12345". `recordLabel`
+  consults `describe` first and falls back to `labelColumn`; without it the
+  picker conversion is a readability regression even when the interaction is
+  better. Add a `describe` when a kind's natural label spans columns.
+- **A dense analytic grid is not a Smart Form.** The manual journal editor's
+  optional per-line dimensions (vehicle/customer/supplier/driver/contract) are
+  not converted: it is a 10px in-row grid and three of the five dimensions
+  (driver, contract, and cost centre/branch beside them) have no `RecordKind` at
+  all. Converting only part of that row would make one row carry two
+  interaction patterns. Revisit only with new record kinds, not as a field swap.
+- **Evidence is committed, not described.** Browser proof lives in
+  `docs/screenshots/` and is listed in `docs/screenshots/MANIFEST.json`; the
+  rental/purchasing shots were captured against the local dev harness (port 3099
+  + the PostgREST stub), not production.
+- **A picker that creates a record must then READ that record.** `RecordSelect`
+  hands the selected row back as the second `onChange` argument; a form that
+  instead looks the id up in a list fetched at mount cannot see a record created
+  inline seconds earlier. `payments/new` did exactly that, so an inline-created
+  customer left the balance panel and the open-invoice list empty with no error.
+  Prefer the row the picker returns and fall back to the mount-time list.
+- **A list page reads its own display data from the join, not a second query.**
+  `supplier-payments` fetched the whole suppliers table into state nothing
+  rendered - the names come from `suppliers(name)` on each payment row.
+- Tests: `tests/exec55-smart-forms-inline-create.test.ts` (43) asserts the picker,
+  inline mode, no ad-hoc option map and no duplicate table read per form, the
+  created-row read, and the absence of the dead suppliers read;
+  `tests/exec52-super-admin-smart-forms.test.ts` (17) guards `describe`.
+
+## Execution 59 invariants (SaaS entitlements + AI agent financial writes)
+
+- **One posting path, two callers.** `POST /api/invoices` is a thin HTTP shell
+  over `issueInvoice` (`src/lib/sales/service.ts`). The AI agent reaches the SAME
+  service through `FinancePort` (`src/lib/ai/finance-port.ts`), whose production
+  binding is `src/lib/ai/supabase-finance-port.ts`. The agent never builds a
+  journal: it calls `postSaleInvoice`/`reverseSaleInvoice` and `nextDocumentNumber`.
+  Re-adding an inline posting transaction to the route would re-create the drift
+  this consolidation removed.
+- **The package gates the agent, and the plan comes from the session.** `PLANS` /
+  `capabilitiesFor` / `planAllowsEffect` / `planGrants` in
+  `src/lib/saas/entitlements.ts` are pure. `loadTenantPlan` / `saveTenantPlan`
+  (`src/lib/saas/tenant-plan.ts`) store the assignment in the existing `settings`
+  table under `tenant_plan`, tenant-scoped, and **fail closed to `free`** - an
+  unreadable or absent row must never widen access. A super admin is the platform
+  operator and is not gated by a company package.
+- **The three tiers are behavioural, not cosmetic.** `free` -> zero AI actions;
+  `premium` -> the agent but NOT financial writes (`403 plan_upgrade_required`);
+  `enterprise` -> financial writes. A financial action is offered only when the
+  wording names the operation AND the caller holds the permission
+  (`selectFinancialActions`), so the model can never select a write unprompted.
+- **A write is still approval-bound and idempotent.** The three financial actions
+  (`invoice_issue`, `invoice_reverse`, `contract_extend`) are high-risk: execute
+  requires the nested `approval` object, the plan fingerprint is re-checked at
+  execution, and the durable `ai_repair_executions` ledger claims the key BEFORE
+  the side effect. A replayed key returns the already-executed result and mints
+  no second document - that guarantee rests on migration 006's UNIQUE
+  `(tenant_id, idempotency_key)` index, so the index must exist to be safe.
+- **The local stub must not diverge from production.** `scripts/dev/local-supabase-stub.mjs`
+  now honours `Prefer: resolution=merge-duplicates` with `on_conflict` (a plain
+  append made a saved package read back as PGRST116 and the app silently kept its
+  default), enforces the `ai_repair_executions` unique key, serves the atomic
+  RPCs (`post_journal_entry`, `generate_document_number`,
+  `update_account_balance`, `get_next_contract_number`) and parses `.in(...)`.
+  Its chart carries 41001/24001/41003 because migrations 003/010 create them on a
+  real install. A stub gap here fakes a defect OR hides a real one, so fix the
+  fixture before "fixing" the app.
+- **Acceptance is a browser run, not a claim.**
+  `scripts/dev/e2e-ai-financial-actions.mjs` (`npm run e2e:ai-financial`) drives
+  the real login + the real `/api/ai/repairs` ops and asserts 28 behaviours: the
+  three-tier gate, a balanced `Dr AR / Cr Revenue / Cr Output VAT` journal, the
+  replay that mints nothing, the reversal that cancels, the extension that bills
+  the extra days, and tenant B refused. Run it after any change to the catalogue,
+  the workflow or the finance port.
+- **Evidence:** `docs/screenshots/super-admin-ai-agent-{desktop,mobile}.png` show
+  the agent rendered on the global console, listed in `MANIFEST.json`.
+
+## Execution 60 invariants (final gap closure — forms, Excel, notifications)
+
+- **The (+) create lives beside the label, so a picker without a `label` has no
+  (+) create.** `RecordSelect` renders the create button inside the `{label && (…)}`
+  block — visible without opening the dropdown, which is the point. Four pickers
+  (HR attendance check-in/check-out, and the expense-row account pickers on
+  `cars/new` and `rentals/new`) omitted `label` and silently lost the affordance.
+  `tests/exec60-record-picker-labels.test.ts` scans every `<RecordSelect>` in
+  `src/app` and `src/components` and fails on any creatable picker (i.e. not
+  `createMode="none"`) without a label. A test that only counts `kind="employee"`
+  occurrences cannot see a missing prop — do not weaken this guard back to a count.
+- **One branded exporter for every report.** `src/lib/reporting/export.ts` is the
+  only workbook writer; a report screen adds one `<ExcelExportButton />` and a
+  descriptor. `tests/exec60-export-wiring.test.ts` asserts each report calls it.
+- **Export is proven by download, not by unit test.** A wiring test cannot catch a
+  broken handler or a client/server buffer mismatch.
+  `scripts/dev/e2e-excel-export.mjs` (`npm run e2e:excel-export`) clicks the real
+  button, captures the download and **re-opens the bytes with ExcelJS**, asserting
+  each report's own title, its own headers and real `SUM` formulas over the data
+  range (43/43). The General Ledger export is context-sensitive by design — its
+  statement when an account is open, else the trial-balance list — so the check
+  accepts either shape.
+- **Notifications have one emit path.** `src/lib/notifications/emit.ts` owns
+  `buildContractEvent`/`emitContractEvent` over a closed `ContractEvent` set
+  (booking_new/confirmed/cancelled, extension_requested/decided). A duplicate is
+  refused by migration 012's dedupe unique index, not by a read-then-write check;
+  `skipped` is a **count**, not a boolean.
+- **Entitlements are enforced where the capability is declared.** `/api/me`
+  reports the plan capabilities the UI hides controls with, and each capability's
+  route re-checks it server-side. Hiding a button is not enforcement.
+- **The dev stub must mirror the migrations that back a guarantee.** It enforces
+  migration 012's dedupe unique index (returning the `23505` the app looks for),
+  so "never duplicate" is tested against a constraint instead of a stub that
+  happily appends. Its `like.` filter no longer throws on a malformed pattern — an
+  unhandled `RegExp` error killed the stub process and every later request then
+  looked like an app failure.
+- **Never run `npm run build` against a live `next dev`.** It overwrites `.next`
+  and the dev server then fails every page with `Cannot find module './NNNN.js'`.
+  Restart the dev stack (`bash scripts/dev/run-dev.sh 3099`) after a build.
+- **The release must actually be pushed.** `origin/feat/final-hardening-round5`
+  can sit many commits behind the local branch; a "missing in production" report
+  is often an unpublished fast-forward, not a defect. Check
+  `git rev-list --left-right --count origin/<branch>...HEAD` before debugging.
+- **Verify a push against the remote, not a remote-tracking ref.** This clone's
+  `remote.origin.fetch` was scoped to `+refs/heads/main:…`, so
+  `origin/feat/final-hardening-round5` never advanced locally and the branch
+  looked unpushed long after the push had succeeded. Use
+  `git ls-remote origin <branch>` or the GitHub API; and widen the refspec
+  (`git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'`) so the
+  tracking refs are real.
+- **A push that reports `401 Bad credentials` may simply be a stale token.**
+  Retry before concluding it is a permission problem; the sandbox refreshes
+  `GITHUB_TOKEN` periodically. Push with `GIT_ASKPASS` + `GIT_TERMINAL_PROMPT=0`
+  so no credential is written to `.git/config` or the shell history.
+- **`main` may be behind the branch by a merge commit, not ahead.** After PR #1
+  was merged, `origin/main` (`757eab2`) holds that merge while the branch does
+  not, so `compare` reports "1 behind" — the branch is still 27 ahead in content.
+  Promoting the current release is a separate, owner-authorised step.
+- Exec 60 baseline: 1231 tests / 1225 pass / 0 fail / 6 skipped; **typecheck 0
+  errors** (the 129 baseline in older notes is stale for this branch); lint clean;
+  build green. Browser: Excel export 43/43, forms/SaaS/notifications 18/18,
+  AI financial writes 28/28. Report: `SPEED_EXECUTION_60_REPORT.md`.
+
+
+## Execution 62 invariants (platform vs tenant / white-label identity)
+
+- **The platform's own identity is a CONSTANT, never a database row.**
+  `PLATFORM_BRANDING` in `src/lib/branding/platform.ts` is what the marketing
+  homepage, `PublicNavbar`, `contact` and `/erp` render. It is deliberately
+  dependency-free (asserted by test) so client components can import it without
+  pulling `server-only` into the browser bundle. The production defect was an
+  unscoped `settings` read (`.eq("key","company_profile").maybeSingle()` with no
+  tenant) rendering a subscriber's name (`Jameel- TESTING …`) as the SPEED brand.
+- **`settings` is tenant-owned; every read and write carries a tenant.** A write
+  must never use `onConflict: "key"` — that lets one tenant overwrite another's
+  row. For a NULL tenant do an explicit find-then-write: PostgreSQL treats NULLs
+  as distinct, so `onConflict: "tenant_id,key"` cannot replace a NULL-tenant row
+  (it inserts duplicates instead). `readScopedSetting`/`writeScopedSetting`
+  (`src/lib/branding/settings-client.ts`) implement exactly this.
+- **One fail-closed predicate: `scopeToTenantColumn` (`src/lib/auth/policy.ts`).**
+  A tenant-less caller is scoped to `IS NULL` (the single-tenant install's own
+  rows), never left unfiltered. `scopeToCompany`, `applyTenantScope` and the five
+  settings stores all delegate to it. Never reintroduce
+  `if (tenantId) query = query.eq("tenant_id", tenantId)` — that guard leaves a
+  NULL-tenant caller reading every tenant's rows, and it was reachable
+  (`/api/ai/settings`, `/api/import` pass a possibly-null `context.tenantId`).
+- **A browser page learns its tenant only from `/api/me`** via `useTenantId()`
+  (`src/lib/hooks/use-tenant-id.ts`) — never from a form field, cookie or
+  localStorage. `ready` distinguishes "still resolving" from "resolved to no
+  tenant"; conflating the two either renders another tenant's data or blocks the
+  single-tenant install.
+- **`/api/public/company-profile` takes an explicit tenant and has no "first row"
+  fallback.** A missing or unknown tenant yields `{ data: null }`. Do not re-add a
+  `.limit(1)`-with-no-filter path. A public route must not echo a driver error
+  (it can name a table, column or host) — return a neutral code.
+- **Tenant branding writes go through `/api/branding/company`** (`requireContext`
+  + `logAudit`, action `settings_change`, entity `company_branding`). A global
+  super admin has no company and is refused by `brandingTenantForWrite`.
+- **Two opposite test constraints are both real** and satisfied by the route
+  owning its literal `.eq("key","company_profile")` while the helper applies the
+  tenant column: `tests/public-api-routes.test.ts` forbids `tenant_id` appearing
+  in that route, and requires the literal key filter.
+- **Browser-proof harness:** `scripts/dev/e2e-exec62-branding.mjs` (17/17) drives
+  two real tenants against the stub, which seeds two DIFFERENT company names
+  (`SPEED Rentals`, `Harbour Motors`) — a fixture with matching names could not
+  distinguish a leak from correct behaviour. Sign in with `waitUntil:"networkidle"`
+  (a submit before hydration is silently dropped); a dashboard polls
+  notifications, so navigate it on `domcontentloaded` and wait for the brand text
+  rather than `networkidle`.
+- Exec 62 baseline: **1261 tests / 1255 pass / 0 fail / 6 skipped**; typecheck 0
+  errors; lint clean; build green. Report: `SPEED_EXECUTION_62_REPORT.md`.
+
+## Execution 64 invariants (per-company chart of accounts)
+
+- **A chart of accounts belongs to a company.** Migration
+  `014_tenant_chart_of_accounts.sql` gives `accounts` a `tenant_id`, an
+  `is_postable` flag, and two PARTIAL unique indexes on `(tenant_id, code)` — one
+  for a real tenant, one for the NULL tenant, because a plain UNIQUE treats NULLs
+  as distinct. Applying it is an operator step; the app must run before AND after.
+- **Resolve an account by `(tenant_id, code)`, never by code alone.**
+  `src/lib/accounting/account-resolution.ts` prefers the caller's own account over
+  the shared one and refuses `foreign_tenant` / `ambiguous` / `inactive` /
+  `not_postable` with a reason. Two companies holding identical codes must never
+  resolve to each other's rows — `tests/exec64-tenant-chart-acceptance.test.ts`
+  asserts this, including the BD 99 issue→collect scenario per company.
+- **Postability is code-owned, not a naive `00` rule.**
+  `src/lib/accounting/chart.ts` (`isPostable`) is the single definition, and
+  migration 014's backfill EXEMPTS the codes the posting path actually names
+  (`24000` output VAT, `25000` customer deposits). The naive "headings end in 00"
+  rule would have refused every sale and every deposit refund once applied.
+- **The manual journal account tree must work on a FLAT chart.** The live install
+  has no hierarchy: every account is `parent_code: null`. The old `buildAccountTree`
+  treated every parentless account as a group heading, so the dropdown offered only
+  "(No sub-accounts)" placeholders and nothing could be posted. The rule now lives
+  in `src/lib/accounting/account-tree.ts` (pure, tested): a parentless account that
+  HAS children is a heading, one with none is the ledger account; `is_postable`
+  wins when the column is present. Verified in-browser: 14 selectable ledger
+  accounts, 0 placeholders.
+- **A capture scene must fail on the defect it guards.** `journal-entries-account-picker`
+  in `scripts/dev/capture-screenshots.mjs` opens the real dropdown and aborts if
+  fewer than 5 ledger accounts are offered, so a blank dropdown cannot be
+  committed as evidence.
+- **Run the dev server through `scripts/dev/run-dev.sh`.** It wipes `.next` first:
+  a stale cache (or a `next build` run against the same directory) makes Next serve
+  chunk URLs that no longer exist, which shows up as pages that never hydrate and
+  screenshots that silently capture the wrong tab. One dev server per `.next`.
+- Exec 64 Stage 1 baseline: **1358 tests / 1352 pass / 0 fail / 6 skipped**;
+  typecheck 0; lint clean; build green; migration 014 harness 36/36.
+
+## Execution 66 invariants (atomic customer receipt + strict account integrity)
+
+- **A customer receipt is ONE server-side transaction.** `POST /api/receipts`
+  (`src/app/api/receipts/route.ts`) -> `recordReceipt`
+  (`src/lib/sales/receipt-service.ts`) -> `post_customer_receipt` (migration 015)
+  writes the `payments` row, its journal and the invoice settlement in a single
+  database call. The three browser pages (`rentals/[id]`, `rentals`,
+  `payments/new`) used to do all three themselves with the anon client, with the
+  journal call wrapped in a `try/catch` that only raised an `alert` - so a failed
+  posting left a receipt with NO accounting entry while the page still said
+  "Payment recorded successfully". Never re-add a browser-side receipt write.
+- **The browser sends no identity.** The pages call `submitReceipt`
+  (`src/lib/sales/receipt-client.ts`) and send no `tenant_id`, no `role` and no
+  journal; the server resolves all of them from the session. `submitReceipt`
+  only reports success when the response carries BOTH a `payment_id` and a
+  `journal_id`; anything else raises.
+- **A refused receipt writes nothing.** `post_customer_receipt` validates before
+  it writes, so a receipt whose journal would be rejected (foreign/inactive/
+  non-postable account, unbalanced) leaves no payment row, no journal and no
+  settlement. `tests/exec66-receipt-workflow.test.ts` asserts exactly this.
+- **`post_journal_entry` is hardened by 015.** For a TENANTED journal every line's
+  account must exist, be `is_active` and `is_postable`, and be usable by that
+  company (own tenant or the shared NULL-tenant chart). A NULL-tenant (legacy
+  single-tenant) journal keeps the previous behaviour, so the existing install is
+  untouched. `supabase/tests/015_harness/run.sh` proves all of it on a real
+  PostgreSQL 17: **28/28**.
+- **Receipt numbering is unique per company, not globally.** 015 adds
+  `payments_tenant_receipt_uidx` (tenant) and `payments_null_tenant_receipt_uidx`
+  (NULL tenant) - a plain UNIQUE treats NULLs as distinct, so both are needed.
+- **Idempotency lookups are TENANT-SCOPED.** `findPostedManualJournal`
+  (`manual-posting.ts`) and `findPostedJournal` (`sales-posting.ts`) filter by
+  `tenant_id` (or `is null`), applied in the query. Without it a retry in company
+  B could match company A's journal for the same reference and skip its own
+  posting - a silently lost financial entry.
+- **`writeJournal` refuses a foreign tenant instead of overwriting it.** If a
+  caller already stamped a different `tenant_id` on the header or a line, the
+  write is refused. It still STAMPS the session company when the field is absent.
+- **The pre-011 fallback is kept deliberately.** `writeJournal` prefers the atomic
+  `post_journal_entry`; when that RPC is absent it falls back to the two-request
+  write with compensation. The fallback is NOT replaced by a hard failure: the
+  app ships before the operator applies a migration, and refusing to post would
+  turn "one rare orphaned header after a crash" into "no document can be
+  recorded at all" on an un-migrated database.
+- **`nextDocumentNumber` tolerates a client with no `rpc`** (returns the
+  collision-safe local fallback) instead of throwing, so numbering never blocks a
+  write on a database the migration has not reached.
+- **Migration 015 rollback is non-destructive and partial by design.** It drops
+  the receipt function and indexes; restoring the previous `post_journal_entry`
+  is a separate, deliberate re-run of 011, because doing it automatically would
+  silently re-open the account-ownership hole 015 closes.
+- **Exec 66 baseline: 1380 tests / 1374 pass / 0 fail / 6 skipped**; typecheck 0;
+  lint clean; build green; migration 015 harness 28/28.
+- **The live migration level could NOT be verified from this environment.** The
+  `.env.local` Supabase credentials are placeholders (`placeholder-...`), so the
+  anon/service probes return 401. 015 is authored, harness-verified and shipped as
+  a file; whether 011-014 are applied in production is an operator question, not
+  something this environment can assert.
+
+### Exec 66 follow-up: a collected receipt is REVERSED, never deleted
+
+- **`payments` had no reversal path at all, and the payments list deleted rows
+  with no guard.** Deleting a receipt row leaves the ledger describing a
+  collection that no longer exists - the cash is still debited and the receivable
+  still settled, with no document behind them. `POST /api/receipts?op=reverse`
+  (`reverseReceipt` -> `post_customer_receipt_reversal`, migration 015) is now the
+  only way to undo a receipt: it mirrors the journal (Dr AR / Cr Cash-Bank),
+  restores the invoice's outstanding balance and marks the payment `cancelled`,
+  in ONE transaction. The payments list offers "Reverse", not "Delete".
+- **The reversal takes no amount and no account from the caller.** Both are read
+  from the stored `payments` row under the caller's tenant scope, so a crafted
+  body cannot reverse a different value or move the money to another account. The
+  only input is the payment id. A payment id belonging to another company is a
+  `404` (the lookup is tenant-scoped).
+- **Reversal needs `edit`, not `create`.** The route resolves the operation
+  BEFORE `requireContext`, so a caller who may collect money but not amend the
+  ledger is refused. (Resolving `create` first would also have blocked a
+  legitimate `edit`-only caller.)
+- **Idempotent and bounded.** An already-cancelled payment returns
+  `already_cancelled: true` and writes nothing, so a retry cannot un-settle the
+  invoice twice. The un-settlement uses `greatest(paid - amount, 0)`: a receipt
+  larger than the recorded `paid_amount` must never produce a negative receivable.
+- **`src/app/rentals/[id]/payment/page.tsx` was an orphan posting path.** It
+  inserted a `payments` row with NO journal at all (and a non-existent
+  `contract_id` column). It now goes through `submitReceipt` like the other three
+  pages. Every page that records a customer receipt uses the one workflow.
+- Verified by execution: `supabase/tests/015_harness/run.sh` now asserts the
+  reversal semantics too - **41/41** on PostgreSQL 17 (mirror written once, AR
+  restored, invoice back to pending, second attempt a no-op, a refused mirror
+  leaves receipt+invoice untouched, a wrong-company id finds nothing).
+- Exec 66 final baseline: **1390 tests / 1384 pass / 0 fail / 6 skipped**;
+  typecheck 0; lint clean; build green; 015 harness 41/41.
+
+### Exec 66 follow-up 2: invoice deletion is server-authoritative from EVERY screen
+
+- **Four screens deleted `invoices` rows with the browser client**, bypassing the
+  guarded `DELETE /api/invoices/[id]` (which fails closed through
+  `decideInvoiceDeletion`): `invoices/page.tsx`, `invoices/[id]/page.tsx`,
+  `sales/page.tsx`, `rentals/invoices/page.tsx`. A posted invoice, or one with
+  receipts/returns attached, could be deleted from a list and its ledger entry and
+  receipts left orphaned. All four now call `deleteInvoice`
+  (`src/lib/invoices/invoice-client.ts`), and `tests/exec66-receipt-workflow.test.ts`
+  asserts no page calls `from('invoices').delete()` again.
+- **The invoice detail screen's client-side guard was advisory only.** It read
+  `hasInvoiceDependents` and then deleted the row itself; that check could not
+  stop a delete from another screen, and it could not see a concurrent receipt.
+  The flags are still read for display, but the DECISION moved to the server. Do
+  not reintroduce a client-side delete for a document that has a ledger entry.
+- **One helper owns the lifecycle routes** (`deleteInvoice`, `reverseInvoice`).
+  The routes are spelled once, in `invoice-client.ts`; a page must not inline
+  `fetch('/api/invoices/...')`. `tests/exec29-sales-posting.test.ts` was updated
+  to assert `reverseInvoice(` rather than the literal route string.
+- Exec 66 baseline after this fix: **1396 tests / 1390 pass / 0 fail / 6
+  skipped**; typecheck 0; lint clean; build green.
+
+### Exec 66 follow-up 3: an account the ledger uses is not deletable
+
+- **The chart-of-accounts screen deleted `accounts` rows with the browser client,
+  with no guard.** Every report derives its balances from `journal_lines`, so
+  deleting an account that lines reference makes those entries silently vanish
+  from every statement while their journal header still claims a total. A live FK
+  might refuse the delete, but relying on that is not a guard: it depends on the
+  schema, and an `on delete set null` FK would leave the lines with no account at
+  all.
+- `decideAccountDeletion` (`invoice-guards.ts`) refuses when
+  `journal_lines.account_id` references the account, and fails closed
+  (`unverified`) when the usage count cannot be established. The supported way to
+  retire an account is `is_active = false`, which keeps history intact.
+- `DELETE /api/accounts/[id]` is the one path: it requires
+  `accounting.delete`, resolves the account tenant-scoped (an id from another
+  company is a `404`), decides, deletes scoped, and audits. The page calls it.
+- Exec 66 baseline after this fix: **1403 tests / 1397 pass / 0 fail / 6
+  skipped**; typecheck 0; lint clean; build green.
+
+### Exec 66 follow-up 4: every migration now has a frozen activation package
+
+- **The operator can only apply what is packaged.** `PRODUCTION_ACTIVATION_001_002_003`,
+  `_004`, `_005_006`, `_007`, `_008` … `_012` existed, but **013, 014 and 015 had
+  no package** — so the atomic `post_customer_receipt_reversal` (Exec 66) could
+  never reach production, no matter how correct the migration file was. All three
+  now exist, emitted by `scripts/generate-activation-bundle.mjs`.
+- **Generate, never hand-edit.** `node scripts/generate-activation-bundle.mjs`
+  rewrites every body and recomputes its recorded SHA-256.
+  `tests/activation-package-integrity.test.ts` (60 assertions) recomputes every
+  hash, asserts byte-identity, and now **fails when any migration from 001 to 015
+  has no package** — the gap cannot silently reopen.
+- **A read-only flight query must alias EVERY union branch.** The POST-FLIGHT
+  queries end in `order by ok, item`; a branch whose second column was unnamed
+  (`... is not null)` without `as ok`) cannot resolve `ok` across the UNION. The
+  new packages hit this on first execution; the generator now aliases every
+  branch. The same latent defect existed in `PRODUCTION_ACTIVATION_012.sql` and
+  was corrected there too.
+- **Verified by execution, not parsing:** `supabase/tests/activation_013_015_harness/run.sh`
+  applies the three packages to a real PostgreSQL 17 and asserts 28/28 — clean
+  apply, idempotent re-apply, the duplicate blocks (one live invoice per rental
+  contract; one account code per company, including the NULL tenant), the
+  functions created, and the end-to-end collect-then-reverse (payment + journal +
+  settlement in one call; the reversal restores the invoice and cancels the
+  payment; a second reversal is a no-op). A harness schema must model the live
+  `accounts` columns (`type`, `parent_code`, `parent_id`, `reporting_category`, …)
+  or 014 aborts.
+- `014_tenant_chart_of_accounts_rollback.sql` was missing; it now drops the two
+  uniqueness indexes and the provisioning function, and documents that it is not
+  lossless (provisioned per-tenant rows survive, so a code may then repeat once
+  per company). It never deletes an account.
+- Exec 66 baseline after this fix: **1419 tests / 1413 pass / 0 fail / 6
+  skipped**; typecheck 0; lint clean; build green.
+
+
+## Execution 67 invariants (server-authoritative financial writes)
+
+- **Every financial mutation goes through a guarded route.** A page must never
+  `insert`/`update`/`delete` a financial table (`invoices`, `payments`,
+  `journal_entries`, `journal_lines`, `supplier_payments`, `purchase_invoices`,
+  `sales_returns`, `debit_notes`, `expenses`, `accounts`) with the browser
+  client. `tests/exec67-tenant-scoped-writes.test.ts` walks every `.tsx` under
+  `src/app` and fails on a direct write; add a table to its list when a new
+  financial table appears.
+- **A document and its journal are written together, or neither is.** The four
+  paths that were fixed each had the same shape: the row was written and the
+  ledger was not, so every ledger-derived report (P&L, trial balance, balance
+  sheet, cash flow) disagreed with the document list.
+  - `src/lib/accounting/expense-posting.ts` (`buildExpenseJournal`,
+    `postExpense`, `buildExpenseReversalJournal`, `reverseExpense`) — an expense
+    posts `Dr expense [+ Dr input VAT] / Cr cash | bank | AP`. A credit purchase
+    credits the payable, not cash. `POST /api/expenses` compensates by deleting
+    the row if the posting fails; `PUT`/`DELETE /api/expenses/[id]` reverse and
+    re-post rather than editing the ledger in place.
+  - `src/lib/accounting/sales-return-posting.ts` +
+    `src/lib/sales/return-service.ts` + `POST /api/sales-returns` — a return
+    restores AR, reverses revenue and settles the invoice in one transaction.
+  - `DELETE /api/debit-notes/[id]` mirrors the note's own journal (read from
+    `journal_lines`), and is idempotent.
+  - `PUT /api/invoices/[id]` decides server-side via `decideInvoiceEdit`;
+    `paid_amount`/`status`/`tenant_id` are not writable and `total_amount` is
+    derived.
+- **An account a live install may legitimately lack must not block a document.**
+  `resolveOptionalAccountIds` (`account-resolution.ts`) resolves 41003 (seeded
+  only by migration 003) and the VAT accounts tolerantly: absence falls back to
+  a required account the caller already holds. A cross-tenant or ambiguous row
+  is still an error — that is a configuration fault, not absence. Resolving
+  41003 as required would have made the new sales-return endpoint fail on every
+  return in production while passing a parse-only review.
+- **Idempotency is checked before any business guard.** `createSalesReturn`
+  looked up an existing return only AFTER the "amount exceeds what was paid"
+  check; a retry arrives with the invoice already reduced, so the retry was
+  refused as an overpayment instead of returning the existing document.
+- **`assertReference`/`assertReferenceList` take an injectable client**
+  (defaulting to `supabaseAdmin`). A hard-wired singleton makes a tenant-scoped
+  reference check impossible to exercise against two tenants — which is exactly
+  the check that needs it.
+- **The chart of accounts is server-authoritative.** `POST /api/accounts` and
+  `PUT /api/accounts/[id]` stamp the tenant from the session, require the parent
+  to be the caller's own account or the shared chart, refuse a self-parent, and
+  refuse a duplicate code (a duplicate code is `ambiguous` to
+  `resolveAccountIdsForTenant`, which refuses it — silently breaking posting for
+  every module that uses that code).
+- **Baseline after Exec 67:** 1469 tests / 1463 pass / 0 fail / 6 skipped;
+  typecheck 0 errors; lint clean; production build green.
+
+## Execution 67 Stage 2 invariants (ledger acceptance + expense/VAT gross)
+
+- **The BD 99 acceptance cycle covers four documents, not two.** A sale, its
+  collection, an EXPENSE and a sales RETURN, all posted by the real services
+  against one ledger, then reconciled through the same `buildTrialBalance` the
+  reports use. The earlier scenario had no expense and no return — the two paths
+  that wrote a document with no journal at all — so it could pass while the
+  ledger was missing every expense the company ever paid.
+  `tests/exec53-stage2-ledger-and-acceptance.test.ts`.
+- **A return after a FULL collection leaves AR negative.** Dr AR credit 22
+  against an invoice that was already settled gives AR -22.000: a refund owed to
+  the customer. A return can only cancel a receivable that is still open, so this
+  is correct accounting, not a defect. Do not "fix" it by netting to zero.
+- **`resolveOptionalAccountIds` drops only the absent codes.** It used to catch a
+  missing code and return `{}` — throwing away the accounts that DID resolve. With
+  41003 absent (it is seeded only by migration 003, not applied live) the output
+  VAT account was discarded too, so a return posted Dr Revenue 22 / Cr AR 22
+  instead of Dr Revenue 20 + Dr Output VAT 2. It now removes only the genuinely
+  missing codes and retries; a cross-tenant/ambiguous row is still an error.
+- **`POST /api/expenses` reconstructs the gross.** `expenses.amount` is stored
+  PRE-VAT, so the old `payload.total ?? payload.amount` fallback credited cash for
+  less than was paid whenever a caller omitted `total`. It now uses
+  `amount + vat_amount` when `total` is absent. `postExpense` takes the
+  VAT-inclusive gross (the stored `total`).
+
+## Execution 67 Stage 3 invariants (purchasing + tenant-owned master data)
+
+- **A supplier bill splits out input VAT.** `buildPurchaseJournal` used to debit
+  the WHOLE VAT-inclusive total to the expense account, so recoverable VAT was
+  capitalised as cost — the VAT return could not claim it and the expense was
+  overstated by the tax. It now takes `vatAmount`/`vatAccountId` and posts
+  `Dr expense (total - vat) / Dr input VAT / Cr cash-bank / Cr AP`, falling back
+  to capitalising the whole amount when no 24001 account is resolvable. 24001 is
+  seeded by migration 010, which is NOT applied live, so the fallback is the
+  behaviour that matters today.
+- **Stage 3 acceptance** (`tests/exec54-purchasing-integrity.test.ts`): credit
+  bill 300 + 30 VAT, paid in full, then a 55.000 debit note, reconciled through
+  `buildTrialBalance` — AP -55 (the supplier now owes the company), cash -330,
+  expense 250 (net of VAT and the credit), input VAT 25, ledger balanced.
+- **No tenant-owned table is written from the browser.** An audit maps every
+  `from('<table>').insert|update|delete|upsert` in `src/app/**/*.tsx` against
+  migration 002's tenant/company arrays. The defect shape is always the same: a
+  create that never sets `tenant_id` (a NULL-tenant orphan), and an
+  update/delete scoped by `id` ALONE so any authenticated caller reaches another
+  company's row. Fixed in this execution: `customers`, `suppliers`,
+  `expense_accounts`. `accounts` and `expenses` were fixed earlier.
+  `FINANCIAL_TABLES` in `tests/exec67-tenant-scoped-writes.test.ts` now includes
+  `customers`, `suppliers`, `expense_accounts`; a future page that writes one
+  directly fails the suite.
+- **A referenced master record is refused, not orphaned.** `DELETE
+  /api/customers/[id]` and `DELETE /api/suppliers/[id]` count the documents that
+  name the row (`invoices`/`rental_contracts`/`payments` and
+  `purchase_invoices`/`supplier_payments`/`debit_notes` respectively) and return
+  409 `has_dependents`. An unreadable table counts as zero so the guard never
+  blocks a legitimate delete.
+- **The customer portal updates its own row from the session.**
+  `PUT /api/customer/profile` resolves the row from `context.customerId` (read
+  from `users.customer_id`), never from the request, and scopes the write by
+  tenant — the browser write trusted a client-held id and asserted no tenant.
+- **Baseline after Exec 67 Stage 2+3:** 1475 tests / 1469 pass / 0 fail / 6
+  skipped; typecheck 0 errors; lint clean; production build green (165/165).
+
+## Execution 68 invariants (account ownership on EVERY path + one journal writer)
+
+- **The atomic path is not the only path, so ownership is asserted in the app
+  too.** `writeJournal` (`src/lib/accounting/manual-posting.ts`) calls the
+  `post_journal_entry` RPC when it is deployed, and migration 015 validates
+  account ownership *inside* that function. When the RPC is absent (a database
+  behind 011) `writeJournal` falls back to a direct two-request header+lines
+  write, and that path reached the tables with **no** ownership check at all. It
+  now calls `assertAccountsUsable` **before** the header insert, so a company
+  journal on a pre-011 database can no longer debit another company's account
+  silently.
+- **`assertAccountsUsable` is the app-layer mirror of 015's predicate**
+  (`src/lib/accounting/account-resolution.ts`): an account is usable when it
+  exists, is not owned by another company, and is neither inactive nor a group
+  heading. It names **every** offender at once (`AccountResolutionError.failures`)
+  rather than failing one at a time.
+- **It is NULL-TOLERANT on purpose.** A `tenant_id IS NULL` account is the shared
+  chart of the single-tenant installation and is usable by any caller — the same
+  rule `loadUsableAccounts` applies and the same rule 015 encodes. A check that
+  *demanded* caller ownership would refuse every posting on a live install whose
+  chart is entirely NULL-tenant (live today: 0 tenants, chart all NULL). A
+  tenant-less caller is still refused a company-owned account, because that is
+  what `loadUsableAccounts` resolves for it (`.is("tenant_id", null)`). The
+  predicate is never wider than the resolver.
+- **The manual journal screen is no longer a second writer.**
+  `POST /api/journal-entries` used to insert `journal_entries` and then
+  `journal_lines` itself — two HTTP requests, no atomic RPC, and 015's check
+  bypassed. It now delegates to `writeJournal`, so it uses the same atomic,
+  tenant-verified path as every other posting. `PUT` is an *update*, which the
+  insert-only RPC cannot express, so it keeps a direct write — but it now
+  **snapshots the existing lines first and restores them if the replacement
+  insert fails**, so a half-applied edit cannot leave a posted entry with no
+  lines (silently unbalanced).
+- **Resolve accounts through the ONE resolver, never a code-only `find`.**
+  `purchases` and `cars` resolved accounts with
+  `rows.find(r => r.code === code)?.id` after an inline `.or(...)`. Once the chart
+  is per-company (migration 014) a shared and a company-owned row can share a
+  code, and that `find` returns whichever row PostgREST happened to order first —
+  posting into the wrong ledger account with no error raised. Both now use
+  `resolveOptionalAccountIds`, which prefers the company's own account and
+  refuses an ambiguous chart.
+- **Test stubs must honour the `.in()` column.** The PostgREST-like stubs in the
+  posting suites filtered `accounts` by `code` only, ignoring the column name.
+  They now record `inCol` and filter on it, so a stub can model both a
+  code-based resolution and an id-based ownership check — the same two queries
+  the production code makes.
+- Baseline after Exec 68: **1493 tests / 1487 pass / 6 skipped / 0 fail**;
+  typecheck 0 errors; lint clean; production build green.

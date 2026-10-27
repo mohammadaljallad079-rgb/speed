@@ -6,7 +6,8 @@ import { useLanguage } from '@/lib/LanguageContext'
 import { formatCurrency } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { FileSearch } from 'lucide-react'
+import { FileSearch, Download } from 'lucide-react'
+import { buildReportWorkbook, downloadWorkbook, exportFilename } from '@/lib/reporting/excel-export'
 import type { OperationsReportKind } from '@/lib/reporting/operations-reports'
 
 type ReportColumn = { key: string; labelEn: string; labelAr: string; type: 'text' | 'currency' | 'number' }
@@ -60,20 +61,52 @@ function ReportContent({ kind, titleAr, titleEn }: { kind: OperationsReportKind;
   const columns = data?.columns ?? []
   const rows = data?.rows ?? []
 
+  /**
+   * Branded export through the shared engine (Exec 60, Section 6). Columns and
+   * totals come from the server response, so the file matches the table.
+   */
+  async function exportExcel() {
+    if (!data) return
+    const spec = {
+      titleAr,
+      titleEn,
+      periodLabel: hasDates ? `${from} — ${to}` : null,
+      rtl: isRTL,
+      columns: columns.map((c) => ({
+        key: c.key,
+        labelAr: c.labelAr,
+        labelEn: c.labelEn,
+        type: (c.type === 'currency' ? 'currency' : c.type === 'number' ? 'number' : 'text') as 'currency' | 'number' | 'text',
+      })),
+      rows: rows as unknown as Record<string, unknown>[],
+      totals: columns
+        .filter((c) => data.totals?.[c.key] !== undefined)
+        .map((c) => ({ labelAr: c.labelAr, labelEn: c.labelEn, columnKey: c.key, value: Number(data.totals[c.key]) })),
+    }
+    const buffer = await buildReportWorkbook(spec)
+    downloadWorkbook(buffer, exportFilename(kind, hasDates ? `${from}_${to}` : null))
+  }
+
   return (
     <DashboardLayout>
       <div className="space-y-6" dir={isRTL ? 'rtl' : 'ltr'}>
         <header className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-2xl font-black text-slate-900 dark:text-white">{isRTL ? titleAr : titleEn}</h1>
-          {hasDates && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Input type="date" value={draftFrom} onChange={(e) => setDraftFrom(e.target.value)} className="w-40" />
-              <Input type="date" value={draftTo} onChange={(e) => setDraftTo(e.target.value)} className="w-40" />
-              <Button onClick={() => { setFrom(draftFrom); setTo(draftTo); load(draftFrom, draftTo) }}>
-                {isRTL ? 'تطبيق' : 'Apply'}
-              </Button>
-            </div>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {hasDates && (
+              <>
+                <Input type="date" value={draftFrom} onChange={(e) => setDraftFrom(e.target.value)} className="w-40" />
+                <Input type="date" value={draftTo} onChange={(e) => setDraftTo(e.target.value)} className="w-40" />
+                <Button onClick={() => { setFrom(draftFrom); setTo(draftTo); load(draftFrom, draftTo) }}>
+                  {isRTL ? 'تطبيق' : 'Apply'}
+                </Button>
+              </>
+            )}
+            <Button variant="outline" onClick={() => void exportExcel()} disabled={!data || rows.length === 0} className="gap-2">
+              <Download className="w-4 h-4" />
+              {isRTL ? 'تصدير Excel' : 'Export Excel'}
+            </Button>
+          </div>
         </header>
 
         {error ? (

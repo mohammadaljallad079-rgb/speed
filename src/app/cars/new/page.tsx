@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import DashboardLayout from '@/components/DashboardLayout'
 import RecordSelect from '@/components/records/RecordSelect'
+import { isSelectablePostableAccount } from '@/lib/records/sources'
 import { useLanguage } from '@/lib/LanguageContext'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -39,11 +40,10 @@ function NewCarForm() {
   const [isAdmin, setIsAdmin] = useState(false)
   const [tenantId, setTenantId] = useState<string | null>(null)
   const [suppliers, setSuppliers] = useState<SupplierOption[]>([])
-  const [accounts, setAccounts] = useState<{code:string; name:string; name_ar:string|null; name_en:string|null}[]>([])
   const [expenses, setExpenses] = useState([
-    { id: 'exp1', expense_type: 'Insurance', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp2', expense_type: 'Registration', account_code: '', amount: '', vat_percent: '0' },
-    { id: 'exp3', expense_type: 'Maintenance', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp1', expense_type: 'Insurance', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp2', expense_type: 'Registration', account_id: '', account_code: '', amount: '', vat_percent: '0' },
+    { id: 'exp3', expense_type: 'Maintenance', account_id: '', account_code: '', amount: '', vat_percent: '0' },
   ])
 
   const [mainImage, setMainImage] = useState<{ file: File; preview: string } | null>(null)
@@ -113,8 +113,14 @@ function NewCarForm() {
   const setExpenseField = (id: string, field: string, value: string) => {
     setExpenses(prev => prev.map(row => row.id === id ? { ...row, [field]: value } : row))
   }
+  // The expense account is chosen through the shared, database-backed picker.
+  // The row stores the account CODE (the shape `car_expenses` already used) and
+  // the account id, so the chart link survives an account rename.
+  const setExpenseAccount = (id: string, accountId: string, row: Record<string, unknown> | null) => {
+    setExpenses(prev => prev.map(r => r.id === id ? { ...r, account_id: accountId, account_code: String(row?.code ?? '') } : r))
+  }
   const addExpenseRow = () => {
-    setExpenses(prev => [...prev, { id: 'exp' + Date.now(), expense_type: '', account_code: '', amount: '', vat_percent: '0' }])
+    setExpenses(prev => [...prev, { id: 'exp' + Date.now(), expense_type: '', account_id: '', account_code: '', amount: '', vat_percent: '0' }])
   }
   const removeExpenseRow = (id: string) => {
     setExpenses(prev => prev.filter(row => row.id !== id))
@@ -157,8 +163,6 @@ function NewCarForm() {
       }
       const { data: supplierData } = await supabase.from('suppliers').select('id,name').order('name')
       setSuppliers(supplierData || [])
-      const { data: accountData } = await supabase.from('accounts').select('code,name,name_ar,name_en').eq('is_active', true).order('code')
-      setAccounts(accountData || [])
     }
     init()
   }, [])
@@ -521,9 +525,9 @@ function NewCarForm() {
                   <Input className={inputClass} value={form.purchase_source} onChange={e => set('purchase_source', e.target.value)} />
                 </div>
                 <div className="space-y-1">
-                  <Label className={labelClass}>{isRTL ? 'المورّد' : 'Supplier'}</Label>
                   <RecordSelect
                     kind="supplier"
+                    label={isRTL ? 'المورّد' : 'Supplier'}
                     value={form.supplier_id}
                     onChange={(id) => set('supplier_id', id)}
                     createMode="inline"
@@ -716,14 +720,16 @@ function NewCarForm() {
                           <Input className={inputClass} value={row.expense_type} onChange={e => setExpenseField(row.id, 'expense_type', e.target.value)} />
                         </td>
                         <td className="py-2 pr-2 min-w-[180px]">
-                          <select className={selectClass} value={row.account_code} onChange={e => setExpenseField(row.id, 'account_code', e.target.value)}>
-                            <option value="">{isRTL ? '-- اختر حساب --' : '-- Select Account --'}</option>
-                            {accounts.map(a => (
-                              <option key={a.code} value={a.code}>
-                                {a.code} — {isRTL ? (a.name_ar || a.name) : (a.name_en || a.name)}
-                              </option>
-                            ))}
-                          </select>
+                          <RecordSelect
+                            kind="account"
+                            label={isRTL ? 'حساب المصروف' : 'Expense account'}
+                            value={row.account_id}
+                            onChange={(accountId, record) => setExpenseAccount(row.id, accountId, record)}
+                            createMode="inline"
+                            eq={[['is_active', 'true']]}
+                            filter={(r) => r.type !== 'asset' && r.type !== 'liability' && isSelectablePostableAccount(r)}
+                            placeholder={isRTL ? '-- اختر حساب --' : '-- Select Account --'}
+                          />
                         </td>
                         <td className="py-2 pr-2 w-28">
                           <Input className={inputClass} type="number" step="0.001" value={expenses.find(e => e.id === row.id)?.amount || ''} onChange={e => setExpenseField(row.id, 'amount', e.target.value)} />

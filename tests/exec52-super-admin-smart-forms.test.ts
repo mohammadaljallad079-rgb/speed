@@ -82,6 +82,13 @@ describe("record labels and search never depend on a single column", () => {
     assert.equal(recordLabel(source, { id: "c1", full_name: "Ali Hassan" }), "Ali Hassan");
     assert.equal(recordLabel(source, { id: "c2", name: "Fallback Ltd" }), "Fallback Ltd");
     assert.equal(recordLabel(source, { id: "c3" }), "c3");
+
+    // A vehicle's identity is make + model + plate; showing only the plate
+    // leaves two cars indistinguishable in the picker.
+    const car = RECORD_SOURCES.car;
+    assert.equal(recordLabel(car, { id: "car1", make: "Toyota", model: "Corolla", plate_number: "12345" }), "Toyota Corolla (12345)");
+    assert.equal(recordLabel(car, { id: "car2", plate_number: "99999" }), "99999");
+    assert.equal(recordLabel(car, { id: "car3", make: "Nissan" }), "Nissan");
   });
 
   test("search matches code and phone as well as the label", () => {

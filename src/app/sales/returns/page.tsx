@@ -141,30 +141,22 @@ function SalesReturnsContent() {
 
     setSaving(true)
     try {
-      const { error: retError } = await supabase.from('sales_returns').insert({
-        invoice_id: selectedInvoice.id,
-        return_date: returnDate,
-        amount: amount,
-        reason: returnReason,
-        status: 'pending',
-        customer_id: selectedInvoice.customer_id,
-        invoice_number: selectedInvoice.invoice_number
+      // The SERVER writes the return, the invoice settlement and the ledger
+      // journal together. The browser used to insert `sales_returns` and update
+      // `invoices` itself with NO journal at all, so a return reduced the paid
+      // amount while the ledger still showed the collection.
+      const res = await fetch('/api/sales-returns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          invoice_id: selectedInvoice.id,
+          return_date: returnDate,
+          amount,
+          reason: returnReason || null,
+        }),
       })
-
-      if (retError) throw retError
-
-      const newPaid = Math.max(0, (selectedInvoice.paid_amount || 0) - amount)
-      const newStatus = newPaid === 0 ? 'returned' : 'partial_return'
-
-      const { error: invError } = await supabase
-        .from('invoices')
-        .update({ 
-          paid_amount: newPaid,
-          status: newStatus
-        })
-        .eq('id', selectedInvoice.id)
-
-      if (invError) throw invError
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload?.error || 'Could not create the return')
 
       notifyDataChanged()
       alert(isRTL ? 'تم إنشاء المرتجع بنجاح' : 'Return created successfully')

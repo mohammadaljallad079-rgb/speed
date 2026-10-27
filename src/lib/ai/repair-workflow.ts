@@ -9,6 +9,21 @@ import type { FormatTemplate } from "@/lib/reporting/plan";
 import { summarizeRevenue, type RevenueInvoice, type RevenueReturn } from "@/lib/reporting/revenue";
 import { validateReport, type ValidationColumn } from "@/lib/reporting/validation";
 import { classifyRepairRequest, type RepairClassification } from "./policy";
+import {
+  applyTemplateRequest,
+  diffTemplates,
+  DOCUMENT_LABELS,
+  isDocumentKind,
+  type DocumentKind,
+  type DocumentTemplate,
+} from "@/lib/templates/document-templates";
+import {
+  getDocumentTemplate,
+  saveDocumentTemplate,
+  restoreDocumentTemplate,
+  loadDocumentTemplates,
+  type TemplateDb,
+} from "@/lib/templates/document-template-store";
 import type { RepairStore } from "./repair-store";
 import {
   getRepairAction,
@@ -49,6 +64,36 @@ export interface RepairDeps {
   saveTemplate: (tenantId: string | null, template: FormatTemplate) => Promise<unknown>;
   /** Clock, so expiry is deterministic in tests. */
   now?: () => number;
+  /** Document-template store (injected; production passes supabaseAdmin). */
+  templates?: TemplateDb;
+  /**
+   * Financial-write port. Injected so the financial actions run through the SAME
+   * service the HTTP routes use, and so they are testable without a live DB.
+   * A missing port makes a financial action fail closed (`not_configured`).
+   */
+  finance?: FinancePort;
+}
+
+/**
+ * The financial operations a repair action may request. Each one delegates to an
+ * existing service; the workflow never writes a journal, an invoice or a
+ * contract itself.
+ */
+export interface FinancePort {
+  issueInvoice(context: AuthContext, input: {
+    customerId: string;
+    contractId?: string;
+    amount: number;
+    vat: number;
+    discount: number;
+    paymentMethod: string;
+    invoiceType: "sale" | "rental";
+  }): Promise<{ id: string; invoiceNumber: string; totalAmount: number; status: string; journalId?: string; journalCreated?: boolean }>;
+  reverseInvoice(context: AuthContext, invoiceNumber: string): Promise<{ invoiceId: string; journalId: string; created: boolean }>;
+  extendContract(context: AuthContext, input: {
+    contractId: string;
+    newEndDate: string;
+  }): Promise<{ contractId: string; newEndDate: string; additionalAmount: number; invoiceNumber?: string | null }>;
 }
 
 export type RepairProposalStatus =
@@ -75,6 +120,8 @@ export interface RepairProposal {
   proposalId: string;
   action: RepairActionId;
   kind: ReportKind | null;
+  /** Set only for the document-template actions. */
+  documentKind?: DocumentKind | null;
   params: RepairPlan["params"];
   effect: RepairEffect;
   requiresApproval: boolean;
@@ -100,6 +147,12 @@ export type RepairExecutionStatus =
   | "duplicate"
   | "in_progress"
   | "unresolved"
+  /**
+   * A prerequisite for a safe execution is missing (today: a financial write
+   * with no durable idempotency ledger). Distinct from `failed`: nothing was
+   * attempted and nothing changed.
+   */
+  | "unavailable"
   | "failed";
 
 export interface RepairApproval {
@@ -298,6 +351,239 @@ function planToTemplate(kind: ReportKind, name: string, prompt: string): FormatT
   };
 }
 
+/**
+ * Document-template preview (read-only). Builds the proposed template and the
+ * before/after diff without persisting anything. The request is parsed
+ * deterministically (`applyTemplateRequest`) - the model never supplies a
+ * template.
+ */
+async function documentTemplatePreview(plan: RepairPlan, deps: RepairDeps): Promise<RepairPreview> {
+  const kind = (plan.documentKind ?? "sales_invoice") as DocumentKind;
+  const label = DOCUMENT_LABELS[kind];
+  const db = deps.templates;
+  if (!db) {
+    return {
+      action: plan.action,
+      kind: null,
+      before: {},
+      after: {},
+      diff: [],
+      dataSource: "document-template-store (unavailable)",
+      rowCount: 0,
+      issues: [{ noteAr: "مخزن قوالب المستندات غير مهيّأ.", noteEn: "The document-template store is not configured." }],
+    };
+  }
+  const before = await getDocumentTemplate(db, deps.tenantId, kind);
+  const { template: after, changes, unapplied } = applyTemplateRequest(before, plan.params.prompt ?? "");
+  const diff = diffTemplates(before, after);
+  return {
+    action: plan.action,
+    kind: null,
+    before: {
+      documentKind: kind,
+      template: before,
+    },
+    after: {
+      documentKind: kind,
+      template: after,
+      changeCount: changes.length,
+    },
+    diff: diff.map((d) => `${d.label}: ${d.before} -> ${d.after}`),
+    dataSource: `settings:document_templates (${label.en})`,
+    rowCount: changes.length,
+    issues: [
+      ...(changes.length === 0
+        ? [{ noteAr: "لم يتم التعرف على أي تغيير قابل للتطبيق في الطلب.", noteEn: "No applicable change was recognised in the request." }]
+        : []),
+      ...(unapplied.length
+        ? [{ noteAr: `طلبات غير قابلة للتطبيق تلقائيًا: ${unapplied.join(", ")}.`, noteEn: `Requests that need a manual file/value: ${unapplied.join(", ")}.` }]
+        : []),
+    ],
+  };
+}
+
+/**
+ * Preview for a financial action. Read-only: it states exactly what the approved
+ * execution will do (amounts, journal shape, affected document) and computes the
+ * deterministic outcome the caller is approving. It touches nothing.
+ */
+async function financialPreview(
+  action: RepairActionId,
+  plan: RepairPlan,
+  deps: RepairDeps,
+): Promise<RepairPreview> {
+  const p = plan.params;
+  const money = (n: number) => Math.round(n * 1000) / 1000;
+
+  if (action === "invoice_reverse") {
+    const invoiceNumber = p.invoiceNumber ?? "";
+    let before: Record<string, unknown> = { invoiceNumber, exists: false };
+    let posted: Record<string, unknown> | null = null;
+    try {
+      const client = deps.finance;
+      if (client) {
+        const row = await lookupInvoiceByNumber(deps, invoiceNumber);
+        if (row) {
+          before = {
+            invoiceNumber,
+            exists: true,
+            status: row.status ?? null,
+            total: row.total_amount ?? null,
+            type: row.invoice_type ?? null,
+          };
+        }
+      }
+    } catch {
+      /* a read failure only degrades the preview detail */
+    }
+    posted = before.exists ? { status: "cancelled", reversed: true } : null;
+    return {
+      action,
+      kind: null,
+      before,
+      after: posted ?? { status: "not_found" },
+      diff: before.exists
+        ? [`Reverse ${invoiceNumber}: mirror the original journal and set status=cancelled`]
+        : [`Invoice ${invoiceNumber} was not found in your scope`],
+      dataSource: "invoices + journal_entries",
+      rowCount: before.exists ? 1 : 0,
+    };
+  }
+
+  if (action === "contract_extend") {
+    const contractId = p.contractId ?? "";
+    const newEndDate = p.newEndDate ?? "";
+    const before = await lookupContract(deps, contractId);
+    const additional = before ? computeExtensionAmount(before, newEndDate) : 0;
+    return {
+      action,
+      kind: null,
+      before: before ?? {},
+      after: { contractId, newEndDate, additionalAmount: additional },
+      diff: [
+        `Set end_date ${String(before?.end_date ?? "?")} -> ${newEndDate}`,
+        `Add ${money(additional)} to total_amount`,
+        additional > 0 ? "Issue the extension invoice through the sales service" : "No extension invoice (no additional amount)",
+      ],
+      dataSource: "rental_contracts",
+      rowCount: 1,
+    };
+  }
+
+  // invoice_issue
+  const amount = money(p.amount ?? 0);
+  const discount = money(p.discount ?? 0);
+  const vat = money(p.vat ?? 0);
+  const revenue = money(amount - discount);
+  const total = money(revenue + vat);
+  const isRental = p.invoiceType === "rental";
+  const customer = p.customerId ? await lookupCustomer(deps, p.customerId) : null;
+  return {
+    action,
+    kind: null,
+    before: { invoice: null },
+    after: {
+      customerId: p.customerId,
+      customerName: customer?.full_name ?? null,
+      invoiceType: p.invoiceType,
+      amount,
+      discount,
+      vat,
+      total,
+      paymentMethod: p.paymentMethod,
+    },
+    diff: [
+      `Customer: ${customer?.full_name ?? p.customerId}`,
+      `${isRental ? "Rental" : "Sale"} invoice: ${amount} - ${discount} discount + ${vat} VAT = ${total}`,
+      isRental
+        ? "Post Dr Cash/AR / Cr Rental revenue (41001) / Cr Output VAT"
+        : "Post Dr Cash/AR / Cr Sales revenue (41002) / Cr Output VAT",
+    ],
+    dataSource: isRental ? "rental_contracts + invoices" : "customers + invoices",
+    rowCount: 1,
+  };
+}
+
+/**
+ * A narrow view of the reporting client with the filters these lookups need.
+ * `ReportingQuery` models only what the report providers use, so a scope lookup
+ * casts to this instead of widening the reporting layer for every caller.
+ */
+type ScopedQuery = {
+  select(columns: string): ScopedQuery;
+  eq(column: string, value: string): ScopedQuery;
+  is(column: string, value: null): ScopedQuery;
+  maybeSingle(): Promise<{ data: Record<string, unknown> | null; error: unknown }>;
+};
+
+/** Reads an invoice by number within the caller's scope (read-only). */
+async function lookupInvoiceByNumber(
+  deps: RepairDeps,
+  invoiceNumber: string,
+): Promise<Record<string, unknown> | null> {
+  if (!invoiceNumber) return null;
+  let query = (deps.db.from("invoices") as unknown as ScopedQuery)
+    .select("id,invoice_number,status,total_amount,invoice_type,customer_id,rental_contract_id")
+    .eq("invoice_number", invoiceNumber);
+  query = deps.tenantId ? query.eq("tenant_id", deps.tenantId) : query.is("tenant_id", null);
+  const { data, error } = await query.maybeSingle();
+  if (error || !data) return null;
+  return data as Record<string, unknown>;
+}
+
+/** Reads a customer name for the preview (read-only). */
+async function lookupCustomer(
+  deps: RepairDeps,
+  customerId: string,
+): Promise<{ full_name?: string } | null> {
+  try {
+    let query = (deps.db.from("customers") as unknown as ScopedQuery).select("id,full_name").eq("id", customerId);
+    query = deps.tenantId ? query.eq("tenant_id", deps.tenantId) : query.is("tenant_id", null);
+    const { data } = await query.maybeSingle();
+    return (data as { full_name?: string }) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reads the contract being extended (read-only). */
+async function lookupContract(
+  deps: RepairDeps,
+  contractId: string,
+): Promise<Record<string, unknown> | null> {
+  if (!contractId) return null;
+  try {
+    let query = (deps.db.from("rental_contracts") as unknown as ScopedQuery)
+      .select("id,end_date,total_amount,daily_rate,weekly_rate,monthly_rate,rental_type,customer_id,car_id,status")
+      .eq("id", contractId);
+    query = deps.tenantId ? query.eq("tenant_id", deps.tenantId) : query.is("tenant_id", null);
+    const { data } = await query.maybeSingle();
+    return (data as Record<string, unknown>) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The extension amount for the additional days, mirroring the extend page's rate
+ * rule so the preview shows the number the execution will actually charge.
+ */
+function computeExtensionAmount(contract: Record<string, unknown>, newEndDate: string): number {
+  const currentEnd = contract.end_date ? new Date(String(contract.end_date)) : null;
+  const newEnd = new Date(newEndDate);
+  if (!currentEnd || isNaN(currentEnd.getTime()) || isNaN(newEnd.getTime())) return 0;
+  if (newEnd <= currentEnd) return 0;
+  const diffDays = Math.ceil((newEnd.getTime() - currentEnd.getTime()) / (1000 * 60 * 60 * 24));
+  const num = (v: unknown) => {
+    const n = typeof v === "number" ? v : parseFloat(String(v ?? ""));
+    return Number.isFinite(n) ? n : 0;
+  };
+  let rate = num(contract.daily_rate);
+  if (contract.rental_type === "weekly" && num(contract.weekly_rate)) rate = num(contract.weekly_rate) / 7;
+  else if (contract.rental_type === "monthly" && num(contract.monthly_rate)) rate = num(contract.monthly_rate) / 30;
+  return Math.round(diffDays * rate * 1000) / 1000;
+}
+
 async function buildPreviewFor(
   action: RepairActionId,
   plan: RepairPlan,
@@ -305,6 +591,14 @@ async function buildPreviewFor(
 ): Promise<RepairPreview> {
   const kind = plan.kind ?? "sales_report";
   const ctx: AssistantContext = { db: deps.db, tenantId: deps.tenantId, companyName: deps.companyName ?? null };
+
+  if (action === "invoice_issue" || action === "invoice_reverse" || action === "contract_extend") {
+    return financialPreview(action, plan, deps);
+  }
+
+  if (action === "document_template_preview" || action === "save_document_template" || action === "restore_document_template") {
+    return documentTemplatePreview(plan, deps);
+  }
 
   if (action === "dashboard_revenue_reconciliation") {
     return revenueReconciliation(plan, deps);
@@ -443,8 +737,22 @@ export async function proposeRepair(
 
   // Evidence gate: when the request carries nothing deterministic to check, do
   // not run a diagnostic that would guess — return a "requires verification"
-  // diagnosis with the sources a human should consult.
-  if (diagnosis.requiresVerification) {
+  // diagnosis with the sources a human should consult. A document-template
+  // request already names its document and its change, so the gate does not
+  // apply: the preview is deterministic regardless of the diagnosis.
+  const isDocAction =
+    spec.id === "document_template_preview" ||
+    spec.id === "save_document_template" ||
+    spec.id === "restore_document_template";
+  // A financial action is likewise explicit: the caller supplied the customer,
+  // the amounts and the document, so there is no source to guess. The evidence
+  // gate exists to stop a *diagnostic* from picking a source arbitrarily.
+  const isExplicitAction =
+    isDocAction ||
+    spec.id === "invoice_issue" ||
+    spec.id === "invoice_reverse" ||
+    spec.id === "contract_extend";
+  if (diagnosis.requiresVerification && !isExplicitAction) {
     return {
       ...base,
       kind: plan.kind ?? null,
@@ -468,6 +776,7 @@ export async function proposeRepair(
   return {
     ...base,
     kind: plan.kind ?? null,
+    documentKind: plan.documentKind ?? null,
     params: plan.params,
     status: spec.effect === "read" ? "ready" : "needs_approval",
     preview,
@@ -547,6 +856,23 @@ export async function executeRepair(
   //    constraint on (tenant_id, idempotency_key) makes concurrent requests,
   //    restarts and a lost response all safe. Without one, fall back to the
   //    best-effort in-memory port.
+  //
+  //    A FINANCIAL write may NOT fall back. The in-memory port lives in one
+  //    process: a retry routed to another worker, or served after a restart,
+  //    would see no record of the first attempt and post the invoice twice. The
+  //    durable ledger is the only thing that can stop that, so when it is
+  //    missing we refuse the write outright (fail closed) and say why, instead
+  //    of silently risking a duplicate posting.
+  if (spec.effect === "financial" && !(options.store?.durable ?? false)) {
+    return fail(
+      "unavailable",
+      "durability_unavailable",
+      "لا يمكن تنفيذ عملية مالية دون تخزين منع تكرار دائم. يجب تطبيق الترحيل 006 (جدول ai_repair_executions) أولاً.",
+      "A financial write requires durable idempotency. Apply migration 006 (the ai_repair_executions ledger) first.",
+      { ok: false, detailAr: "لم يتم تنفيذ أي تغيير مالي.", detailEn: "No financial change was made." },
+    );
+  }
+
   let claimed = false;
   if (options.store) {
     const claim = await options.store.claim({
@@ -632,6 +958,204 @@ export async function executeRepair(
       action: proposal.action,
       changed: fresh.after,
       verification: { ok: true, detailAr: "نتيجة القراءة/التحقق جاهزة.", detailEn: "Read/validation result is ready.", dataSource: fresh.dataSource },
+      idempotencyKey,
+      reference,
+    };
+  }
+
+  // Financial write: apply through the injected finance port (which delegates to
+  // the SAME services the HTTP routes use), then verify against a trusted
+  // re-read. The agent never writes an invoice, a journal or a contract itself.
+  if (proposal.effect === "financial") {
+    const finance = deps.finance;
+    if (!finance) {
+      await finalizeClaim("failed", false, [], "finance port not configured", null);
+      return fail("failed", "not_configured", "لم يتم تكوين مسار الترحيل المالي.", "The financial posting path is not configured.");
+    }
+
+    const p = proposal.params;
+    try {
+      if (proposal.action === "invoice_issue") {
+        const res = await finance.issueInvoice(context, {
+          customerId: p.customerId ?? "",
+          contractId: p.contractId,
+          amount: p.amount ?? 0,
+          vat: p.vat ?? 0,
+          discount: p.discount ?? 0,
+          paymentMethod: p.paymentMethod ?? "cash",
+          invoiceType: p.invoiceType === "rental" ? "rental" : "sale",
+        });
+        // Verify: the invoice exists in the caller's scope with the number the
+        // service returned. A service that returned an id it did not persist
+        // must not be reported as verified.
+        const stored = await lookupInvoiceByNumber(deps, res.invoiceNumber);
+        if (!stored || String(stored.id) !== res.id) {
+          await finalizeClaim("unresolved", null, ["invoices"], "invoice not found after issue", reference);
+          return fail("unresolved", "unresolved", "تم الإصدار لكن تعذّر التحقق؛ يتطلب مراجعة.", "Issued but verification failed; review required.");
+        }
+        await finalizeClaim("succeeded", true, ["invoices", "journal_entries"], `invoices:${res.invoiceNumber}`, reference);
+        return {
+          ok: true,
+          status: "verified",
+          proposalId: proposal.proposalId,
+          action: proposal.action,
+          changed: {
+            invoiceId: res.id,
+            invoiceNumber: res.invoiceNumber,
+            totalAmount: res.totalAmount,
+            status: res.status,
+            journalId: res.journalId ?? null,
+            journalCreated: res.journalCreated ?? false,
+          },
+          verification: {
+            ok: true,
+            detailAr: "تم إصدار الفاتورة وتُرحّل القيد المتوازن معها، وتم التحقق.",
+            detailEn: "The invoice was issued and its balanced journal posted, then verified.",
+            dataSource: `invoices:${res.invoiceNumber}`,
+          },
+          idempotencyKey,
+          reference,
+        };
+      }
+
+      if (proposal.action === "invoice_reverse") {
+        const invoiceNumber = p.invoiceNumber ?? "";
+        const res = await finance.reverseInvoice(context, invoiceNumber);
+        const stored = await lookupInvoiceByNumber(deps, invoiceNumber);
+        const reversed = stored && String(stored.status) === "cancelled";
+        if (!reversed) {
+          await finalizeClaim("unresolved", null, ["invoices"], "invoice not cancelled after reverse", reference);
+          return fail("unresolved", "unresolved", "تم العكس لكن تعذّر التحقق؛ يتطلب مراجعة.", "Reversed but verification failed; review required.");
+        }
+        await finalizeClaim("succeeded", true, ["invoices", "journal_entries"], `invoices:${invoiceNumber}`, reference);
+        return {
+          ok: true,
+          status: "verified",
+          proposalId: proposal.proposalId,
+          action: proposal.action,
+          changed: { invoiceId: res.invoiceId, journalId: res.journalId, journalCreated: res.created, status: "cancelled" },
+          verification: {
+            ok: true,
+            detailAr: "تم عكس الفاتورة بقيد متوازن وتحوّلت حالتها إلى ملغاة.",
+            detailEn: "The invoice was reversed with a balanced journal and is now cancelled.",
+            dataSource: `invoices:${invoiceNumber}`,
+          },
+          idempotencyKey,
+          reference,
+        };
+      }
+
+      // contract_extend
+      const res = await finance.extendContract(context, {
+        contractId: p.contractId ?? "",
+        newEndDate: p.newEndDate ?? "",
+      });
+      const after = await lookupContract(deps, res.contractId);
+      if (!after || String(after.end_date) !== res.newEndDate) {
+        await finalizeClaim("unresolved", null, ["rental_contracts"], "contract end date not applied", reference);
+        return fail("unresolved", "unresolved", "تم التمديد لكن تعذّر التحقق؛ يتطلب مراجعة.", "Extended but verification failed; review required.");
+      }
+      await finalizeClaim("succeeded", true, ["rental_contracts", "invoices"], `rental_contracts:${res.contractId}`, reference);
+      return {
+        ok: true,
+        status: "verified",
+        proposalId: proposal.proposalId,
+        action: proposal.action,
+        changed: {
+          contractId: res.contractId,
+          newEndDate: res.newEndDate,
+          additionalAmount: res.additionalAmount,
+          invoiceNumber: res.invoiceNumber ?? null,
+        },
+        verification: {
+          ok: true,
+          detailAr: "تم تمديد العقد وإصدار فاتورة التمديد، وتم التحقق من تاريخ الانتهاء.",
+          detailEn: "The contract was extended and its invoice issued; the new end date was verified.",
+          dataSource: `rental_contracts:${res.contractId}`,
+        },
+        idempotencyKey,
+        reference,
+      };
+    } catch (error) {
+      const code = (error as { code?: string })?.code ?? "posting_failed";
+      const message = (error as Error)?.message ?? "posting failed";
+      await finalizeClaim("failed", false, [], `${proposal.action} failed: ${message}`, null);
+      return fail("failed", code, "فشل الترحيل المالي؛ لم يتم تغيير أي بيانات.", "The financial posting failed; no data was changed.", {
+        ok: false,
+        detailAr: `فشل الترحيل (${code}).`,
+        detailEn: `Posting failed (${code}).`,
+      });
+    }
+  }
+
+  // Write (document templates): apply the deterministic change, persist it, then
+  // re-read the store to verify. Never trusts the model for the template body.
+  if (proposal.action === "save_document_template" || proposal.action === "restore_document_template") {
+    const db = deps.templates;
+    const docKind = proposal.documentKind ?? undefined;
+    if (!db || !docKind || !isDocumentKind(docKind)) {
+      await finalizeClaim("failed", false, [], "invalid document template input", null);
+      return fail("failed", "bad_request", "مدخلات قالب المستند غير صالحة.", "Invalid document-template input.");
+    }
+
+    let result;
+    try {
+      if (proposal.action === "restore_document_template") {
+        result = await restoreDocumentTemplate(db, deps.tenantId, docKind);
+      } else {
+        const before = await getDocumentTemplate(db, deps.tenantId, docKind);
+        const applied = applyTemplateRequest(before, proposal.params.prompt ?? "");
+        if (applied.changes.length === 0) {
+          await finalizeClaim("failed", false, [], "no applicable change", null);
+          return fail("failed", "no_change", "لم يُعرّف أي تغيير قابل للتطبيق.", "No applicable change was recognised.");
+        }
+        const desired: DocumentTemplate = {
+          ...applied.template,
+          name: proposal.params.name || applied.template.name,
+        };
+        result = await saveDocumentTemplate(db, deps.tenantId, desired);
+      }
+    } catch (error) {
+      await finalizeClaim("failed", false, [], `template save failed: ${(error as Error).message}`, null);
+      return fail("failed", "save_failed", "فشل حفظ قالب المستند.", "Failed to save the document template.");
+    }
+
+    if (!result.ok || !result.template) {
+      await finalizeClaim("failed", false, [], `template save rejected: ${result.error}`, null);
+      return fail("failed", "save_failed", "فشل حفظ قالب المستند.", "Failed to save the document template.", {
+        ok: false,
+        detailAr: `فشل الحفظ (${result.error ?? "unknown"}).`,
+        detailEn: `Save failed (${result.error ?? "unknown"}).`,
+      });
+    }
+
+    // Post-execution verification: re-read the store and confirm the version moved.
+    let verified = false;
+    try {
+      const stored = await getDocumentTemplate(db, deps.tenantId, docKind);
+      verified = stored.version >= result.template.version && stored.updatedAt === result.template.updatedAt;
+    } catch (error) {
+      await finalizeClaim("unresolved", null, ["document_templates"], `verify read failed: ${(error as Error).message}`, reference);
+      return fail("unresolved", "unresolved", "تم الحفظ لكن تعذّر التحقق؛ يتطلب مراجعة.", "Saved but verification failed; review required.");
+    }
+    options.idempotency?.mark(idempotencyKey, reference);
+    if (!verified) {
+      await finalizeClaim("failed", false, [], "template version did not change", reference);
+      return fail("failed", "verification_failed", "لم يتم التحقق من حفظ القالب.", "The template save could not be verified.");
+    }
+    await finalizeClaim("succeeded", true, ["document_templates"], `settings:document_templates:${docKind}`, reference);
+    return {
+      ok: true,
+      status: "verified",
+      proposalId: proposal.proposalId,
+      action: proposal.action,
+      changed: { documentKind: docKind, version: result.template.version },
+      verification: {
+        ok: true,
+        detailAr: "تم حفظ قالب المستند والتحقق منه.",
+        detailEn: "Document template saved and verified.",
+        dataSource: `settings:document_templates:${docKind}`,
+      },
       idempotencyKey,
       reference,
     };

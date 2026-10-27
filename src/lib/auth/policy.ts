@@ -110,18 +110,29 @@ export function scopeToTenant<T>(query: T, context: AuthContext): T {
 }
 
 /**
+ * The one fail-closed tenant predicate.
+ *
+ * A tenant-less caller is scoped to `IS NULL` — the single-tenant install's own
+ * rows — never left unfiltered. This is the shape the platform's isolation
+ * depends on, so it exists in exactly one place and every scoped read delegates
+ * here: a second copy is a second chance to get it wrong.
+ */
+export function scopeToTenantColumn<T>(query: T, tenantId: string | null, column = "tenant_id"): T {
+  const q = query as unknown as { eq: (c: string, v: string) => unknown; is: (c: string, v: null) => unknown };
+  return (tenantId ? q.eq(column, tenantId) : q.is(column, null)) as T;
+}
+
+/**
  * Applies a company/tenant scope to a shared-artefact read, fail-closed.
  *
- * Unlike `scopeToTenant`, a tenant-less caller is scoped to `IS NULL` (the
- * single-tenant install) rather than left unfiltered. This prevents a caller
- * whose tenant cannot be resolved from reading every tenant's financial
- * artefacts. Super admins are the only cross-tenant readers and are never
- * scoped.
+ * Unlike `scopeToTenant`, a tenant-less caller is scoped to `IS NULL` rather
+ * than left unfiltered. This prevents a caller whose tenant cannot be resolved
+ * from reading every tenant's financial artefacts. Super admins are the only
+ * cross-tenant readers and are never scoped.
  */
 export function scopeToCompany<T>(query: T, context: AuthContext, column = "company_id"): T {
   if (context.isSuperAdmin) return query;
-  const q = query as unknown as { eq: (c: string, v: string) => T; is: (c: string, v: null) => T };
-  return context.tenantId ? q.eq(column, context.tenantId) : q.is(column, null);
+  return scopeToTenantColumn(query, context.tenantId, column);
 }
 
 /**

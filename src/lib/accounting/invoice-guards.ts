@@ -303,12 +303,39 @@ export async function decideInvoiceDeletion(
   client: DecisionClient,
   params: { id: string; invoiceNumber: string; tenantId: string | null },
 ): Promise<DeletionDecision> {
+  return decideInvoiceChange(client, params, "delete");
+}
+
+/**
+ * Decide whether a sales invoice may be EDITED. Fails closed.
+ *
+ * The same two facts that make an invoice undeletable make it uneditable, for
+ * the same reasons: a posted invoice's journal describes amounts the edit would
+ * contradict, and an invoice with receipts or returns would stop matching the
+ * rows that reference it. The edit screen used to enforce both in the browser
+ * only - so a caller who skipped the screen could rewrite a posted invoice's
+ * `total_amount` straight from the client while its journal kept the old figure,
+ * leaving the ledger and the document permanently disagreeing.
+ */
+export async function decideInvoiceEdit(
+  client: DecisionClient,
+  params: { id: string; invoiceNumber: string; tenantId: string | null },
+): Promise<DeletionDecision> {
+  return decideInvoiceChange(client, params, "edit");
+}
+
+async function decideInvoiceChange(
+  client: DecisionClient,
+  params: { id: string; invoiceNumber: string; tenantId: string | null },
+  verb: "delete" | "edit",
+): Promise<DeletionDecision> {
+  const gerund = verb === "delete" ? "deleted" : "edited";
   const journal = await lookupPostedJournal(client, "sale_invoice", params.invoiceNumber, params.tenantId);
   if (journal.state === "found") {
     return {
       allowed: false,
       code: "posted",
-      message: "A posted invoice cannot be deleted; reverse it instead.",
+      message: `A posted invoice cannot be ${gerund}; reverse it instead.`,
     };
   }
   if (journal.state === "unknown") {
@@ -328,8 +355,70 @@ export async function decideInvoiceDeletion(
     };
   }
   const { payments, returns } = dependents.value;
-  if (payments > 0) return { allowed: false, code: "dependents", message: attachedMessage(`${payments} payment(s)`) };
-  if (returns > 0) return { allowed: false, code: "dependents", message: attachedMessage(`${returns} return(s)`) };
+  if (payments > 0) {
+    return {
+      allowed: false,
+      code: "dependents",
+      message: `This invoice has ${payments} payment(s) attached and cannot be ${gerund}; cancel or reverse it instead.`,
+    };
+  }
+  if (returns > 0) {
+    return {
+      allowed: false,
+      code: "dependents",
+      message: `This invoice has ${returns} return(s) attached and cannot be ${gerund}; cancel or reverse it instead.`,
+    };
+  }
 
   return { allowed: true };
+}
+
+// ---------------------------------------------------------------------------
+// Account deletion
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether a chart-of-accounts row may be hard-deleted. Fails closed.
+ *
+ * Deleting an account that a journal line references leaves that line pointing
+ * at nothing: every report derives its balances from `journal_lines`, so the
+ * entry silently drops out of the ledger while its journal header still claims a
+ * total. A database FK may refuse the delete outright, but relying on that is not
+ * a guard - it depends on the live schema, and a `on delete set null` FK would
+ * instead leave the line with no account at all.
+ *
+ * The supported way to retire an account is to deactivate it (`is_active =
+ * false`), which keeps history intact. `journal_lines.account_id` is the
+ * canonical column (Exec 16).
+ */
+export async function decideAccountDeletion(
+  client: CountClient,
+  params: { id: string; code?: string | null },
+): Promise<DeletionDecision> {
+  if (!params.id) return { allowed: false, code: "unverified", message: "No account id was supplied." };
+
+  const lines = await countRows(client, "journal_lines", "account_id", params.id);
+  if (lines.state === "unknown") {
+    return {
+      allowed: false,
+      code: "unverified",
+      message: `Cannot verify whether the account is used by the ledger: ${lines.reason}`,
+    };
+  }
+  if (lines.value > 0) {
+    const label = params.code ? `account ${params.code}` : "this account";
+    return {
+      allowed: false,
+      code: "dependents",
+      message: `Cannot delete ${label}: ${lines.value} journal line(s) reference it. Deactivate it instead.`,
+    };
+  }
+
+  return { allowed: true };
+}
+
+/** Advisory boolean: may the caller treat this account as unused? `unknown` -> true. */
+export async function hasAccountActivity(client: CountClient, accountId: string): Promise<boolean> {
+  const outcome = await countRows(client, "journal_lines", "account_id", accountId);
+  return outcome.state !== "found" || outcome.value > 0;
 }

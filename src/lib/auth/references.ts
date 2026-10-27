@@ -3,6 +3,17 @@ import { invalidReference } from "./errors";
 import type { AuthContext } from "./types";
 
 /**
+ * The client the reference checks run against.
+ *
+ * Defaults to the service-role client; a caller may inject one so a service that
+ * owns its own database handle (and a test that runs against a PostgREST stub)
+ * does not have to reach for the module-level singleton. A reference check is
+ * exactly the kind of thing that must be exercised against two tenants, and a
+ * hard-wired client makes that impossible.
+ */
+export type ReferenceClient = { from(table: string): any };
+
+/**
  * Foreign-key reference validation.
  *
  * Business tables store plain uuid columns without composite (id, tenant_id)
@@ -46,11 +57,12 @@ export async function assertReference(
   spec: ReferenceSpec,
   value: unknown,
   context: AuthContext,
+  client: ReferenceClient = supabaseAdmin as unknown as ReferenceClient,
 ): Promise<void> {
   if (value === undefined || value === null || value === "") return;
   if (typeof value !== "string") throw invalidReference(spec.field);
 
-  const reader = () => supabaseAdmin.from(spec.table).select("id, tenant_id").eq("id", value);
+  const reader = () => client.from(spec.table).select("id, tenant_id").eq("id", value);
 
   if (context.tenantId) {
     const { data: own } = await reader().eq("tenant_id", context.tenantId).maybeSingle();
@@ -68,9 +80,10 @@ export async function assertReferences(
   specs: ReferenceSpec[],
   payload: Record<string, unknown>,
   context: AuthContext,
+  client?: ReferenceClient,
 ): Promise<void> {
   for (const spec of specs) {
-    await assertReference(spec, payload[spec.field], context);
+    await assertReference(spec, payload[spec.field], context, client);
   }
 }
 
@@ -81,13 +94,14 @@ export async function assertReferenceList(
   spec: ReferenceSpec,
   values: unknown[],
   context: AuthContext,
+  client: ReferenceClient = supabaseAdmin as unknown as ReferenceClient,
 ): Promise<void> {
   const unique = [...new Set(values.filter((v): v is string => typeof v === "string" && v !== ""))];
   if (unique.length === 0) return;
 
   const found = new Set<string>();
   if (context.tenantId) {
-    const { data: own } = await supabaseAdmin
+    const { data: own } = await client
       .from(spec.table)
       .select("id, tenant_id")
       .in("id", unique)
@@ -95,7 +109,7 @@ export async function assertReferenceList(
     for (const row of (own ?? []) as { id: string }[]) found.add(row.id);
   }
 
-  const { data: shared } = await supabaseAdmin
+  const { data: shared } = await client
     .from(spec.table)
     .select("id, tenant_id")
     .in("id", unique)

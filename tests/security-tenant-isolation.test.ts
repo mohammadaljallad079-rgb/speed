@@ -307,7 +307,11 @@ describe("privileged routes enforce authorization", () => {
     assert.match(me, /auth\.getUser\(\)/, "it must authenticate the session");
     assert.match(me, /status:\s*401/, "a session-less caller must be rejected");
     assert.match(me, /resolveAuthContext\(request\)/, "it resolves the app identity server-side");
-    assert.match(me, /loadTenantPlan\(supabaseAdmin as never, context\.tenantId\)/, "the service-role read must use the resolved tenant");
+    assert.match(
+      me,
+      /resolveEntitlements\(supabaseAdmin as never, context\.tenantId/,
+      "the service-role read must use the resolved tenant",
+    );
     assert.doesNotMatch(me, /body\.tenant_id|searchParams\.get\("tenant/, "it must never read a tenant from the request");
   });
 

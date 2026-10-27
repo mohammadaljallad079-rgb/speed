@@ -143,12 +143,16 @@ describe("Exec 59 — the route enforces the package", () => {
   });
 
   test("a super admin is the platform operator, not gated by a company package", () => {
-    assert.match(route, /if \(context\.isSuperAdmin\) return "enterprise"/);
+    // The exemption now lives in the shared resolver, which receives the flag
+    // from the session context rather than being special-cased in the route.
+    assert.match(route, /resolveEntitlements\(/);
+    assert.match(route, /isSuperAdmin: context\.isSuperAdmin/);
   });
 
   test("the plan is read from the session tenant, never the request body", () => {
-    assert.match(route, /loadTenantPlan\(supabaseAdmin as never, context\.tenantId\)/);
-    assert.doesNotMatch(route, /loadTenantPlan\([^)]*body\.tenantId/);
+    assert.match(route, /resolveEntitlements\(supabaseAdmin as never, context\.tenantId/);
+    assert.doesNotMatch(route, /resolveEntitlements\([^)]*body\.tenantId/);
+    assert.doesNotMatch(route, /body\.tenantId/);
   });
 
   test("the plan route is super-admin only and audit-logs the change", () => {

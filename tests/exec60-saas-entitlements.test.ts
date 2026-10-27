@@ -25,14 +25,20 @@ const read = (p: string) => fs.readFileSync(path.join(ROOT, p), "utf8");
 describe("Exec 60 — the import capability is enforced server-side", () => {
   const route = read("src/app/api/import/route.ts");
 
-  test("the route consults the tenant's package", () => {
-    assert.match(route, /loadTenantPlan/, "the import route must read the package");
-    assert.match(route, /planGrants\(plan, "imports"\)/, "the imports capability must be checked");
+  test("the route consults the tenant's in-force entitlements", () => {
+    assert.match(route, /resolveEntitlements/, "the import route must resolve the plan AND the trial");
+    assert.match(
+      route,
+      /entitlementGrants\(entitlements, "imports"\)/,
+      "the imports capability must be checked",
+    );
+    // Reading the package alone could never expire, so it must not appear.
+    assert.doesNotMatch(route, /loadTenantPlan/);
   });
 
   test("both the template download and the commit are gated", () => {
     // Two guards: the GET (template / module list) and the POST (preview+commit).
-    const guards = route.match(/planGrants\(plan, "imports"\)/g) ?? [];
+    const guards = route.match(/entitlementGrants\(entitlements, "imports"\)/g) ?? [];
     assert.ok(guards.length >= 3, `expected a guard in GET(modules), GET(template) and POST (found ${guards.length})`);
   });
 
@@ -42,7 +48,7 @@ describe("Exec 60 — the import capability is enforced server-side", () => {
   });
 
   test("a super admin is not gated by a tenant package", () => {
-    assert.match(route, /isSuperAdmin \? "enterprise"/, "the platform operator must not be blocked");
+    assert.match(route, /isSuperAdmin: context\.isSuperAdmin/, "the platform operator must not be blocked");
   });
 
   test("the module list reports the capability so the UI can hide the control", () => {
@@ -54,17 +60,22 @@ describe("Exec 60 — capabilities are exposed for presentation, never trusted",
   const me = read("src/app/api/me/route.ts");
 
   test("/api/me reports the plan and its capabilities", () => {
-    assert.match(me, /capabilities: capabilitiesFor\(plan\)/);
-    assert.match(me, /loadTenantPlan/);
+    assert.match(me, /capabilities: entitlements\.capabilities/);
+    assert.match(me, /resolveEntitlements/);
+  });
+
+  test("/api/me also reports the trial, so a seven-day trial can be shown", () => {
+    assert.match(me, /trial: entitlements\.trial/);
+    assert.match(me, /onTrial: entitlements\.onTrial/);
   });
 
   test("the plan comes from the session's tenant, never the request", () => {
-    assert.match(me, /loadTenantPlan\(supabaseAdmin as never, context\.tenantId\)/);
+    assert.match(me, /resolveEntitlements\(supabaseAdmin as never, context\.tenantId/);
     assert.doesNotMatch(me, /searchParams\.get\("plan"\)/);
   });
 
   test("a super admin holds the top package", () => {
-    assert.match(me, /context\.isSuperAdmin \? "enterprise"/);
+    assert.match(me, /isSuperAdmin: context\.isSuperAdmin/);
   });
 });
 

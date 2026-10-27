@@ -22,8 +22,9 @@
  */
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -250,6 +251,106 @@ test("the preflight inspects the tenant-less shape it exists to report on", () =
   for (const re of [/\binsert\b/i, /\bupdate\b/i, /\bdelete\b/i, /\bdrop\b/i, /\balter\b/i, /\btruncate\b/i]) {
     assert.doesNotMatch(exec, re, `the preflight must stay read-only: ${re}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 3b. The live-schema verifier's SUCCESS path (proved against a local stub)
+// ---------------------------------------------------------------------------
+/** Serve a PostgREST-shaped OpenAPI document so the verifier has something real to read. */
+function stubPostgrest(definitions: Record<string, unknown>): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve) => {
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith("/rest/v1/")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ swagger: "2.0", definitions }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as { port: number }).port;
+      resolve({ port, close: () => new Promise<void>((r) => server.close(() => r())) });
+    });
+  });
+}
+
+/**
+ * Run the verifier against a base URL, returning its exit code and output.
+ *
+ * ASYNC on purpose: the stub server lives in THIS process, so a synchronous
+ * spawn would block the event loop and the stub could never answer - the child
+ * would hang until the test timed out.
+ */
+function runVerifier(url: string): Promise<{ code: number; out: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      "node",
+      ["scripts/verify-live-schema.mjs"],
+      {
+        cwd: ROOT,
+        encoding: "utf8",
+        timeout: 20_000,
+        env: {
+          ...process.env,
+          NEXT_PUBLIC_SUPABASE_URL: url,
+          SUPABASE_SERVICE_ROLE_KEY: "local-stub-service-role-key-long-enough",
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: "local-stub-anon-key",
+        },
+      },
+      (err, stdout, stderr) => {
+        const code = err ? ((err as { code?: number }).code ?? -1) : 0;
+        resolve({ code, out: `${stdout ?? ""}${stderr ?? ""}` });
+      },
+    );
+  });
+}
+
+test("the verifier reports a SATISFIED schema with exit 0 when the columns exist", async () => {
+  // A date+time live shape: 017 must be reported effective (not merely present).
+  const stub = await stubPostgrest({
+    rental_contracts: {
+      properties: { id: {}, car_id: {}, start_date: {}, end_date: {}, start_time: {}, end_time: {}, status: {}, tenant_id: {} },
+    },
+    users: { properties: { id: {}, customer_id: {}, role: {} } },
+    invoices: { properties: { id: {}, rental_contract_id: {}, total_amount: {} } },
+  });
+  try {
+    const { code, out } = await runVerifier(`http://127.0.0.1:${stub.port}`);
+    assert.equal(code, 0, `expected exit 0 (satisfied), got ${code}: ${out}`);
+    assert.match(out, /Live schema read: 3 tables/);
+    assert.match(out, /OK\s+\| 017 rental_contracts: guard is effective/);
+    assert.match(out, /OK\s+\| 016 users/);
+    assert.match(out, /OK\s+\| 013 invoices/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("the verifier reports a MISSING column with exit 1 and names what is absent", async () => {
+  const stub = await stubPostgrest({
+    rental_contracts: { properties: { id: {}, car_id: {}, start_date: {}, end_date: {}, status: {} } },
+    users: { properties: { id: {}, role: {} } },
+    invoices: { properties: { id: {}, total_amount: {} } },
+  });
+  try {
+    const { code, out } = await runVerifier(`http://127.0.0.1:${stub.port}`);
+    assert.equal(code, 1, `expected exit 1 (unsatisfied), got ${code}: ${out}`);
+    assert.match(out, /FAIL\s+\| 016 users/);
+    assert.match(out, /customer_id/, "the missing column must be named");
+    // And it must still say the tenant-less 017 guard is effective.
+    assert.match(out, /017 rental_contracts: guard is effective/);
+  } finally {
+    await stub.close();
+  }
+});
+
+test("an explicit environment variable beats the .env.local placeholder", () => {
+  // The tool must be pointable at a project without editing the file; the
+  // placeholder in .env.local used to win, which made the success path
+  // untestable and an operator override impossible.
+  const src = readFileSync(join(ROOT, "scripts/verify-live-schema.mjs"), "utf8");
+  assert.match(src, /if \(process\.env\[k\]\) out\[k\] = process\.env\[k\]/, "env vars must take precedence");
 });
 
 // ---------------------------------------------------------------------------

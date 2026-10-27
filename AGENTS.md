@@ -2417,6 +2417,15 @@ that applies the filters it is given and returns only affected rows.
   assembles the predicate with dynamic SQL (still a single read-only SELECT),
   emits the tenant equality only when `v_ten`, and writes the blocking-status list
   out inline. It reports the precision and whether `tenant_id` is present.
-- Baseline after Exec 72.2: 1615 tests / 1609 pass / 0 fail / 6 skipped; typecheck
+- **`scripts/verify-live-schema.mjs` is proven on BOTH paths.** Fail-closed
+  (exit 2) was easy; the success path needed a stub. The tool now lets an
+  explicit environment variable win over `.env.local` (an operator pointing it at
+  another project must not be silently overridden by the file's placeholder),
+  which also makes the path testable: `tests/exec72-migration-017-hardening.test.ts`
+  serves a PostgREST-shaped OpenAPI document on a loopback port and asserts
+  exit 0 (satisfied), exit 1 (a named missing column) and exit 2 (no credentials).
+  The stub runs in-process, so the child must be spawned ASYNCHRONOUSLY - a
+  synchronous spawn blocks the event loop and the stub can never answer.
+- Baseline after Exec 72.3: 1618 tests / 1612 pass / 0 fail / 6 skipped; typecheck
   0 errors; lint clean; all six harnesses pass (isolation 17, 004, 005 10, 007 15,
   017 39, cross-company 47) plus the 19-assertion two-session race harness.

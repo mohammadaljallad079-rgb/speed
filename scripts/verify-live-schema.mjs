@@ -68,6 +68,11 @@ const REQUIREMENTS = [
 ];
 
 // --- env ---------------------------------------------------------------------
+/**
+ * `.env.local` then `.env`, but an EXPLICIT environment variable always wins.
+ * An operator pointing the tool at a project without editing the file (CI, a
+ * one-off check) must not be silently overridden by whatever the file holds.
+ */
 function loadEnv() {
   const out = {};
   for (const f of [".env.local", ".env"]) {
@@ -78,6 +83,13 @@ function loadEnv() {
       if (!m || line.trim().startsWith("#")) continue;
       out[m[1]] = m[2].replace(/^["']|["']$/g, "");
     }
+  }
+  for (const k of [
+    "NEXT_PUBLIC_SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+  ]) {
+    if (process.env[k]) out[k] = process.env[k];
   }
   return out;
 }

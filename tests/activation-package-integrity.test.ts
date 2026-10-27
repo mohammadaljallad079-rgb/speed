@@ -26,6 +26,7 @@ const PKG_012 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_012.sql");
 const PKG_013 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_013.sql");
 const PKG_014 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_014.sql");
 const PKG_015 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_015.sql");
+const PKG_016 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_016.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -445,7 +446,25 @@ describe("activation package 012 (notifications store)", () => {
 // 013 / 014 / 015 — the packages that back the live receipt workflow.
 // ---------------------------------------------------------------------------
 
-const LATER_PACKAGES: Array<{ n: string; file: string; pkg: string; migration: string; rollback: string; mustMention: RegExp[] }> = [
+const LATER_PACKAGES: Array<{
+  n: string;
+  file: string;
+  pkg: string;
+  migration: string;
+  rollback: string;
+  mustMention: RegExp[];
+  /**
+   * `security definer` is refused by default because a definer function in a
+   * package is a privilege boundary that must be reviewed, not waved through.
+   * 016 declares the two predicate helpers 002/004 already rely on
+   * (`current_customer_id`, `is_erp_user`); both only read the caller's own
+   * `users` row, which is why RLS cannot be allowed to filter that read. The
+   * exception is stated per-package and asserted below, so any OTHER package
+   * that adds a definer function still fails.
+   */
+  allowsSecurityDefiner?: boolean;
+  definerFunctions?: string[];
+}> = [
   {
     n: "013",
     file: "013_booking_invoice_idempotency.sql",
@@ -476,6 +495,22 @@ const LATER_PACKAGES: Array<{ n: string; file: string; pkg: string; migration: s
       /post_customer_receipt_reversal/,
     ],
   },
+  {
+    n: "016",
+    file: "016_customer_row_isolation.sql",
+    pkg: PKG_016,
+    migration: "016_customer_row_isolation.sql",
+    rollback: "016_customer_row_isolation_rollback.sql",
+    mustMention: [
+      /PRODUCTION_ACTIVATION_001_002_003\.sql/,
+      /015/,
+      /chlkmdobhvfnldqkgdji/,
+      /current_customer_id/,
+      /is_erp_user/,
+    ],
+    allowsSecurityDefiner: true,
+    definerFunctions: ["current_customer_id", "is_erp_user", "prevent_self_privilege_escalation"],
+  },
 ];
 
 for (const p of LATER_PACKAGES) {
@@ -503,18 +538,51 @@ for (const p of LATER_PACKAGES) {
         .split("\n")
         .filter((l) => !l.trimStart().startsWith("--"))
         .join("\n");
-      for (const re of [
+      const forbidden = [
         /\bdrop\s+table\b/i,
         /\bdrop\s+column\b/i,
         /\btruncate\b/i,
         /\bdelete\s+from\b/i,
         /\bdrop\s+schema\b/i,
         /\bgrant\s+all\b/i,
-        /security\s+definer/i,
-      ]) {
+      ];
+      // `security definer` is reviewed, not blanket-banned: it is refused unless
+      // this package opts in AND declares exactly which functions may use it.
+      if (!p.allowsSecurityDefiner) forbidden.push(/security\s+definer/i);
+      for (const re of forbidden) {
         assert.doesNotMatch(nonComment, re, `destructive or unsafe statement: ${re}`);
       }
     });
+
+    if (p.allowsSecurityDefiner) {
+      test("a definer function is only the ones this package declares", () => {
+        const declared = p.definerFunctions ?? [];
+        assert.ok(declared.length > 0, "a definer opt-in must name its functions");
+        const defined = [...text.matchAll(/create or replace function public\.(\w+)\s*\(/g)].map((m) => m[1]);
+        for (const fn of defined) {
+          assert.ok(declared.includes(fn), `undeclared definer function: ${fn}`);
+        }
+        // Each declared function must actually be defined, and each definition
+        // must carry `security definer` and a pinned search_path.
+        for (const fn of declared) {
+          assert.ok(defined.includes(fn), `declared but not defined: ${fn}`);
+          const block = text.slice(text.indexOf(`function public.${fn}(`));
+          const body = block.slice(0, block.indexOf("$$;"));
+          assert.match(body, /security\s+definer/i, `${fn} must be security definer`);
+          assert.match(body, /set\s+search_path\s*=\s*public/i, `${fn} must pin search_path`);
+        }
+      });
+
+      test("the definer helpers cannot be called by anon", () => {
+        for (const fn of p.definerFunctions ?? []) {
+          assert.match(
+            text,
+            new RegExp(`revoke[^;]*on function public\\.${fn}\\([^)]*\\)[^;]*from[^;]*anon`, "is"),
+            `${fn} must be revoked from anon`,
+          );
+        }
+      });
+    }
 
     test("the package documents the apply order and the correct project", () => {
       for (const re of p.mustMention) assert.match(text, re);

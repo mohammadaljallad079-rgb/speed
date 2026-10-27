@@ -867,3 +867,147 @@ order by ok, item;
 fs.writeFileSync(OUT_015, header015, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_015)}`);
 console.log(`  015 sha256 ${h015}`);
+
+// ---------------------------------------------------------------------------
+// 016 — customer row isolation. Appended after 015: it depends on 002's tenant
+// policies and 004's `is_admin()`.
+// ---------------------------------------------------------------------------
+const b016 = read("016_customer_row_isolation.sql");
+const h016 = sha(b016);
+const OUT_016 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_016.sql");
+
+const header016 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (016)
+-- ============================================================================
+-- Purpose : a rental CUSTOMER may read only its own rows.
+--
+--           Migrations 001/002 isolate every table by TENANT. That is the
+--           boundary between companies, but it is NOT a boundary inside one
+--           company: a rental customer is an authenticated user of the tenant,
+--           so the tenant predicate is satisfied by every row of that tenant.
+--           The customer portal reads its data with the browser client (RLS is
+--           the enforcement boundary there), so customer A could read customer
+--           B's rental contracts, tickets, PII and every colleague's account.
+--
+--           It also closes a privilege escalation: a 'client' could set its own
+--           users.role to 'admin' (004 only blocked the super_admin grant).
+--
+--           Reproduced by execution on a real PostgreSQL 17 with the
+--           001/002/004 schema, before this migration:
+--             set role authenticated;   -- claims sub = customer A
+--             select contract_number from public.rental_contracts;
+--             -> RC-1001 (A), RC-1002 (B)     <-- another customer's contract
+--             update public.users set role='admin' where id = auth.uid();
+--             -> UPDATE 1                     <-- self-promotion
+--
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : run the earlier packages first:
+--             PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005/006 -> 007
+--             -> ... -> 015, then THIS one.
+--           It depends on 002 (tenant policies, can_read_tenant) and 004
+--           (is_admin()).
+--
+-- SAFE    : additive and idempotent. It rewrites no row, changes no document,
+--           amount or journal, and is a clean no-op where a column is absent.
+--           Every object it creates is dropped by
+--           supabase/migrations/016_customer_row_isolation_rollback.sql.
+--
+-- Project : chlkmdobhvfnldqkgdji
+--
+-- The body below is byte-identical to
+-- supabase/migrations/016_customer_row_isolation.sql (SHA-256 recorded at
+-- its header). Do NOT edit it here — regenerate with
+--   node scripts/generate-activation-bundle.mjs
+-- ============================================================================
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — inspect before applying)
+-- ============================================================================
+-- The three customer-owned tables must exist and carry customer_id, and the
+-- two identity tables must be present. A false below means the matching part
+-- of 016 is skipped (it is guarded), not that the migration failed.
+
+select 'rental_contracts.customer_id present' as item,
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='rental_contracts'
+                 and column_name='customer_id') as ok
+union all select 'support_tickets.customer_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='support_tickets'
+                 and column_name='customer_id')
+union all select 'documents.customer_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='documents'
+                 and column_name='customer_id')
+union all select 'users.customer_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='users'
+                 and column_name='customer_id')
+union all select 'customers table present',
+       (to_regclass('public.customers') is not null)
+union all select 'users table present',
+       (to_regclass('public.users') is not null)
+order by ok, item;
+
+${sep}
+-- BEGIN 016_customer_row_isolation.sql
+-- SHA-256 (body): ${h016}
+${sep}
+
+${b016}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'current_customer_id() present' as item,
+       exists (select 1 from pg_proc where proname = 'current_customer_id') as ok
+union all select 'is_erp_user() present',
+       exists (select 1 from pg_proc where proname = 'is_erp_user')
+union all select 'prevent_self_privilege_escalation() present',
+       exists (select 1 from pg_proc where proname = 'prevent_self_privilege_escalation')
+union all select 'rental_contracts_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='rental_contracts'
+                 and policyname='rental_contracts_customer_own')
+union all select 'support_tickets_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='support_tickets'
+                 and policyname='support_tickets_customer_own')
+union all select 'documents_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='documents'
+                 and policyname='documents_customer_own')
+union all select 'customers_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='customers'
+                 and policyname='customers_customer_own')
+union all select 'users_client_self_only policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='users'
+                 and policyname='users_client_self_only')
+union all select 'the customer policies are RESTRICTIVE',
+       (select count(*) from pg_policies
+        where schemaname='public'
+          and policyname in ('rental_contracts_customer_own',
+                             'support_tickets_customer_own',
+                             'documents_customer_own',
+                             'customers_customer_own',
+                             'users_client_self_only')
+          and permissive = 'RESTRICTIVE') = 5
+union all select 'the escalation trigger is installed',
+       exists (select 1 from pg_trigger
+               where tgname='users_prevent_self_privilege_escalation')
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (016)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_016, header016, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_016)}`);
+console.log(`  016 sha256 ${h016}`);

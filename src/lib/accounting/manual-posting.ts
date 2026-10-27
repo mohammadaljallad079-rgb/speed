@@ -24,6 +24,7 @@
  */
 
 import {
+  assertAccountsUsable,
   resolveAccountIdsForTenant,
   type AccountClient,
 } from "./account-resolution";
@@ -207,6 +208,16 @@ export async function writeJournal(
     // else: the RPC is genuinely not deployed - fall through to the two-request
     // path, which compensates a failed line write by deleting the orphan header.
   }
+
+  // The fallback reaches the tables directly, so the database performs NO
+  // ownership check on this path (migration 015 validates only inside the RPC).
+  // Verify the accounts here, or a company journal posted on a pre-011 database
+  // could debit another company's account and nothing would raise.
+  await assertAccountsUsable(
+    client as unknown as AccountClient,
+    journal.lines.map((l) => String((l as { account_id?: unknown }).account_id ?? "")),
+    tenantId ?? null,
+  );
 
   const { data: header, error: headerErr } = await client
     .from("journal_entries")

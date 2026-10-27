@@ -39,6 +39,7 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     op = "select";
     filters: [string, any][] = [];
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -50,7 +51,8 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -73,7 +75,7 @@ function makeStub(seed: { tables?: Record<string, any[]>; accounts?: any[]; fail
     }
     async _run() {
       if (this.op === "select") {
-        if (this.table === "accounts") return { data: (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes(a.code)), error: null };
+        if (this.table === "accounts") return { data: (seed.accounts ?? []).filter((a) => (this.inVals ?? []).includes((a as any)[this.inCol ?? "code"])), error: null };
         // `is(col, null)` must match a column that is absent from the seed row as
         // well as one explicitly set to null - a fixture omits `tenant_id`, and a
         // strict `===` would treat that as a different value and hide the row.

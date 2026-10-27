@@ -2137,3 +2137,52 @@ that applies the filters it is given and returns only affected rows.
   tenant — the browser write trusted a client-held id and asserted no tenant.
 - **Baseline after Exec 67 Stage 2+3:** 1475 tests / 1469 pass / 0 fail / 6
   skipped; typecheck 0 errors; lint clean; production build green (165/165).
+
+## Execution 68 invariants (account ownership on EVERY path + one journal writer)
+
+- **The atomic path is not the only path, so ownership is asserted in the app
+  too.** `writeJournal` (`src/lib/accounting/manual-posting.ts`) calls the
+  `post_journal_entry` RPC when it is deployed, and migration 015 validates
+  account ownership *inside* that function. When the RPC is absent (a database
+  behind 011) `writeJournal` falls back to a direct two-request header+lines
+  write, and that path reached the tables with **no** ownership check at all. It
+  now calls `assertAccountsUsable` **before** the header insert, so a company
+  journal on a pre-011 database can no longer debit another company's account
+  silently.
+- **`assertAccountsUsable` is the app-layer mirror of 015's predicate**
+  (`src/lib/accounting/account-resolution.ts`): an account is usable when it
+  exists, is not owned by another company, and is neither inactive nor a group
+  heading. It names **every** offender at once (`AccountResolutionError.failures`)
+  rather than failing one at a time.
+- **It is NULL-TOLERANT on purpose.** A `tenant_id IS NULL` account is the shared
+  chart of the single-tenant installation and is usable by any caller — the same
+  rule `loadUsableAccounts` applies and the same rule 015 encodes. A check that
+  *demanded* caller ownership would refuse every posting on a live install whose
+  chart is entirely NULL-tenant (live today: 0 tenants, chart all NULL). A
+  tenant-less caller is still refused a company-owned account, because that is
+  what `loadUsableAccounts` resolves for it (`.is("tenant_id", null)`). The
+  predicate is never wider than the resolver.
+- **The manual journal screen is no longer a second writer.**
+  `POST /api/journal-entries` used to insert `journal_entries` and then
+  `journal_lines` itself — two HTTP requests, no atomic RPC, and 015's check
+  bypassed. It now delegates to `writeJournal`, so it uses the same atomic,
+  tenant-verified path as every other posting. `PUT` is an *update*, which the
+  insert-only RPC cannot express, so it keeps a direct write — but it now
+  **snapshots the existing lines first and restores them if the replacement
+  insert fails**, so a half-applied edit cannot leave a posted entry with no
+  lines (silently unbalanced).
+- **Resolve accounts through the ONE resolver, never a code-only `find`.**
+  `purchases` and `cars` resolved accounts with
+  `rows.find(r => r.code === code)?.id` after an inline `.or(...)`. Once the chart
+  is per-company (migration 014) a shared and a company-owned row can share a
+  code, and that `find` returns whichever row PostgREST happened to order first —
+  posting into the wrong ledger account with no error raised. Both now use
+  `resolveOptionalAccountIds`, which prefers the company's own account and
+  refuses an ambiguous chart.
+- **Test stubs must honour the `.in()` column.** The PostgREST-like stubs in the
+  posting suites filtered `accounts` by `code` only, ignoring the column name.
+  They now record `inCol` and filter on it, so a stub can model both a
+  code-based resolution and an id-based ownership check — the same two queries
+  the production code makes.
+- Baseline after Exec 68: **1493 tests / 1487 pass / 6 skipped / 0 fail**;
+  typecheck 0 errors; lint clean; production build green.

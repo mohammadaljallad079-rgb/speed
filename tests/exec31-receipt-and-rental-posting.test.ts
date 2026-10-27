@@ -74,7 +74,7 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
           _or: null as string | null,
           _in: null as any,
           select() { return q; },
-          in(_c: string, v: any[]) { q._in = v; return q; },
+          in(c: string, v: any[]) { q._inCol = c; q._in = v; return q; },
           eq(c: string, v: any) { q._filters.push([c, v]); return q; },
           is(c: string, v: any) { q._is.push([c, v]); return q; },
           or(f: string) { q._or = f; return q; },
@@ -98,7 +98,8 @@ describe("Exec 31 - customer receipt posting (Dr Cash/Bank, Cr AR)", () => {
           then(res: any, rej: any) { return q._run().then(res, rej); },
           async _run() {
             if (table === "accounts" && q._op === "select") {
-              const byCode = accounts.filter((a) => (q._in ?? []).includes(a.code));
+              const col = (q as any)._inCol ?? "code";
+              const byCode = accounts.filter((a) => (q._in ?? []).includes((a as any)[col]));
               return { data: byCode.filter((a: any) => q._tenantMatch(a)), error: null };
             }
             if (q._op === "insert" && table === "journal_entries") {

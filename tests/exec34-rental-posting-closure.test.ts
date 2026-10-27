@@ -67,13 +67,14 @@ function makeStub(seed: { failLines?: boolean } = {}) {
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) { this.table = t; }
     select() { return this; }
     eq(c: string, v: any) { this.filters.push([c, v]); return this; }
     is(c: string, v: any) { this.isFilters.push([c, v]); return this; }
     or(f: string) { this.orFilter = f; return this; }
-    in(_c: string, v: any[]) { this.inVals = v; return this; }
+    in(c: string, v: any[]) { this.inCol = c; this.inVals = v; return this; }
     _tenantMatch(a: any): boolean {
       // `IS NULL` must match a missing field too: a stub row with no tenant_id
       // is the NULL tenant, exactly as the database sees it.
@@ -96,7 +97,8 @@ function makeStub(seed: { failLines?: boolean } = {}) {
     async _run(): Promise<{ data: any; error: any }> {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {

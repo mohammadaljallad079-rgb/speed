@@ -65,6 +65,7 @@ function makeLedgerDb() {
     isFilters: [string, any][] = [];
     orFilter: string | null = null;
     inVals: any[] | null = null;
+    inCol: string | null = null;
     row: any = null;
     constructor(t: string) {
       this.table = t;
@@ -76,7 +77,8 @@ function makeLedgerDb() {
       this.filters.push([c, v]);
       return this;
     }
-    in(_c: string, v: any[]) {
+    in(c: string, v: any[]) {
+      this.inCol = c;
       this.inVals = v;
       return this;
     }
@@ -119,7 +121,8 @@ function makeLedgerDb() {
     async _run() {
       if (this.op === "select") {
         if (this.table === "accounts") {
-          const byCode = accounts.filter((a) => (this.inVals ?? []).includes(a.code));
+          const col = this.inCol ?? "code";
+          const byCode = accounts.filter((a) => (this.inVals ?? []).includes((a as any)[col]));
           return { data: byCode.filter((a) => this._tenantMatch(a)), error: null };
         }
         if (this.table === "journal_entries") {

@@ -80,6 +80,10 @@ function makeClient(opts: {
       return { data: null, error: null };
     }
     async then(res: (v: unknown) => unknown) {
+      if (this.op === "select" && this.table === "accounts") {
+        // A shared (NULL-tenant) chart: every referenced id is usable.
+        return res({ data: [{ id: "acc-cash", code: "11001", tenant_id: null }, { id: "acc-bank", code: "11002", tenant_id: null }], error: null });
+      }
       if (this.op === "insert" && this.table === "journal_lines") {
         calls.lineInsert++;
         if (opts.failLines) return res({ data: null, error: { message: "line insert failed" } });

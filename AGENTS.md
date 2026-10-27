@@ -2429,3 +2429,58 @@ that applies the filters it is given and returns only affected rows.
 - Baseline after Exec 72.3: 1618 tests / 1612 pass / 0 fail / 6 skipped; typecheck
   0 errors; lint clean; all six harnesses pass (isolation 17, 004, 005 10, 007 15,
   017 39, cross-company 47) plus the 19-assertion two-session race harness.
+
+## Execution 73 invariants (Book Now repair, Start Free proof, live-verification boundary)
+
+- **A customer-portal route is gated by ROLE, never by an ERP permission.**
+  `DEFAULT_ROLE_PERMISSIONS.client` is empty by design, so any
+  `module`/`action` guard on a `/api/customer/*` route is unsatisfiable for the
+  only role the route exists for. `PUT /api/customer/profile` demanded
+  `customers.edit` and therefore always returned 403; because the customer
+  dashboard treats a failed profile write as fatal, **every booking silently
+  failed** before `POST /api/customer/bookings` was reached. It now uses
+  `requireContext(request, { allowRoles: ["client"] })`, matching
+  `/api/customer/bookings` and `/api/customer/available-cars`. The write is
+  still confined to the caller's own customer row (the id comes from
+  `users.customer_id`, never the body), so the role is the whole authorisation.
+  Regression-guarded by `tests/exec73-book-now-path.test.ts`; reverting the gate
+  fails 2 of its 7 tests.
+- **The Book Now flow is verified in a real browser, not only at the route
+  level.** `scripts/dev/e2e-exec73-book-now.mjs` drives Chromium through the
+  public fleet page -> `?tab=booking&car=car3` deep link -> real sign-in ->
+  submit, and asserts the *saved* reservation names the selected vehicle and
+  window (18/18 checks). Screenshots are committed under
+  `docs/screenshots/exec73/`. It also asserts the flow's own limitation rather
+  than hiding it: the form has no time-of-day inputs and availability is
+  date-granular, so a same-day turnover cannot be expressed.
+- **The local Supabase stand-in serves the Auth admin API and a `client`
+  identity.** `scripts/dev/local-supabase-stub.mjs` links `customer@speed.local`
+  to customer `c1` and exposes a distinctive free car, so a booking can be driven
+  end to end and its exact vehicle named. The stand-in resolves the caller from
+  the session cookie's JWT `sub`; a non-JWT token makes it fall back to its
+  operator identity and every "customer" test silently becomes a super-admin
+  test.
+- **Item 1 (Start Free lifecycle) is proven server-side.** The suite composes the
+  real `resolveAuthContext` + effective-plan/trial functions instead of calling
+  `/api/me` (which needs Next's `cookies()` request scope). The session cookie is
+  `sb-<firstHostLabel>-auth-token`, and `access_token` must be JWT-shaped. A
+  fail-open mutation in `effective-plan.ts` fails 2 tests; an inclusive-boundary
+  mutation in `trial.ts` is caught too.
+- **Live RLS verification is BLOCKED, and the block is reported, not worked
+  around.** `.env.local` holds placeholder keys (20/23 chars, not JWTs), so
+  `scripts/verify-live-schema.mjs` reports `NOT VERIFIED` and exits 2 - it does
+  not crash and does not claim success. The live host is reachable (HTTP 401 in
+  ~0.24s), so the block is credentials, not connectivity. A real `anon`/service
+  key is an operator input.
+- **The isolation model is proven locally by execution, which is the strongest
+  evidence available in the sandbox.** On a throwaway PostgreSQL 17 (`docker`):
+  migrations 001->004 apply cleanly and re-apply idempotently; RLS is enabled on
+  all **64** public tables; `anon` holds **zero** table privileges; the repo's own
+  `isolation_harness` reports **17/17 PASS**. All eleven migration harnesses pass
+  (004, 005 10, 007 15, 008, 011 28, 013 15, 014 36, 015 43, 016 39, 017 39,
+  isolation 17 - ~242 assertions). This proves the SQL, not the live database.
+- **The `sudo` shim caveat:** the harnesses call `sudo -n -u postgres`; inside a
+  root-owned container a `/usr/local/bin/sudo` shim that drops the flags is
+  needed. That is a harness-environment detail, not a change to any migration.
+- Baseline after Exec 73: 1635 tests / 1629 pass / 0 fail / 6 skipped; typecheck
+  0 errors; lint clean.

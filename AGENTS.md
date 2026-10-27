@@ -2340,10 +2340,59 @@ that applies the filters it is given and returns only affected rows.
   real property is "no UNDECLARED function is a definer function"; a plain
   invoker helper beside a declared definer one is fine (`booking_blocks_car` is a
   pure immutable predicate).
-- Local proof for 017: `bash supabase/tests/017_harness/run.sh` (23 assertions,
+- Local proof for 017: `bash supabase/tests/017_harness/run.sh` (31 assertions,
   incl. the trigger standing alone with the constraint dropped) and
   `bash supabase/tests/017_harness/verify_package.sh` (the frozen package applies
   with all POST-FLIGHT rows green). Like 001-016, 017 is NOT applied to the live
   database - DDL remains an operator step.
-- Baseline after Exec 72 (this commit): 1593 tests / 1587 pass / 0 fail / 6
+- Baseline after Exec 72 (this commit): 1610 tests / 1604 pass / 0 fail / 6
   skipped; typecheck 0 errors; lint clean.
+
+## Execution 72.1 invariants (017 race safety + booking precision)
+
+- **The first version of 017 did NOT close the race, and that is now pinned by a
+  test that proves it.** Its fallback trigger read `select ... from
+  rental_contracts` with no lock. Under READ COMMITTED that read uses the
+  statement snapshot, so it cannot see another transaction's uncommitted insert:
+  two sessions both read "no conflict" and both commit. A single-session harness
+  cannot observe this - which is how it shipped.
+- **The trigger now takes a transaction-level advisory lock keyed on
+  (tenant, car)**: `pg_advisory_xact_lock(hashtextextended(tenant||':'||car, 0))`.
+  The lock is taken BEFORE the conflict read, so the read-and-insert becomes
+  atomic for that car. It is released by the transaction, so a failed insert
+  releases it too. The tenant is coalesced to the sentinel UUID so the
+  tenant-less install locks on itself. A hash collision can only serialise two
+  unrelated cars - it can never let two conflicting inserts through.
+- **Concurrency is proved by execution, not by parsing:**
+  `python3 supabase/tests/017_harness/race.py` drives TWO real PostgreSQL sessions
+  and asserts, in order, (a) the ORIGINAL plain-SELECT trigger lets BOTH commit -
+  the bug, reproduced so the test cannot be vacuous; (b) the real migration with
+  the exclusion constraint dropped (isolating the trigger) lets exactly ONE
+  commit; (c) both guards let exactly ONE commit. 15/15 assertions.
+- **The window is built at the booking's real precision.** A calendar-date guard
+  is wrong once a pickup/return TIME exists (09:00-11:00 and 10:00-12:00 are
+  different bookings). 017 detects the columns and picks, highest first:
+  `start_at`/`end_at` (timestamptz -> `tstzrange`) > `start_ts`/`end_ts`
+  (`tsrange`) > `start_date`+`end_date`+`start_time`+`end_time` (`tsrange` on the
+  combined local timestamp; a null time is midnight) > `start_date`/`end_date`
+  (`tsrange` on midnight). Never a `daterange`. All windows are half-open `[)`,
+  matching `periodsOverlap`.
+- **Activation FAILS CLOSED.** A `rental_contracts` that exists but offers no
+  usable window is a hard `raise exception`, not the old silent `return` that
+  reported success while guarding nothing. A pre-existing overlap is still NOT a
+  hard error - the advisory-lock trigger is installed first and is race-safe, so
+  aborting would remove a working guard; it is a WARNING and the POST-FLIGHT
+  reports which guard is active.
+- **Read-only preflight:** `supabase/EXEC72_BOOKING_GUARD_PREFLIGHT.sql` reports
+  the detected precision, `btree_gist` availability and per-precision
+  pre-existing overlaps. It writes nothing (no temp table, no `set role`), which
+  `tests/exec72-migration-017-hardening.test.ts` enforces.
+- **Live schema verification without a DB connection:**
+  `node scripts/verify-live-schema.mjs` reads PostgREST's own OpenAPI document
+  (`/rest/v1/`) and reports, per migration, whether the required column exists and
+  at what precision. Exit 0 = satisfied, 1 = missing, **2 = NOT VERIFIED** (no
+  usable credentials). Exit 2 is deliberately not success: an unreadable schema is
+  never reported as a verified one.
+- Baseline after Exec 72.1: 1610 tests / 1604 pass / 0 fail / 6 skipped; typecheck
+  0 errors; lint clean; all six harnesses pass (isolation 17, 004, 005 10, 007 15,
+  017 31, cross-company 47) plus the 15-assertion two-session race harness.

@@ -9,7 +9,8 @@
 -- NOT LOSSLESS in one respect, stated so the rollback is deliberate:
 --   * double-booking becomes possible again. `createBooking` still performs its
 --     application-level overlap check and still returns 409, but that check is a
---     check-then-act and two simultaneous requests can both pass it.
+--     check-then-act and two simultaneous requests can both pass it. There is no
+--     way to keep the advisory-lock guarantee without the trigger.
 --
 -- It never deletes a row and never touches a journal.
 -- ============================================================================

@@ -174,8 +174,16 @@ test("migration 017 exists with its rollback and guards the real columns", () =>
   assert.match(sql, /car_id/);
   assert.match(sql, /start_date/);
   assert.match(sql, /end_date/);
-  // The half-open window must match `periodsOverlap` in the service.
-  assert.match(sql, /daterange\([^)]*'\[\)'\)/);
+  // The half-open window must match `periodsOverlap` in the service. The window
+  // is a TIMESTAMP range, not a calendar-date one: a booking that carries a
+  // pickup/return time must not be treated as a whole day.
+  const exec = sql.replace(/--.*$/gm, "");
+  const ctors = exec.match(/(tstzrange|tsrange)\s*\(/g) ?? [];
+  assert.ok(ctors.length > 0, "017 must build a timestamp range, not a calendar-date one");
+  // PL/pgSQL doubles a quote inside a literal, so '[)' appears as ''[)''.
+  const bounds = exec.match(/'+\[\)'+'/g) ?? [];
+  assert.equal(bounds.length, ctors.length, "every range must be half-open '[)'");
+  assert.doesNotMatch(exec, /daterange\(/);
   const rb = read("supabase/migrations/017_booking_overlap_guard_rollback.sql");
   assert.match(rb, /drop trigger if exists rental_contracts_no_double_booking/);
   assert.match(rb, /drop constraint if exists rental_contracts_no_car_overlap/);
@@ -196,9 +204,13 @@ test("the blocking statuses in SQL match BLOCKING_STATUSES in the service", () =
 
 test("the tenant-less install is protected by coalescing the tenant", () => {
   const sql = read("supabase/migrations/017_booking_overlap_guard.sql");
-  // In a GiST index NULLs are distinct, so without this two NULL-tenant bookings
-  // for the same car would not conflict - the exact hole the guard must close.
-  assert.match(sql, /coalesce\(tenant_id, '00000000-0000-0000-0000-000000000000'::uuid\)/);
+  // In a GiST index NULLs are distinct, and a NULL-tenant advisory lock key must
+  // still be a real key, so without a sentinel two NULL-tenant bookings for the
+  // same car would not conflict - the exact hole the guard must close.
+  assert.match(sql, /00000000-0000-0000-0000-000000000000/, "the sentinel UUID must be present");
+  assert.match(sql, /coalesce\(\s*(c\.|new\.)?tenant_id\s*,\s*(%1\$s|v_sentinel|'''00000000)/,
+    "the tenant must be coalesced to the sentinel in the conflict check");
+  assert.match(sql, /coalesce\(new\.tenant_id/, "the advisory lock key must coalesce the tenant");
 });
 
 test("the frozen activation package 017 embeds the migration byte-identically", () => {

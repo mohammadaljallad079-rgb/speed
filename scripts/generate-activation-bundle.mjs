@@ -1043,25 +1043,64 @@ const header017 = `-- ==========================================================
 
 -- ----------------------------------------------------------------------------
 -- PRE-FLIGHT (read-only). Run this first and read the output.
+--
+-- This reports the SAME precision 017 will detect, so activation is a decision
+-- and not a guess. The full read-only version, with per-precision overlap
+-- counts, is supabase/EXEC72_BOOKING_GUARD_PREFLIGHT.sql.
 -- ----------------------------------------------------------------------------
-select 'PRE: rental_contracts has car_id/start_date/end_date' as item,
-       (select count(*) from information_schema.columns
-        where table_schema='public' and table_name='rental_contracts'
-          and column_name in ('car_id','start_date','end_date')) = 3 as ok
-union all select 'PRE: btree_gist available (optional - the trigger covers it)',
-       exists (select 1 from pg_available_extensions where name='btree_gist')
-union all select 'PRE: no overlapping blocking contracts yet',
-       not exists (
-         select 1 from public.rental_contracts a
-         join public.rental_contracts b
-           on a.car_id = b.car_id and a.id < b.id
-          and coalesce(a.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-            = coalesce(b.tenant_id, '00000000-0000-0000-0000-000000000000'::uuid)
-         where lower(coalesce(a.status,'')) in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-           and lower(coalesce(b.status,'')) in ('pending','active','confirmed','reserved','approved','ongoing','rented')
-           and daterange(a.start_date, a.end_date, '[)') && daterange(b.start_date, b.end_date, '[)')
-       )
-order by ok, item;
+with cols as (
+  select column_name, data_type from information_schema.columns
+  where table_schema='public' and table_name='rental_contracts'
+),
+f as (
+  select
+    exists (select 1 from cols where column_name='car_id') as has_car,
+    exists (select 1 from cols where column_name='start_at'
+              and data_type='timestamp with time zone') as has_tz,
+    exists (select 1 from cols where column_name='start_ts'
+              and data_type='timestamp without time zone') as has_ts,
+    (exists (select 1 from cols where column_name='start_date')
+       and exists (select 1 from cols where column_name='end_date')) as has_date,
+    (exists (select 1 from cols where column_name='start_time')
+       and exists (select 1 from cols where column_name='end_time')) as has_time
+)
+-- Each branch is self-contained; only the ones that read a flag select FROM f.
+select item, ok from (
+  select 'PRE: rental_contracts exists' as item, 1 as ord,
+         (select count(*) from cols) > 0 as ok
+  union all
+  select 'PRE: a usable booking window exists (car_id + a window)', 2,
+         has_car and (has_tz or has_ts or has_date) from f
+  union all
+  select 'PRE: booking precision is expressible', 3,
+         (has_tz or has_ts or (has_date and has_time) or has_date) from f
+  union all
+  select 'PRE: btree_gist available (optional - the trigger covers it)', 4,
+         exists (select 1 from pg_available_extensions where name='btree_gist')
+) t
+order by ok, ord;
+
+-- Which precision was detected (read this line before the POST-FLIGHT):
+with cols as (
+  select column_name, data_type from information_schema.columns
+  where table_schema='public' and table_name='rental_contracts'
+)
+select
+  case
+    when not exists (select 1 from cols where column_name='car_id')
+      then 'UNGUARDABLE - 017 will REFUSE activation'
+    when exists (select 1 from cols where column_name='start_at'
+                   and data_type='timestamp with time zone')
+      then 'timestamptz (true instants; timezone-correct)'
+    when exists (select 1 from cols where column_name='start_ts'
+                   and data_type='timestamp without time zone')
+      then 'timestamp (local, no zone)'
+    when exists (select 1 from cols where column_name='start_time')
+      then 'date+time (pickup/return TIME is honoured)'
+    when exists (select 1 from cols where column_name='start_date')
+      then 'date-only (NO time support in this schema)'
+    else 'UNGUARDABLE - 017 will REFUSE activation'
+  end as detected_booking_precision;
 
 ${sep}
 -- BEGIN 017_booking_overlap_guard.sql
@@ -1076,9 +1115,13 @@ ${b017}
 
 select 'the status helper exists' as item,
        exists (select 1 from pg_proc where proname = 'booking_blocks_car') as ok
-union all select 'the double-booking trigger is installed',
-       exists (select 1 from pg_trigger where tgname = 'rental_contracts_no_double_booking') as ok
-union all select 'the exclusion constraint exists OR btree_gist was unavailable',
+union all select 'the race-safe trigger is installed (this is the guarantee)',
+       exists (select 1 from pg_trigger
+               where tgname = 'rental_contracts_no_double_booking' and not tgisinternal) as ok
+union all select 'the trigger body actually takes an advisory lock',
+       (select prosrc like '%pg_advisory_xact_lock%'
+        from pg_proc where proname = 'prevent_car_double_booking') is true as ok
+union all select 'the declarative exclusion constraint OR btree_gist unavailable',
        exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
        or not exists (select 1 from pg_extension where extname = 'btree_gist') as ok
 union all select 'the guard functions are not callable by a client',
@@ -1086,6 +1129,16 @@ union all select 'the guard functions are not callable by a client',
         where routine_name in ('booking_blocks_car', 'prevent_car_double_booking')
           and grantee in ('anon', 'authenticated', 'PUBLIC')) = 0 as ok
 order by ok, item;
+
+-- Which guard is active. A skipped exclusion constraint is EXPECTED when
+-- pre-existing overlaps were found; the trigger is the guarantee either way.
+select
+  case when exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
+         then 'exclusion constraint + advisory-lock trigger (strongest)'
+       when exists (select 1 from pg_extension where extname = 'btree_gist')
+         then 'advisory-lock trigger only (constraint skipped: pre-existing overlaps)'
+       else 'advisory-lock trigger only (btree_gist unavailable)'
+  end as active_guard;
 
 -- ============================================================================
 -- END OF PACKAGE (017)

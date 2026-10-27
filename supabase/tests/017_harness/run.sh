@@ -54,6 +54,11 @@ create table public.rental_contracts (
   customer_id uuid,
   start_date date,
   end_date date,
+  -- The real pickup/return TIME. Present here so the harness exercises the
+  -- date+time precision 017 selects; a date-only harness would not notice if
+  -- the migration silently fell back to calendar dates.
+  start_time time,
+  end_time time,
   status text default 'pending',
   tenant_id uuid
 );
@@ -157,7 +162,52 @@ expect_eq "F5 the trigger allows cancelling a booking (status leaves the blockin
   "$(q "with t as (update public.rental_contracts set status='cancelled' where contract_number='RC-1' returning 1) select count(*) from t")"
 
 echo
-echo "== 7. Rollback =="
+echo "== 7. The guard is race-safe BY CONSTRUCTION (advisory lock in the trigger) =="
+# The concurrency behaviour itself is proved by race.py (two real sessions).
+# Here we assert the property that makes it work, so a future edit that removes
+# the lock fails this harness even if race.py were not run.
+expect_eq "H1 the trigger body takes a transaction-level advisory lock" "1" \
+  "$(q "select count(*) from pg_proc where proname='prevent_car_double_booking' and prosrc like '%pg_advisory_xact_lock%'")"
+expect_eq "H2 the lock is keyed on the tenant AND the car (not a global lock)" "1" \
+  "$(q "select count(*) from pg_proc where proname='prevent_car_double_booking' and prosrc like '%new.car_id%' and prosrc like '%new.tenant_id%'")"
+expect_eq "H3 the guard is SECURITY DEFINER with a pinned search_path" "1" \
+  "$(q "select count(*) from pg_proc where proname='prevent_car_double_booking' and prosecdef and proconfig::text like '%search_path=public%'")"
+
+echo
+echo "== 8. Booking precision: the guard honours the real pickup/return TIME =="
+# A date-only guard is WRONG when the booking has a time: two same-day windows
+# that do not overlap must both be accepted. This schema has date+time columns,
+# so 017 must have selected the date+time window.
+expect_eq "I1 017 detected the date+time precision" "1" \
+  "$(q "select count(*) from pg_proc where proname='prevent_car_double_booking' and prosrc like '%start_time%' and prosrc like '%end_time%'")"
+q "insert into public.rental_contracts (contract_number, car_id, start_date, end_date, start_time, end_time, status, tenant_id)
+   values ('RC-T1','$CAR_A','2026-06-01','2026-06-01','09:00','11:00','pending','$TEN_A');" >/dev/null
+expect_eq "I2 a same-day window at a LATER time is accepted (date-only would refuse it)" "1" \
+  "$(q "with t as (insert into public.rental_contracts (contract_number, car_id, start_date, end_date, start_time, end_time, status, tenant_id)
+       values ('RC-T2','$CAR_A','2026-06-01','2026-06-01','11:00','13:00','pending','$TEN_A') returning 1) select count(*) from t")"
+expect_refused "I3 a same-day window that DOES overlap is refused" \
+  "insert into public.rental_contracts (contract_number, car_id, start_date, end_date, start_time, end_time, status, tenant_id)
+   values ('RC-T3','$CAR_A','2026-06-01','2026-06-01','10:30','11:30','pending','$TEN_A');"
+expect_refused "I4 a date-only row at midnight conflicts with a timed window on the same day" \
+  "insert into public.rental_contracts (contract_number, car_id, start_date, end_date, status, tenant_id)
+   values ('RC-T4','$CAR_A','2026-06-01','2026-06-02','pending','$TEN_A');"
+
+echo
+echo "== 9. Fail-closed activation: a table it cannot guard is a HARD ERROR =="
+"${PSQL[@]}" -c "drop database if exists ${DB}_nw" -c "create database ${DB}_nw" >/dev/null
+"${PSQL[@]}" -d "${DB}_nw" >/dev/null <<'SQL'
+create table public.rental_contracts (id uuid primary key, car_id uuid, status text);
+SQL
+out=$("${PSQL[@]}" -d "${DB}_nw" -f - < "$ROOT/supabase/migrations/017_booking_overlap_guard.sql" 2>&1)
+if echo "$out" | grep -qiE "no usable booking window"; then
+  ok "J1 017 refuses activation when it cannot guard (no silent success)"
+else
+  bad "J1 017 refuses activation when it cannot guard (no silent success)" "$(echo "$out" | grep -iE 'error|notice' | head -2)"
+fi
+"${PSQL[@]}" -c "drop database if exists ${DB}_nw" >/dev/null 2>&1
+
+echo
+echo "== 10. Rollback =="
 before=$(q "select count(*) from public.rental_contracts")
 if ! out=$("${PSQL[@]}" -d "$DB" -f - < "$ROOT/supabase/migrations/017_booking_overlap_guard_rollback.sql" 2>&1); then
   echo " FAIL | the rollback did not apply"; echo "$out" | grep -iE "error" | head -3; fail=$((fail+1))

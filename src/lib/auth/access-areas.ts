@@ -25,17 +25,29 @@
 
 import type { AppRole } from "./permissions";
 
-/** The coarse surfaces of the application. */
-export type AccessArea = "customer" | "erp" | "platform" | "public";
+/**
+ * The coarse surfaces of the application.
+ *
+ * `unknown` is not a surface: it is the answer for a path that is neither
+ * explicitly public nor covered by a known prefix. It exists so the decision can
+ * FAIL CLOSED - a page nobody classified is refused rather than served, because
+ * "not classified" must never be read as "public".
+ */
+export type AccessArea = "customer" | "erp" | "platform" | "public" | "unknown";
+
+/** The areas that a real prefix owns (everything except the two sentinels). */
+type GatedArea = "customer" | "erp" | "platform";
 
 /**
  * Area -> URL prefixes. Longest match wins, so a nested exception can be carved
  * out of a broader prefix (e.g. the public vehicle detail page inside `/cars`).
  */
-const AREA_PREFIXES: Record<Exclude<AccessArea, "public">, readonly string[]> = {
+const AREA_PREFIXES: Record<GatedArea, readonly string[]> = {
   // The customer portal. `/booking` is the vehicle booking form the marketing
-  // site links to; it is a customer surface, not an ERP one.
-  customer: ["/customer-dashboard", "/booking", "/customer-login", "/customer-signup"],
+  // site links to; it is a customer surface, not an ERP one. The sign-in pages
+  // (`/customer-login`, `/customer-signup`) are PUBLIC doors, listed in
+  // PUBLIC_PATH_PREFIXES instead, so that an anonymous visitor can reach them.
+  customer: ["/customer-dashboard", "/booking"],
   // The platform operator console. `/super-admin-login` is the public door.
   platform: ["/super-admin"],
   // The ERP. Every prefix here is a company workspace; reaching it requires an
@@ -77,11 +89,15 @@ const AREA_PREFIXES: Record<Exclude<AccessArea, "public">, readonly string[]> = 
 };
 
 /**
- * Public doorways and exceptions. These are reachable by anyone (including an
- * anonymous visitor) and are therefore NOT gated by an area. This list is
- * exported so a test can assert that every route on disk is either gated or
- * explicitly public - a new page nobody classified must fail that test rather
- * than default to a decision.
+ * The vehicles public detail API. `/cars/[id]` reads this, never `cars`.
+ */
+export const PUBLIC_VEHICLE_API_PREFIX = "/api/public/vehicles";
+
+/**
+ * Public doorways and marketing pages. These are reachable by anyone (including
+ * an anonymous visitor) and are therefore NOT gated by an area. This list is the
+ * COMPLETE public surface: anything absent from it - and absent from
+ * `AREA_PREFIXES` - is `unknown`, which fails closed.
  */
 export const PUBLIC_PATH_PREFIXES: readonly string[] = [
   "/login",
@@ -102,44 +118,87 @@ export const PUBLIC_PATH_PREFIXES: readonly string[] = [
 ];
 
 /**
- * `/cars/[id]` is the PUBLIC vehicle detail page an anonymous visitor reaches
- * from the marketing site. The ERP fleet register (`/cars`, `/cars/new`) is not.
- * `/fleet` renders the public marketing chrome, so it is public too, as does
- * `/erp` (the product-overview page).
+ * Public pages that are NOT `.../[id]` ERP documents.
+ *
+ * This is the security-critical distinction. `/cars/<id>` is the public vehicle
+ * detail page a visitor reaches from the marketing site; `/cars/new` is the ERP
+ * "add vehicle" form. A blanket `startsWith("/cars/")` rule would make the ERP
+ * form public, so the public case is stated positively instead: the LAST segment
+ * must look like an identifier (a uuid or a slug), never a reserved ERP action
+ * (`new`, `edit`, `create`, `import`, `export`, `settings`, ...).
  */
-const PUBLIC_EXACT = new Set(["/", "/fleet", "/erp"]);
+const RESERVED_DOCUMENT_SEGMENTS = new Set([
+  "new",
+  "create",
+  "add",
+  "edit",
+  "update",
+  "delete",
+  "import",
+  "export",
+  "settings",
+  "print",
+  "duplicate",
+  "bulk",
+]);
+
+/** A uuid, or a slug that is not a reserved action word. */
+function looksLikeDocumentId(segment: string): boolean {
+  if (!segment) return false;
+  const lower = segment.toLowerCase();
+  if (RESERVED_DOCUMENT_SEGMENTS.has(lower)) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(segment)) return true;
+  // A slug: alphanumerics with optional single separators, not a bare action word.
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/.test(segment);
+}
+
+/** True for `/cars/<id>` (the public detail page) but never `/cars/<action>`. */
+export function isPublicVehicleDetailPath(pathname: string): boolean {
+  const match = /^\/cars\/([^/]+)\/?$/.exec(pathname);
+  return match ? looksLikeDocumentId(match[1]) : false;
+}
+
+const PUBLIC_EXACT = new Set([
+  "/", // marketing home
+  "/fleet", // public fleet browse
+  "/erp", // product-overview page (NOT the ERP surface)
+]);
 
 /** True when a path is deliberately public (and so is not area-gated). */
 export function isPublicPath(pathname: string): boolean {
   if (PUBLIC_EXACT.has(pathname)) return true;
-  // The public vehicle detail page, but never the ERP fleet register.
-  if (pathname.startsWith("/cars/") && pathname !== "/cars/new") return true;
+  // The public vehicle detail page, but never the ERP fleet register or an ERP
+  // action route (`/cars/new`).
+  if (isPublicVehicleDetailPath(pathname)) return true;
   return PUBLIC_PATH_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
 }
 
 /**
- * The area a path belongs to, or `null` when the path is public.
+ * The area a path belongs to.
  *
- * Order matters: the public exceptions are checked first so `/cars/abc` is
+ * Order matters: the explicit public surface is checked first so `/cars/abc` is
  * public while `/cars/new` falls through to the ERP.
+ *
+ * A path that is neither public nor covered by a known prefix returns `unknown`.
+ * That is the secure default: an unclassified page is refused, never served. The
+ * drift test in `tests/exec69-*` asserts that every route on disk is classified,
+ * so this branch should never be reached by a real page - it exists so that a
+ * page added without a classification decision fails closed instead of open.
  */
-export function areaForPath(pathname: string): AccessArea | null {
-  if (isPublicPath(pathname)) return null;
+export function areaForPath(pathname: string): AccessArea {
+  if (isPublicPath(pathname)) return "public";
 
-  let best: { area: Exclude<AccessArea, "public">; len: number } | null = null;
-  for (const [area, prefixes] of Object.entries(AREA_PREFIXES) as [
-    Exclude<AccessArea, "public">,
-    readonly string[],
-  ][]) {
+  let best: { area: GatedArea; len: number } | null = null;
+  for (const [area, prefixes] of Object.entries(AREA_PREFIXES) as [GatedArea, readonly string[]][]) {
     for (const prefix of prefixes) {
       if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {
         if (!best || prefix.length > best.len) best = { area, len: prefix.length };
       }
     }
   }
-  return best?.area ?? null;
+  return best?.area ?? "unknown";
 }
 
 /**
@@ -156,8 +215,10 @@ export function areaForPath(pathname: string): AccessArea | null {
  * a client-side toggle.
  */
 export function roleMayReachArea(role: AppRole | null | undefined, area: AccessArea): boolean {
-  if (!role) return false;
   if (area === "public") return true;
+  // An unclassified path is reachable by nobody. See `areaForPath`.
+  if (area === "unknown") return false;
+  if (!role) return false;
   switch (role) {
     case "client":
       return area === "customer";
@@ -216,9 +277,9 @@ export function safeCustomerRedirect(
   // An API endpoint is never a page navigation target.
   if (path === "/api" || path.startsWith("/api/")) return fallback;
   const area = areaForPath(path);
-  // `null` is a public page (safe), `customer` is the portal itself. An ERP or
-  // platform target is refused so a customer cannot be bounced at the ERP.
-  if (area !== null && area !== "customer") return fallback;
+  // `public` is a safe page, `customer` is the portal itself. An ERP, platform
+  // or unclassified target is refused so a customer cannot be bounced at the ERP.
+  if (area !== "public" && area !== "customer") return fallback;
   return value;
 }
 
@@ -233,13 +294,15 @@ export type AccessDecision =
  * exactly one outcome, so page and API behaviour can never drift apart.
  *
  *   - public path              -> allow
+ *   - unclassified path        -> deny  (secure default; never "allow")
  *   - unauthenticated          -> redirect to the matching sign-in door
  *   - wrong area for the role  -> deny (403 / access-denied)
  *   - right area               -> allow
  */
 export function decidePathAccess(pathname: string, role: AppRole | null | undefined): AccessDecision {
   const area = areaForPath(pathname);
-  if (area === null) return { kind: "allow" };
+  if (area === "public") return { kind: "allow" };
+  if (area === "unknown") return { kind: "deny" };
   if (!role) return { kind: "redirect", to: loginPathForArea(area) };
   if (!roleMayReachArea(role, area)) return { kind: "deny" };
   return { kind: "allow" };

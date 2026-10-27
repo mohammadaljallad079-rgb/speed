@@ -297,6 +297,82 @@ describe("Exec 69 - customer <-> ERP access boundary (middleware, end to end)", 
       const res = await middleware(request("/api/customers"));
       assert.equal(res.status, 401);
     });
+
+    test("an UNCLASSIFIED page fails closed (never served as public)", async () => {
+      // A page nobody classified must be refused, not treated as public. This is
+      // the secure default behind the drift test: the test proves every route on
+      // disk IS classified, and this proves what happens if one is not.
+      // An authenticated user is denied outright...
+      setIdentity(ADMIN, { role: "admin", is_active: true });
+      const signedIn = await middleware(request("/carsomething-unclassified", { user: ADMIN, cookie: true }));
+      assert.equal(signedIn.status, 307, "an unclassified page must not be served");
+      assert.equal(new URL(signedIn.headers.get("location")!).pathname, "/access-denied");
+      // ...and an anonymous caller is sent to a sign-in door, never served.
+      setIdentity(null, null);
+      const anonymous = await middleware(request("/carsomething-unclassified"));
+      assert.equal(anonymous.status, 307);
+      assert.equal(new URL(anonymous.headers.get("location")!).pathname, "/login");
+    });
+
+    test("an unclassified API path is ERP-gated, not public", async () => {
+      // An unknown `/api/*` path defaults to the ERP area: an anonymous caller is
+      // refused and a customer is refused, so it is never an anonymous surface.
+      setIdentity(null, null);
+      assert.equal((await middleware(request("/api/not-a-real-endpoint"))).status, 401);
+      setIdentity(CLIENT, { role: "client", is_active: true });
+      assert.equal(
+        (await middleware(request("/api/not-a-real-endpoint", { user: CLIENT, cookie: true }))).status,
+        403,
+      );
+    });
+  });
+
+  // ======================= MISSING CONFIG FAILS CLOSED ====================
+  describe("a missing Supabase configuration fails closed", () => {
+    const withEnvRemoved = async (fn: () => Promise<void>) => {
+      const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+      const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      delete process.env.NEXT_PUBLIC_SUPABASE_URL;
+      delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      try {
+        await fn();
+      } finally {
+        process.env.NEXT_PUBLIC_SUPABASE_URL = url;
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = key;
+      }
+    };
+
+    test("a protected PAGE is redirected, never served", async () => {
+      await withEnvRemoved(async () => {
+        setIdentity(ADMIN, { role: "admin", is_active: true });
+        for (const p of ["/dashboard", "/accounting/journal-entries", "/super-admin"]) {
+          const res = await middleware(request(p));
+          assert.equal(res.status, 307, `${p} must be redirected when auth config is absent`);
+          assert.notEqual(res.status, 200, `${p} must never be served without auth config`);
+        }
+      });
+    });
+
+    test("a protected API is denied with 401", async () => {
+      await withEnvRemoved(async () => {
+        const res = await middleware(request("/api/customers"));
+        assert.equal(res.status, 401);
+      });
+    });
+
+    test("public routes still work without auth config", async () => {
+      await withEnvRemoved(async () => {
+        for (const p of ["/", "/fleet", "/cars/abc-123", "/login", "/customer-login"]) {
+          const res = await middleware(request(p));
+          assert.notEqual(res.status, 307, `${p} must stay reachable`);
+          assert.notEqual(res.status, 401, `${p} must stay reachable`);
+        }
+        for (const p of ["/api/public/vehicles", "/api/saas/signup"]) {
+          const res = await middleware(request(p));
+          assert.notEqual(res.status, 401, `${p} must stay public`);
+        }
+      });
+    });
   });
 
   // ======================= PUBLIC SURFACE UNCHANGED =======================

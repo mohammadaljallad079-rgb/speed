@@ -6,6 +6,7 @@ import {
   areaForPath,
   loginPathForArea,
   roleMayReachArea,
+  type AccessArea,
 } from "@/lib/auth/access-areas";
 import { readSessionRole, type RoleReaderClient } from "@/lib/auth/session-role";
 
@@ -38,7 +39,9 @@ import { readSessionRole, type RoleReaderClient } from "@/lib/auth/session-role"
 
 /** True when a page path belongs to a gated area (and so needs a session). */
 export function isProtectedPage(pathname: string): boolean {
-  return areaForPath(pathname) !== null;
+  // Anything that is not explicitly public needs a session. An unclassified
+  // path is protected, which is the fail-closed direction.
+  return areaForPath(pathname) !== "public";
 }
 
 /**
@@ -58,26 +61,47 @@ function forbiddenJson(message: string, code: string) {
   return NextResponse.json({ error: message, code }, { status: 403 });
 }
 
+function unauthenticatedJson() {
+  return NextResponse.json(
+    { error: "Authentication required", code: "unauthenticated" },
+    { status: 401 },
+  );
+}
+
+/** Redirect a page request to a sign-in door, dropping the query string. */
+function redirectTo(request: NextRequest, pathname: string) {
+  const url = request.nextUrl.clone();
+  url.pathname = pathname;
+  url.search = "";
+  return NextResponse.redirect(url);
+}
+
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
   const { pathname } = request.nextUrl;
   const isApi = pathname.startsWith("/api/");
   const apiAccess = isApi ? apiAccessForPath(pathname) : null;
+  // For a page, the area is always defined (never `null`): an unclassified page
+  // is `unknown`, which the decision below denies.
+  const pageArea: AccessArea | null = isApi ? null : areaForPath(pathname);
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  // Fail safe if the deployment is misconfigured. Without this the middleware
-  // throws for every matched route (including public pages) and the app returns
-  // 500. Deny protected APIs rather than risk an unauthenticated pass-through;
-  // genuinely public routes and pages are untouched.
+  // Fail CLOSED if the deployment is misconfigured.
+  //
+  // Without this the middleware throws for every matched route (including public
+  // pages) and the app returns 500. The safe response is to deny everything that
+  // is not explicitly public: a protected API gets 401 and a protected PAGE is
+  // redirected to its sign-in door. Returning `next()` for a protected page here
+  // would serve the ERP shell to an unauthenticated caller whenever the auth
+  // configuration is absent - an availability problem must never become an
+  // authorization one.
   if (!supabaseUrl || !supabaseAnonKey) {
-    if (isApi && apiAccess?.kind !== "public") {
-      return NextResponse.json(
-        { error: "Authentication required", code: "unauthenticated" },
-        { status: 401 },
-      );
+    if (isApi && apiAccess?.kind !== "public") return unauthenticatedJson();
+    if (!isApi && pageArea !== "public") {
+      return redirectTo(request, isSuperAdminPage(pathname) ? "/super-admin-login" : loginPathForArea(pageArea));
     }
     return response;
   }
@@ -102,12 +126,7 @@ export async function middleware(request: NextRequest) {
   // --- API surface ---------------------------------------------------------
   if (isApi && apiAccess) {
     if (apiAccess.kind === "public") return response;
-    if (!user) {
-      return NextResponse.json(
-        { error: "Authentication required", code: "unauthenticated" },
-        { status: 401 },
-      );
-    }
+    if (!user) return unauthenticatedJson();
     // `/api/me` is the caller's own context and is valid in any area.
     if (apiAccess.kind === "any-authenticated") return response;
 
@@ -125,32 +144,24 @@ export async function middleware(request: NextRequest) {
   }
 
   // --- Pages ---------------------------------------------------------------
-  const area = areaForPath(pathname);
-  if (area === null) return response;
+  // A page path always resolves to a concrete area: an unclassified page is
+  // `unknown`, which the decision below denies. (`pageArea` is non-null here
+  // because the API branch above returns for every `/api/*` request.)
+  const area: AccessArea = pageArea ?? "unknown";
 
-  if (!user) {
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = loginPathForArea(area);
-    loginUrl.search = "";
-    return NextResponse.redirect(loginUrl);
-  }
+  // An explicitly public page is served to everyone, signed in or not.
+  if (area === "public") return response;
+
+  if (!user) return redirectTo(request, loginPathForArea(area));
 
   const role = await readSessionRole(supabase as unknown as RoleReaderClient, user.id);
   if (!role) {
     // Authenticated but unprovisioned: send to the matching sign-in door so the
     // user gets an actionable message instead of a blank ERP shell.
-    const loginUrl = request.nextUrl.clone();
-    loginUrl.pathname = loginPathForArea(area);
-    loginUrl.search = "";
-    return NextResponse.redirect(loginUrl);
+    return redirectTo(request, loginPathForArea(area));
   }
 
-  if (!roleMayReachArea(role, area)) {
-    const deniedUrl = request.nextUrl.clone();
-    deniedUrl.pathname = "/access-denied";
-    deniedUrl.search = "";
-    return NextResponse.redirect(deniedUrl);
-  }
+  if (!roleMayReachArea(role, area)) return redirectTo(request, "/access-denied");
 
   return response;
 }

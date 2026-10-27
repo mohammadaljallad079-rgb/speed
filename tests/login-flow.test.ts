@@ -16,7 +16,7 @@ import {
   supabaseConfigConsistent,
 } from "../src/lib/supabase-config.ts";
 import { isProtectedPage, isPublicApiPath, middleware, isSuperAdminPage } from "../src/middleware.ts";
-import { loginPathForArea } from "../src/lib/auth/access-areas.ts";
+import { areaForPath, loginPathForArea } from "../src/lib/auth/access-areas.ts";
 
 /**
  * Login + authentication flow regression guard.
@@ -218,8 +218,19 @@ describe("page-level gate redirects anonymous callers", () => {
   });
 
   test("a prefix does not swallow an unrelated page", () => {
-    // `/carsomething` must not be treated as the `/cars` section.
-    assert.equal(isProtectedPage("/carsomething"), false);
+    // `/carsomething` must not be treated as the `/cars` section...
+    assert.equal(areaForPath("/carsomething"), "unknown");
+    assert.equal(areaForPath("/cars"), "erp");
+    // ...and an unclassified page fails CLOSED: it is protected, never served.
+    assert.equal(isProtectedPage("/carsomething"), true);
+  });
+
+  test("the public vehicle detail page is public, the ERP fleet register is not", () => {
+    assert.equal(areaForPath("/cars/abc-123"), "public");
+    assert.equal(areaForPath("/cars/7f3a1c2e-0000-4000-8000-000000000001"), "public");
+    // An ERP action route under the same prefix is NOT public.
+    assert.equal(areaForPath("/cars/new"), "erp");
+    assert.equal(areaForPath("/cars/abc-123/edit"), "erp");
   });
 
   test("public API allow-list is exact", () => {

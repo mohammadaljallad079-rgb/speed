@@ -2186,3 +2186,53 @@ that applies the filters it is given and returns only affected rows.
   the production code makes.
 - Baseline after Exec 68: **1493 tests / 1487 pass / 6 skipped / 0 fail**;
   typecheck 0 errors; lint clean; production build green.
+
+## Execution 69 invariants (role-based access areas: customer vs ERP vs platform)
+
+- **One area map decides every access question.** `src/lib/auth/access-areas.ts`
+  is pure, import-free and Edge-safe (`areaForPath`, `decidePathAccess`,
+  `loginPathForArea`, `apiAccessForPath`, `roleMayReachArea`, `isPublicPath`,
+  `safeCustomerRedirect`). Pages and APIs both consult it, so they cannot drift
+  apart. Never re-implement the boundary in a route, a page or the middleware.
+- **The reported defect and its shape.** The middleware used to ask only "is
+  there a session?" — never "is this identity allowed here?" — so an
+  authenticated rental customer (`role: "client"`) was served the ERP shell at
+  `/dashboard`. A customer is now redirected to `/access-denied` on an ERP page
+  and gets `403 forbidden` from an ERP API. Regression-guarded by
+  `tests/exec69-customer-erp-access-boundary.test.ts` (30 cases, in `test:core`),
+  which is non-vacuous: restoring the fail-open fails 6 of them.
+- **Unknown roles grant nothing.** `src/lib/auth/session-role.ts` is the shared
+  strict resolver. It must never default an unknown/NULL role to `staff`; that
+  default *was* the fail-open. A missing `users` row, an unknown role, a NULL
+  role, an inactive account and an unreadable role all deny.
+- **Four areas, deliberately distinct:** `erp` (admin/staff), `customer`
+  (client), `platform` (super_admin, the tenant-less global operator) and public
+  (`null`). An ERP user is refused the customer API and the platform console; a
+  super admin is refused the company ERP workspace.
+- **Sign-in doors follow the area.** `loginPathForArea` sends `customer` to
+  `/customer-login` (which itself refuses a non-customer account), `platform` to
+  `/super-admin-login`, everything else to `/login`. Sending a customer to the
+  ERP `/login` authenticates them as a company identity and then bounces them.
+- **`/api/me` is reachable by every authenticated identity**, by design: both
+  login flows depend on it to learn their role. Do not gate it by area.
+- **Public paths are an explicit list, not a fallthrough.** `PUBLIC_PATH_PREFIXES`
+  plus `/`, `/fleet`, `/erp` (product-overview pages, NOT ERP surfaces) and
+  `/cars/[id]` (the public vehicle detail page, but never `/cars/new`). A test
+  asserts every top-level route on disk is either area-gated or explicitly
+  public, so a new page nobody classified fails rather than defaulting.
+- **`?redirect=` is caller input.** `safeCustomerRedirect` refuses an absolute or
+  protocol-relative URL, a backslash variant, an `/api/*` target, and any ERP or
+  platform path. A naive `startsWith("/")` check is not sufficient.
+- **Verification without production.** `scripts/dev/stub-supabase.mjs` is a
+  local, in-memory Supabase-compatible backend (GoTrue password grant +
+  `getUser`, PostgREST filters, `generate_document_number`) with a fake seeded
+  dataset. It is development tooling only — never imported by app code, never in
+  a production build — and is what makes real-browser verification possible
+  without touching the live project. Real screenshots of the fix and the Super
+  Admin console live in `docs/screenshots/exec69/`.
+- **Continuation-point correction.** The task brief named commit `c536858`
+  (Exec 41) as "last pushed". It is an **ancestor** of `origin/main`; the true
+  latest is `origin/main` @ `164b0b8` (Exec 68 merged via PR #4). Exec 69 is
+  branched from and pushed on top of that, not on the stale commit.
+- Baseline after Exec 69: **1519 tests / 1513 pass / 6 skipped / 0 fail**;
+  typecheck 0 errors; lint clean; production build green.

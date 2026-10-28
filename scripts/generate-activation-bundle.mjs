@@ -867,3 +867,407 @@ order by ok, item;
 fs.writeFileSync(OUT_015, header015, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_015)}`);
 console.log(`  015 sha256 ${h015}`);
+
+// ---------------------------------------------------------------------------
+// 016 — customer row isolation. Appended after 015: it depends on 002's tenant
+// policies and 004's `is_admin()`.
+// ---------------------------------------------------------------------------
+const b016 = read("016_customer_row_isolation.sql");
+const h016 = sha(b016);
+const OUT_016 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_016.sql");
+
+const header016 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (016)
+-- ============================================================================
+-- Purpose : a rental CUSTOMER may read only its own rows.
+--
+--           Migrations 001/002 isolate every table by TENANT. That is the
+--           boundary between companies, but it is NOT a boundary inside one
+--           company: a rental customer is an authenticated user of the tenant,
+--           so the tenant predicate is satisfied by every row of that tenant.
+--           The customer portal reads its data with the browser client (RLS is
+--           the enforcement boundary there), so customer A could read customer
+--           B's rental contracts, tickets, PII and every colleague's account.
+--
+--           It also closes a privilege escalation: a 'client' could set its own
+--           users.role to 'admin' (004 only blocked the super_admin grant).
+--
+--           Reproduced by execution on a real PostgreSQL 17 with the
+--           001/002/004 schema, before this migration:
+--             set role authenticated;   -- claims sub = customer A
+--             select contract_number from public.rental_contracts;
+--             -> RC-1001 (A), RC-1002 (B)     <-- another customer's contract
+--             update public.users set role='admin' where id = auth.uid();
+--             -> UPDATE 1                     <-- self-promotion
+--
+-- How     : paste this whole file into the Supabase Dashboard SQL Editor.
+--           (This dev environment has NO DDL-capable Postgres connection; the
+--           SQL Editor runs as the postgres role, which owns the objects.)
+--
+-- ORDER   : run the earlier packages first:
+--             PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005/006 -> 007
+--             -> ... -> 015, then THIS one.
+--           It depends on 002 (tenant policies, can_read_tenant) and 004
+--           (is_admin()).
+--
+-- SAFE    : additive and idempotent. It rewrites no row, changes no document,
+--           amount or journal, and is a clean no-op where a column is absent.
+--           Every object it creates is dropped by
+--           supabase/migrations/016_customer_row_isolation_rollback.sql.
+--
+-- Project : chlkmdobhvfnldqkgdji
+--
+-- The body below is byte-identical to
+-- supabase/migrations/016_customer_row_isolation.sql (SHA-256 recorded at
+-- its header). Do NOT edit it here — regenerate with
+--   node scripts/generate-activation-bundle.mjs
+-- ============================================================================
+
+-- ============================================================================
+-- PRE-FLIGHT (read-only — inspect before applying)
+-- ============================================================================
+-- The three customer-owned tables must exist and carry customer_id, and the
+-- two identity tables must be present. A false below means the matching part
+-- of 016 is skipped (it is guarded), not that the migration failed.
+
+select 'rental_contracts.customer_id present' as item,
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='rental_contracts'
+                 and column_name='customer_id') as ok
+union all select 'support_tickets.customer_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='support_tickets'
+                 and column_name='customer_id')
+union all select 'documents.customer_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='documents'
+                 and column_name='customer_id')
+union all select 'users.customer_id present',
+       exists (select 1 from information_schema.columns
+               where table_schema='public' and table_name='users'
+                 and column_name='customer_id')
+union all select 'customers table present',
+       (to_regclass('public.customers') is not null)
+union all select 'users table present',
+       (to_regclass('public.users') is not null)
+order by ok, item;
+
+${sep}
+-- BEGIN 016_customer_row_isolation.sql
+-- SHA-256 (body): ${h016}
+${sep}
+
+${b016}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only — proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'current_customer_id() present' as item,
+       exists (select 1 from pg_proc where proname = 'current_customer_id') as ok
+union all select 'is_erp_user() present',
+       exists (select 1 from pg_proc where proname = 'is_erp_user')
+union all select 'prevent_self_privilege_escalation() present',
+       exists (select 1 from pg_proc where proname = 'prevent_self_privilege_escalation')
+union all select 'rental_contracts_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='rental_contracts'
+                 and policyname='rental_contracts_customer_own')
+union all select 'support_tickets_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='support_tickets'
+                 and policyname='support_tickets_customer_own')
+union all select 'documents_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='documents'
+                 and policyname='documents_customer_own')
+union all select 'customers_customer_own policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='customers'
+                 and policyname='customers_customer_own')
+union all select 'users_client_self_only policy present',
+       exists (select 1 from pg_policies
+               where schemaname='public' and tablename='users'
+                 and policyname='users_client_self_only')
+union all select 'the customer policies are RESTRICTIVE',
+       (select count(*) from pg_policies
+        where schemaname='public'
+          and policyname in ('rental_contracts_customer_own',
+                             'support_tickets_customer_own',
+                             'documents_customer_own',
+                             'customers_customer_own',
+                             'users_client_self_only')
+          and permissive = 'RESTRICTIVE') = 5
+union all select 'the escalation trigger is installed',
+       exists (select 1 from pg_trigger
+               where tgname='users_prevent_self_privilege_escalation')
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (016)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_016, header016, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_016)}`);
+console.log(`  016 sha256 ${h016}`);
+
+// ---------------------------------------------------------------------------
+// 017 — booking overlap guard. Appended after 016: it is independent of the
+// policy work, but it is applied LAST because it refuses new overlapping rental
+// contracts, and an operator should have the reconciliation query from 013
+// available first.
+// ---------------------------------------------------------------------------
+const b017 = read("017_booking_overlap_guard.sql");
+const h017 = sha(b017);
+const OUT_017 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_017.sql");
+
+const header017 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (017)
+-- Booking overlap guard: a car cannot be double-booked.
+--
+-- Apply AFTER 016, as the last step of
+--   supabase/PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005_006 -> 007
+--   -> 008 -> ... -> 016 -> 017
+-- on project chlkmdobhvfnldqkgdji.
+--
+-- This file embeds migration 017 VERBATIM between a read-only PRE-FLIGHT and a
+-- read-only POST-FLIGHT. Do not edit the embedded body; edit
+-- supabase/migrations/017_booking_overlap_guard.sql and regenerate this file:
+--
+--     node scripts/generate-activation-bundle.mjs
+--
+-- The body is byte-identical to the migration (verified by
+-- tests/activation-package-integrity.test.ts, which recomputes this hash).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- PRE-FLIGHT (read-only). Run this first and read the output.
+--
+-- This reports the SAME precision 017 will detect, so activation is a decision
+-- and not a guess. The full read-only version, with per-precision overlap
+-- counts, is supabase/EXEC72_BOOKING_GUARD_PREFLIGHT.sql.
+-- ----------------------------------------------------------------------------
+with cols as (
+  select column_name, data_type from information_schema.columns
+  where table_schema='public' and table_name='rental_contracts'
+),
+f as (
+  select
+    exists (select 1 from cols where column_name='car_id') as has_car,
+    exists (select 1 from cols where column_name='start_at'
+              and data_type='timestamp with time zone') as has_tz,
+    exists (select 1 from cols where column_name='start_ts'
+              and data_type='timestamp without time zone') as has_ts,
+    (exists (select 1 from cols where column_name='start_date')
+       and exists (select 1 from cols where column_name='end_date')) as has_date,
+    (exists (select 1 from cols where column_name='start_time')
+       and exists (select 1 from cols where column_name='end_time')) as has_time
+)
+-- Each branch is self-contained; only the ones that read a flag select FROM f.
+select item, ok from (
+  select 'PRE: rental_contracts exists' as item, 1 as ord,
+         (select count(*) from cols) > 0 as ok
+  union all
+  select 'PRE: a usable booking window exists (car_id + a window)', 2,
+         has_car and (has_tz or has_ts or has_date) from f
+  union all
+  select 'PRE: booking precision is expressible', 3,
+         (has_tz or has_ts or (has_date and has_time) or has_date) from f
+  union all
+  select 'PRE: btree_gist available (optional - the trigger covers it)', 4,
+         exists (select 1 from pg_available_extensions where name='btree_gist')
+) t
+order by ok, ord;
+
+-- Which precision was detected (read this line before the POST-FLIGHT):
+with cols as (
+  select column_name, data_type from information_schema.columns
+  where table_schema='public' and table_name='rental_contracts'
+)
+select
+  case
+    when not exists (select 1 from cols where column_name='car_id')
+      then 'UNGUARDABLE - 017 will REFUSE activation'
+    when exists (select 1 from cols where column_name='start_at'
+                   and data_type='timestamp with time zone')
+      then 'timestamptz (true instants; timezone-correct)'
+    when exists (select 1 from cols where column_name='start_ts'
+                   and data_type='timestamp without time zone')
+      then 'timestamp (local, no zone)'
+    when exists (select 1 from cols where column_name='start_time')
+      then 'date+time (pickup/return TIME is honoured)'
+    when exists (select 1 from cols where column_name='start_date')
+      then 'date-only (NO time support in this schema)'
+    else 'UNGUARDABLE - 017 will REFUSE activation'
+  end as detected_booking_precision;
+
+${sep}
+-- BEGIN 017_booking_overlap_guard.sql
+-- SHA-256 (body): ${h017}
+${sep}
+
+${b017}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only - proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'the status helper exists' as item,
+       exists (select 1 from pg_proc where proname = 'booking_blocks_car') as ok
+union all select 'the race-safe trigger is installed (this is the guarantee)',
+       exists (select 1 from pg_trigger
+               where tgname = 'rental_contracts_no_double_booking' and not tgisinternal) as ok
+union all select 'the trigger body actually takes an advisory lock',
+       (select prosrc like '%pg_advisory_xact_lock%'
+        from pg_proc where proname = 'prevent_car_double_booking') is true as ok
+union all select 'the declarative exclusion constraint OR btree_gist unavailable',
+       exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
+       or not exists (select 1 from pg_extension where extname = 'btree_gist') as ok
+union all select 'the guard functions are not callable by a client',
+       (select count(*) from information_schema.routine_privileges
+        where routine_name in ('booking_blocks_car', 'prevent_car_double_booking')
+          and grantee in ('anon', 'authenticated', 'PUBLIC')) = 0 as ok
+order by ok, item;
+
+-- Which guard is active. A skipped exclusion constraint is EXPECTED when
+-- pre-existing overlaps were found; the trigger is the guarantee either way.
+select
+  case when exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
+         then 'exclusion constraint + advisory-lock trigger (strongest)'
+       when exists (select 1 from pg_extension where extname = 'btree_gist')
+         then 'advisory-lock trigger only (constraint skipped: pre-existing overlaps)'
+       else 'advisory-lock trigger only (btree_gist unavailable)'
+  end as active_guard;
+
+-- ============================================================================
+-- END OF PACKAGE (017)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_017, header017, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_017)}`);
+console.log(`  017 sha256 ${h017}`);
+
+// ---------------------------------------------------------------------------
+// 018 - booking time precision: a booking is an hour window, and the guard
+// compares at that precision. Apply AFTER 017 (017 installs `booking_blocks_car`,
+// which 018's trigger uses).
+// ---------------------------------------------------------------------------
+const b018 = read("018_booking_time_precision.sql");
+const h018 = sha(b018);
+const OUT_018 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_018.sql");
+
+const header018 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (018)
+-- Booking time precision: pickup/return TIME, stored as true instants, guarded.
+--
+-- Apply AFTER 017, as the last step of
+--   supabase/PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005_006 -> 007
+--   -> 008 -> ... -> 016 -> 017 -> 018
+-- on project chlkmdobhvfnldqkgdji.
+--
+-- This file embeds migration 018 VERBATIM between a read-only PRE-FLIGHT and a
+-- read-only POST-FLIGHT. Do not edit the embedded body; edit
+-- supabase/migrations/018_booking_time_precision.sql and regenerate this file:
+--
+--     node scripts/generate-activation-bundle.mjs
+--
+-- The body is byte-identical to the migration (verified by
+-- tests/activation-package-integrity.test.ts, which recomputes this hash).
+--
+-- NOTE: this migration makes a booking PRECISE. A car that 017 refused at day
+-- precision and that is genuinely free at hour precision becomes bookable, which
+-- is the point of the change. It refuses nothing that was previously allowed.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- PRE-FLIGHT (read-only). Run this first and read the output.
+-- ----------------------------------------------------------------------------
+with cols as (
+  select column_name, data_type from information_schema.columns
+  where table_schema='public' and table_name='rental_contracts'
+),
+f as (
+  select
+    exists (select 1 from cols where column_name='car_id') as has_car,
+    (exists (select 1 from cols where column_name='start_date')
+       and exists (select 1 from cols where column_name='end_date')) as has_date,
+    exists (select 1 from cols where column_name='start_at') as already_precise
+)
+select item, ok from (
+  select 'PRE: rental_contracts exists' as item, 1 as ord,
+         (select count(*) from cols) > 0 as ok
+  union all
+  select 'PRE: a usable date window exists (018 needs it to backfill)', 2,
+         has_car and has_date from f
+  union all
+  select 'PRE: booking_blocks_car exists (017 was applied first)', 3,
+         exists (select 1 from pg_proc where proname = 'booking_blocks_car')
+  union all
+  select 'PRE: not already applied (a re-run is safe either way)', 4,
+         not already_precise from f
+) t
+order by ok, ord;
+
+-- How many rows 018 will backfill, and how many already violate the ordering the
+-- new CHECK constraint would impose. A non-zero bad_order only SKIPS the
+-- constraint; it never deletes a row.
+--
+-- Every reference is guarded: this runs BEFORE the columns exist, so naming
+-- start_at directly would abort the pre-flight rather than report it.
+select
+  (select count(*) from public.rental_contracts
+     where start_date is not null and end_date is not null) as rows_to_backfill,
+  (select count(*) from public.rental_contracts
+     where start_date is not null and end_date is not null and end_date < start_date) as bad_order;
+
+${sep}
+-- BEGIN 018_booking_time_precision.sql
+-- SHA-256 (body): ${h018}
+${sep}
+
+${b018}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only - proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'the time columns exist' as item,
+       (select count(*) from information_schema.columns
+         where table_schema='public' and table_name='rental_contracts'
+           and column_name in ('start_at','end_at','start_time','end_time')) = 4 as ok
+union all select 'the company-timezone helper exists',
+       exists (select 1 from pg_proc where proname = 'company_timezone') as ok
+union all select 'the race-safe trigger is installed (this is the guarantee)',
+       exists (select 1 from pg_trigger
+               where tgname = 'rental_contracts_no_double_booking' and not tgisinternal) as ok
+union all select 'the trigger derives the window from the wall-clock columns',
+       (select prosrc like '%new.start_at :=%'
+        from pg_proc where proname = 'prevent_car_double_booking') is true as ok
+union all select 'the trigger still takes the advisory lock (race safety kept)',
+       (select prosrc like '%pg_advisory_xact_lock%'
+        from pg_proc where proname = 'prevent_car_double_booking') is true as ok
+union all select 'every booking has a precise window (no NULL left)',
+       (select count(*) from public.rental_contracts where start_at is null) = 0 as ok
+union all select 'the helpers are not callable by a client',
+       (select count(*) from information_schema.routine_privileges
+        where routine_name in ('company_timezone','prevent_car_double_booking')
+          and grantee in ('anon','authenticated','PUBLIC')) = 0 as ok
+order by ok, item;
+
+-- Which guard is active at which precision.
+select
+  case when exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
+         then 'exclusion constraint + advisory-lock trigger, at INSTANT precision (strongest)'
+       else 'advisory-lock trigger, at INSTANT precision (the trigger is the guarantee)'
+  end as active_guard;
+
+-- ============================================================================
+-- END OF PACKAGE (018)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_018, header018, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_018)}`);
+console.log(`  018 sha256 ${h018}`);

@@ -307,7 +307,11 @@ describe("privileged routes enforce authorization", () => {
     assert.match(me, /auth\.getUser\(\)/, "it must authenticate the session");
     assert.match(me, /status:\s*401/, "a session-less caller must be rejected");
     assert.match(me, /resolveAuthContext\(request\)/, "it resolves the app identity server-side");
-    assert.match(me, /loadTenantPlan\(supabaseAdmin as never, context\.tenantId\)/, "the service-role read must use the resolved tenant");
+    assert.match(
+      me,
+      /resolveEntitlements\(supabaseAdmin as never, context\.tenantId/,
+      "the service-role read must use the resolved tenant",
+    );
     assert.doesNotMatch(me, /body\.tenant_id|searchParams\.get\("tenant/, "it must never read a tenant from the request");
   });
 
@@ -332,6 +336,45 @@ describe("privileged routes enforce authorization", () => {
     const allowed = ["customer-signup"];
     const real = offenders.filter((o) => !allowed.some((a) => o.includes(a)));
     assert.deepEqual(real, [], `tenant-owned inserts without a session tenant: ${real.join(", ")}`);
+  });
+
+  test("no ERP route leaves a tenant filter open when the tenant is unresolved", () => {
+    // Regression guard for the fail-open shape: `if (context.tenantId) q =
+    // q.eq("tenant_id", ...)` leaves the query UNFILTERED when the caller's
+    // tenant could not be resolved, so such a caller reads every tenant's rows.
+    // The correct shape is a ternary that falls back to `.is("tenant_id", null)`.
+    //
+    // Three invoice routes and the report-format history had exactly this hole
+    // (an invoice IDOR: another tenant's invoice was readable/editable by id).
+    const offenders: string[] = [];
+    for (const file of routeFiles()) {
+      const source = fs.readFileSync(file, "utf8");
+      for (const line of source.split("\n")) {
+        if (/^\s*if \(context\.tenantId\)\s*\S*\s*=?\s*\S*\.eq\(["'`]tenant_id["'`]/.test(line)) {
+          offenders.push(`${file}: ${line.trim()}`);
+        }
+      }
+    }
+    assert.deepEqual(offenders, [], `fail-open tenant filters:\n${offenders.join("\n")}`);
+  });
+
+  test("a tenant-less caller is scoped to IS NULL in the invoice routes", () => {
+    for (const rel of [
+      "src/app/api/invoices/[id]/route.ts",
+      "src/app/api/invoices/[id]/reverse/route.ts",
+    ]) {
+      const source = fs.readFileSync(path.join(ROOT, rel), "utf8");
+      assert.match(source, /\.is\("tenant_id",\s*null\)/, `${rel} must fall back to IS NULL`);
+    }
+  });
+
+  test("creating an application user stamps the session tenant on the users row", () => {
+    // `users` is tenant-owned (migration 002's tenant table list) and the profile
+    // trigger creates the row without a tenant. Without this stamp the account is
+    // an orphan in the NULL-tenant bucket.
+    const source = fs.readFileSync(path.join(ROOT, "src/app/api/users/route.ts"), "utf8");
+    assert.match(source, /from\("users"\)[\s\S]{0,200}?tenant_id:\s*context\.tenantId/);
+    assert.doesNotMatch(source, /body\.tenant_id/, "the tenant must never come from the body");
   });
 
   test("public routes expose only a safe, explicit projection", () => {

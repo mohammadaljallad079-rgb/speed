@@ -23,6 +23,10 @@ export async function GET(request: Request) {
 
     // `profiles` has no tenant column, so tenant scoping is derived from the
     // application user table and applied as an id allow-list.
+    //
+    // Fail-closed: only a global super admin enumerates every account. A caller
+    // whose tenant could not be resolved gets an empty allow-list (no accounts)
+    // rather than the whole platform's user directory.
     let tenantUserIds: string[] | null = null;
     if (context.tenantId) {
       const { data: tenantRows, error: tenantError } = await supabaseAdmin
@@ -31,6 +35,8 @@ export async function GET(request: Request) {
         .eq("tenant_id", context.tenantId);
       if (tenantError) throw tenantError;
       tenantUserIds = (tenantRows || []).map((r: { id: string }) => r.id);
+    } else if (!context.isSuperAdmin) {
+      tenantUserIds = [];
     }
 
     let profilesQuery = supabaseAdmin
@@ -121,6 +127,23 @@ export async function POST(request: Request) {
       // Roll the auth user back so a half-created account cannot linger.
       await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
       throw profileError;
+    }
+
+    // `users` is tenant-owned (it is in migration 002's tenant table list). The
+    // profile trigger creates the row without a tenant, which would leave an
+    // orphan that the single-tenant install can see and that a tenant-less
+    // administrator could then administer. The tenant comes from the session,
+    // never the body. A super admin has no tenant, so nothing is written and the
+    // row stays NULL-tenant by design.
+    if (context.tenantId) {
+      const { error: tenantError } = await supabaseAdmin
+        .from("users")
+        .update({ tenant_id: context.tenantId })
+        .eq("id", authData.user.id);
+      if (tenantError) {
+        await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+        throw tenantError;
+      }
     }
 
     await logAudit(context, {

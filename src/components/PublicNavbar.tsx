@@ -1,5 +1,5 @@
 "use client"
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useLanguage } from '@/lib/LanguageContext'
@@ -53,6 +53,19 @@ export default function PublicNavbar() {
   useEffect(() => {
     getAppUser().then(setAppUser)
   }, [])
+
+  // Where "My Dashboard" points depends on the caller's role. The role comes
+  // from the caller's own `users` row (readable under `users_self_select`); the
+  // server still decides whether the destination is actually served, so a
+  // tampered value here cannot grant access. A rental customer must never be
+  // sent to the ERP shell - that was the reported defect.
+  const dashboardHref = useMemo(() => {
+    const role = (appUser as { role?: string | null } | null)?.role ?? null
+    if (role === 'client') return '/customer-dashboard'
+    if (role === 'super_admin') return '/super-admin'
+    if (role === 'admin' || role === 'staff') return '/dashboard'
+    return '/customer-dashboard'
+  }, [appUser])
 
   const navLinks = [
     { href: '/', ar: 'الرئيسية', en: 'Home' },
@@ -116,10 +129,10 @@ export default function PublicNavbar() {
               {lang === 'ar' ? 'EN' : 'عربي'}
             </button>
             {appUser ? (
-              <Link href="/dashboard">
+              <Link href={dashboardHref}>
                 <Button className="rounded-xl bg-red-600 hover:bg-red-700 text-white px-5 h-10 text-sm font-bold shadow-lg shadow-red-600/30">
                   <User className="w-4 h-4 me-1.5" />
-                  {isRTL ? 'لوحة التحكم' : 'Dashboard'}
+                  {isRTL ? 'لوحتي' : 'My Dashboard'}
                 </Button>
               </Link>
             ) : (

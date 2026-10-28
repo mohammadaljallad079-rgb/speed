@@ -100,13 +100,22 @@ export function tenantValueFor(context: AuthContext): string | null {
   return context.tenantId;
 }
 
-/** Applies a `tenant_id` filter to a query when the caller has a tenant. */
+/**
+ * Applies a `tenant_id` filter to a query, fail-closed.
+ *
+ * A tenant-less caller is scoped to `IS NULL` (the single-tenant install's own
+ * rows), never left unfiltered; only a global super admin reads unfiltered. It
+ * used to `return query` for a tenant-less caller, which is the exact fail-open
+ * shape `scopeToCompany` was written to replace — an unresolved tenant read
+ * every tenant's rows. It now delegates to `scopeToTenantColumn`, so there is
+ * one tenant predicate rather than two that can disagree.
+ *
+ * Prefer `scopeToCompany` for a company/tenant-scoped artefact; this remains for
+ * callers that scope a plain `tenant_id` column.
+ */
 export function scopeToTenant<T>(query: T, context: AuthContext): T {
-  if (!context.tenantId) return query;
-  return (query as unknown as { eq: (column: string, value: string) => T }).eq(
-    "tenant_id",
-    context.tenantId,
-  );
+  if (context.isSuperAdmin) return query;
+  return scopeToTenantColumn(query, context.tenantId);
 }
 
 /**

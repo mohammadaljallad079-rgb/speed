@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { logAudit } from "@/lib/auth/audit";
 import { defaultFinancialYear, validateSignup } from "@/lib/saas/provisioning";
+import { grantTenantTrial } from "@/lib/saas/trial-store";
+import { TRIAL_DAYS } from "@/lib/saas/trial";
 import type { AuthContext } from "@/lib/auth/types";
 
 /**
@@ -130,6 +132,12 @@ export async function POST(request: NextRequest) {
     tenant_id: tenantId,
   });
 
+  // 5. The free trial. Granted here, at provisioning time, so the window starts
+  //    when the account is created rather than on first sign-in (a customer who
+  //    signs up and returns a week later must not get a fresh seven days).
+  //    `restart` is left false: a retried request cannot extend the trial.
+  const trial = await grantTenantTrial(supabaseAdmin as never, tenantId, { restart: false });
+
   const context: AuthContext = {
     authUserId: userId,
     email,
@@ -147,9 +155,20 @@ export async function POST(request: NextRequest) {
     action: "create",
     entity: "tenants",
     entityId: tenantId,
-    metadata: { event: "signup", company_name: companyName },
+    metadata: {
+      event: "signup",
+      company_name: companyName,
+      trial_days: TRIAL_DAYS,
+      trial_ends_at: trial.record?.endsAt ?? null,
+      trial_granted: trial.ok,
+    },
   });
 
-  // Never return the tenant id or any internal identifier to the browser.
-  return NextResponse.json({ success: true, email });
+  // The trial length is safe to return (it is public marketing copy); the tenant
+  // id and every internal identifier still are not.
+  return NextResponse.json({
+    success: true,
+    email,
+    trial: { days: TRIAL_DAYS, endsAt: trial.record?.endsAt ?? null, granted: trial.ok },
+  });
 }

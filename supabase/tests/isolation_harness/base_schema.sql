@@ -28,7 +28,11 @@ $$;
 create table public.accounts (
   id uuid primary key default gen_random_uuid(),
   code text, name text, name_ar text, name_en text,
-  type text, level int, is_active boolean default true, tenant_id uuid
+  type text, level int, is_active boolean default true, tenant_id uuid,
+  -- Migration 014 expresses the "parent belongs to the same company" rule over
+  -- (tenant_id, parent_code) and adds the column only if it is absent, so the
+  -- base schema provides it for the 014+ harnesses.
+  parent_code text
 );
 create table public.document_sequences (
   id uuid primary key default gen_random_uuid(),

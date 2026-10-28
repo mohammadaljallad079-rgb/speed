@@ -11,6 +11,14 @@ import { badRequest, forbidden, logAudit, requireContext, toErrorResponse } from
  * `customerId`, read from `users.customer_id`) and never from the request, so a
  * client can only ever update its own record - the previous browser write
  * trusted a client-held id, and the tenant was never asserted.
+ *
+ * Gating is by ROLE, not by the ERP permission matrix: `client` holds no
+ * permissions at all (`DEFAULT_ROLE_PERMISSIONS.client` is empty) by design, so
+ * a `customers.edit` check can never pass for the only role this route exists
+ * for. That made the endpoint unconditionally 403 and, because the dashboard
+ * treats a failed profile write as fatal, silently blocked EVERY booking. The
+ * `client` role is itself the authorisation: the write is confined to the
+ * caller's own customer row, so no ERP capability is granted here.
  */
 
 const ALLOWED_FIELDS = [
@@ -22,7 +30,7 @@ const ALLOWED_FIELDS = [
 
 export async function PUT(request: Request) {
   try {
-    const context = await requireContext(request, { module: "customers", action: "edit" });
+    const context = await requireContext(request, { allowRoles: ["client"] });
 
     // `resolveAuthContext` already reads `users.customer_id` for a portal user.
     const customerId = context.customerId;

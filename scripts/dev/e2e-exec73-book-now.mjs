@@ -175,13 +175,35 @@ async function main() {
   const startCount = await page.locator('input[type="date"]').count();
   check("the booking form exposes pickup and return date inputs", startCount >= 2, `${startCount} date input(s)`);
 
+  // Exec 74: the customer must choose a TIME as well as a date. A date-only form
+  // cannot express 09:00-11:00 vs 10:00-12:00 on one day, which is the whole
+  // point of the change.
+  const timeCount = await page.locator('input[type="time"]').count();
+  check("the booking form exposes pickup and return TIME inputs", timeCount >= 2, `${timeCount} time input(s)`);
+  const startTimeInput = page.locator('input[type="time"]').first();
+  const endTimeInput = page.locator('input[type="time"]').nth(1);
+  if (timeCount >= 2) {
+    const pickupDefault = await startTimeInput.inputValue();
+    const returnDefault = await endTimeInput.inputValue();
+    check(
+      "both time inputs carry a sensible default (so a booking is never silently midnight)",
+      /^\d{2}:\d{2}$/.test(pickupDefault) && /^\d{2}:\d{2}$/.test(returnDefault),
+      `pickup=${pickupDefault} return=${returnDefault}`,
+    );
+  }
+
   // Two different windows, chosen so neither overlaps car1/car2's contracts.
-  for (const [start, end] of [
-    ["2026-12-01", "2026-12-05"],
-    ["2027-02-10", "2027-02-14"],
+  for (const [start, end, from, to] of [
+    ["2026-12-01", "2026-12-05", "09:00", "11:00"],
+    ["2027-02-10", "2027-02-14", "14:00", "16:00"],
   ]) {
     await startInput.fill(start);
     await endInput.fill(end);
+    // The time is part of the window now, so it is set with the date.
+    if (timeCount >= 2) {
+      await startTimeInput.fill(from).catch(() => {});
+      await endTimeInput.fill(to).catch(() => {});
+    }
     await page.waitForTimeout(2500); // the form re-loads availability for the window
     const stillSelected = await select.inputValue();
     const stillLabel = await select.locator("option:checked").innerText().catch(() => "");
@@ -194,13 +216,21 @@ async function main() {
 
   await page.screenshot({ path: SHOT("02-vehicle-kept-after-date-change"), fullPage: false }).catch(() => {});
 
-  // The estimate must use the car's own daily rate for the chosen window.
+  // The estimate must use the car's OWN daily rate for the days the form shows.
+  // Reading the day count off the page rather than assuming it keeps the check
+  // honest: the window is 2027-02-10 14:00 -> 2027-02-14 16:00, and a part day
+  // beyond the fourth is billed as a fifth, so the expected total is the rate
+  // times whatever the form itself says. The assertion that matters is that the
+  // total is THIS car's rate - not car1's 15 - for that many days.
   const bodyText = await page.locator("body").innerText();
-  const expectedTotal = dailyRate * 4; // 2027-02-10 -> 2027-02-14 is 4 days
+  const daysMatch = bodyText.match(/Total Days:\s*(\d+)/i) ?? bodyText.match(/عدد الأيام:\s*(\d+)/);
+  const shownDays = daysMatch ? Number(daysMatch[1]) : 0;
+  const expectedTotal = dailyRate * shownDays;
   check(
     "the estimate uses the selected vehicle's own rate for the window",
-    dailyRate > 0 && bodyText.includes(String(expectedTotal)),
-    `expected ${expectedTotal} from a daily rate of ${dailyRate}`,
+    dailyRate > 0 && shownDays > 0 && bodyText.includes(`BHD ${expectedTotal.toFixed(3)}`),
+    `BHD ${expectedTotal.toFixed(3)} expected (daily rate ${dailyRate} x ${shownDays} day(s))` +
+      (bodyText.includes(`BHD ${(15 * shownDays).toFixed(3)}`) ? ` (page shows car1's rate!)` : ""),
   );
 
   // ---------- 4. Availability follows the window ----------
@@ -228,6 +258,11 @@ async function main() {
 
   await startInput.fill("2027-03-01");
   await endInput.fill("2027-03-04");
+  // A deliberate, non-default window, so a "times were dropped" bug is visible.
+  if (timeCount >= 2) {
+    await startTimeInput.fill("08:30").catch(() => {});
+    await endTimeInput.fill("17:45").catch(() => {});
+  }
   await page.waitForTimeout(1500);
 
   // Pickup and dropoff are chosen through the map's own address search, which is
@@ -254,7 +289,10 @@ async function main() {
   const afterText = await page.locator("body").innerText();
   const savedOk = /success|booked|تم|بنجاح/i.test(afterText);
 
-  const contractsAfter = await rest("rental_contracts", "?select=id,car_id,start_date,end_date,status&car_id=eq.car3");
+  const contractsAfter = await rest(
+    "rental_contracts",
+    "?select=id,car_id,start_date,start_time,end_date,end_time,start_at,end_at,status&car_id=eq.car3",
+  );
   const created = (contractsAfter.body ?? []).filter((r) => !(contractsBefore.body ?? []).some((b) => b.id === r.id));
   check("the booking was saved", created.length >= 1 || savedOk, `${beforeCount} -> ${(contractsAfter.body ?? []).length} contract(s) for car3`);
   if (created.length) {
@@ -269,23 +307,88 @@ async function main() {
       c.start_date === "2027-03-01" && c.end_date === "2027-03-04",
       `${c.start_date} -> ${c.end_date}`,
     );
+    // The TIMES the customer chose must survive to the database, not be widened
+    // back to a whole day.
+    check(
+      "the SAVED reservation carries the pickup and return TIMES",
+      c.start_time === "08:30" && c.end_time === "17:45",
+      `saved ${c.start_time} -> ${c.end_time}`,
+    );
+    // And the precise instants, in the company's zone.
+    check(
+      "the SAVED reservation carries precise instants (the authoritative window)",
+      typeof c.start_at === "string" && typeof c.end_at === "string" &&
+        c.start_at.startsWith("2027-03-01T08:30") && c.end_at.startsWith("2027-03-04T17:45"),
+      `saved ${c.start_at} -> ${c.end_at}`,
+    );
   }
 
-  // ---------- 6. The time-granularity finding, stated plainly ----------
-  const timeInputs = await page.locator('input[type="time"]').count();
-  const availSrc = await fetch(`${BASE}/api/customer/available-cars?start=2027-03-01&end=2027-03-04`, {
-    headers: { cookie: (await context.cookies()).map((c) => `${c.name}=${c.value}`).join("; ") },
-  }).catch(() => null);
-  note(
-    "time-of-day granularity",
-    `time inputs in the form: ${timeInputs}; availability params accepted: start/end dates only ` +
-      `(probe status ${availSrc?.status ?? "n/a"}). A same-day turnover cannot be expressed, and ` +
-      `017 degrades to a date-granular tsrange on this schema.`,
+  // ---------- 6. The window is enforced at HOUR precision ----------
+  // The old version of this section reported the missing time support as a
+  // finding. It is implemented now, so it is asserted instead.
+  const cookieHeader = (await context.cookies()).map((c) => `${c.name}=${c.value}`).join("; ");
+  const avail = async (qs) => {
+    const r = await fetch(`${BASE}/api/customer/available-cars?${qs}`, { headers: { cookie: cookieHeader } }).catch(() => null);
+    if (!r) return null;
+    const body = await r.json().catch(() => null);
+    return { status: r.status, body };
+  };
+
+  // The route accepts and uses the time parameters.
+  const withTimes = await avail("start=2027-03-01&start_time=09:00&end=2027-03-04&end_time=11:00");
+  check("the availability route accepts a time-of-day window", withTimes?.status === 200, `status ${withTimes?.status}`);
+  check(
+    "the route reports the company timezone the times are read in",
+    typeof withTimes?.body?.timeZone === "string" && withTimes.body.timeZone.length > 0,
+    `timeZone=${withTimes?.body?.timeZone}`,
+  );
+
+  const namesOf = (r) => (r?.body?.cars ?? []).map((c) => `${c.make ?? ""} ${c.model ?? ""}`);
+
+  // (a) A LEGACY date-only booking (rc1: car1, 2026-10-01 -> 2026-10-20, no times)
+  // must still block the days it covers. A row written before 018 has day
+  // precision, and the service derives that window rather than ignoring the row.
+  const legacy = await avail("start=2026-10-05&start_time=09:00&end=2026-10-06&end_time=09:00");
+  const legacyNames = namesOf(legacy);
+  check(
+    "a legacy date-only booking still blocks the days it covers",
+    !legacyNames.some((n) => /Corolla/i.test(n)),
+    `offered: ${legacyNames.join(", ") || "(none)"}`,
+  );
+
+  // (b) THE decisive check. rc2 is a PRECISE row: car2 (Nissan Patrol),
+  // 2026-10-10 09:00 -> 2027-01-10 11:00. On 2026-10-10 the 07:00-08:00 window is
+  // BEFORE it and free, while 10:00-11:00 is INSIDE it and busy. The SAME date
+  // gives opposite answers, which a date-only guard cannot produce.
+  const before = namesOf(await avail("start=2026-10-10&start_time=07:00&end=2026-10-10&end_time=08:00"));
+  const inside = namesOf(await avail("start=2026-10-10&start_time=10:00&end=2026-10-10&end_time=11:00"));
+  const car2 = (list) => list.some((n) => /Patrol/i.test(n));
+
+  check(
+    "the same date is FREE before a precise booking starts (07:00-08:00)",
+    car2(before),
+    `offered: ${before.join(", ") || "(none)"}`,
   );
   check(
-    "the form does not pretend to support a time-of-day window it cannot enforce",
-    timeInputs === 0,
-    "no time inputs, matching the date-granular availability check",
+    "the same date is BUSY inside that booking (10:00-11:00)",
+    !car2(inside),
+    `offered: ${inside.join(", ") || "(none)"}`,
+  );
+  check(
+    "hour precision changes the answer on ONE date, which a date-only guard cannot",
+    car2(before) && !car2(inside),
+    `07:00 -> [${before.join(", ")}] vs 10:00 -> [${inside.join(", ")}]`,
+  );
+
+  // (c) A SAME-DAY window must be judged, not discarded. `end > start` is false
+  // when both dates are equal, which used to fall through to "free forever" and
+  // offer a car that was already out. This is the commonest rental of all.
+  const sameDayBusy = namesOf(await avail("start=2026-10-10&start_time=00:00&end=2026-10-10&end_time=23:59"));
+  const sameDayFree = namesOf(await avail("start=2026-10-09&start_time=09:00&end=2026-10-09&end_time=10:00"));
+  check(
+    "a SAME-DAY window is enforced, not silently widened",
+    !car2(sameDayBusy) && car2(sameDayFree),
+    `busy-day offered [${sameDayBusy.join(", ")}], free-day offered [${sameDayFree.join(", ")}]`,
   );
 
   await page.screenshot({ path: SHOT("04-booking-saved"), fullPage: false }).catch(() => {});

@@ -171,7 +171,9 @@ describe("Exec 73 - a customer can complete a booking", () => {
         body: JSON.stringify({
           car_id: "car3",
           start_date: "2027-03-01",
+          start_time: "09:00",
           end_date: "2027-03-04",
+          end_time: "11:00",
           pickup_location: "Manama",
           dropoff_location: "Manama",
           rental_type: "daily",
@@ -180,12 +182,21 @@ describe("Exec 73 - a customer can complete a booking", () => {
     );
     assert.equal(res.status, 200, `booking failed: ${JSON.stringify(await json(res))}`);
 
-    const saved = await rows("rental_contracts", "?car_id=eq.car3&select=car_id,start_date,end_date,customer_id");
+    const saved = await rows(
+      "rental_contracts",
+      "?car_id=eq.car3&select=car_id,start_date,start_time,end_date,end_time,start_at,end_at,customer_id",
+    );
     assert.equal(saved.length, 1, "exactly one reservation was created");
     assert.equal(saved[0]?.car_id, "car3", "the saved vehicle is the one selected");
     assert.equal(saved[0]?.customer_id, "c1", "the booking belongs to the caller's own customer");
     assert.equal(saved[0]?.start_date, "2027-03-01");
     assert.equal(saved[0]?.end_date, "2027-03-04");
+    // The TIME the customer chose is stored, not silently widened to the day.
+    assert.equal(saved[0]?.start_time, "09:00");
+    assert.equal(saved[0]?.end_time, "11:00");
+    // And the precise instants are stored too, in the company's zone.
+    assert.equal(saved[0]?.start_at, "2027-03-01T09:00:00+03:00");
+    assert.equal(saved[0]?.end_at, "2027-03-04T11:00:00+03:00");
   });
 
   test("the booking cannot be pointed at another company's car", async () => {
@@ -196,7 +207,9 @@ describe("Exec 73 - a customer can complete a booking", () => {
         body: JSON.stringify({
           car_id: "car-does-not-exist",
           start_date: "2027-04-01",
+          start_time: "09:00",
           end_date: "2027-04-04",
+          end_time: "11:00",
           pickup_location: "Manama",
           dropoff_location: "Manama",
         }),
@@ -213,7 +226,9 @@ describe("Exec 73 - a customer can complete a booking", () => {
         body: JSON.stringify({
           car_id: "car3",
           start_date: "2027-03-02",
+          start_time: "10:00",
           end_date: "2027-03-05",
+          end_time: "10:00",
           pickup_location: "Manama",
           dropoff_location: "Manama",
         }),

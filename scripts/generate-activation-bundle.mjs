@@ -1148,3 +1148,126 @@ select
 fs.writeFileSync(OUT_017, header017, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_017)}`);
 console.log(`  017 sha256 ${h017}`);
+
+// ---------------------------------------------------------------------------
+// 018 - booking time precision: a booking is an hour window, and the guard
+// compares at that precision. Apply AFTER 017 (017 installs `booking_blocks_car`,
+// which 018's trigger uses).
+// ---------------------------------------------------------------------------
+const b018 = read("018_booking_time_precision.sql");
+const h018 = sha(b018);
+const OUT_018 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_018.sql");
+
+const header018 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (018)
+-- Booking time precision: pickup/return TIME, stored as true instants, guarded.
+--
+-- Apply AFTER 017, as the last step of
+--   supabase/PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005_006 -> 007
+--   -> 008 -> ... -> 016 -> 017 -> 018
+-- on project chlkmdobhvfnldqkgdji.
+--
+-- This file embeds migration 018 VERBATIM between a read-only PRE-FLIGHT and a
+-- read-only POST-FLIGHT. Do not edit the embedded body; edit
+-- supabase/migrations/018_booking_time_precision.sql and regenerate this file:
+--
+--     node scripts/generate-activation-bundle.mjs
+--
+-- The body is byte-identical to the migration (verified by
+-- tests/activation-package-integrity.test.ts, which recomputes this hash).
+--
+-- NOTE: this migration makes a booking PRECISE. A car that 017 refused at day
+-- precision and that is genuinely free at hour precision becomes bookable, which
+-- is the point of the change. It refuses nothing that was previously allowed.
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- PRE-FLIGHT (read-only). Run this first and read the output.
+-- ----------------------------------------------------------------------------
+with cols as (
+  select column_name, data_type from information_schema.columns
+  where table_schema='public' and table_name='rental_contracts'
+),
+f as (
+  select
+    exists (select 1 from cols where column_name='car_id') as has_car,
+    (exists (select 1 from cols where column_name='start_date')
+       and exists (select 1 from cols where column_name='end_date')) as has_date,
+    exists (select 1 from cols where column_name='start_at') as already_precise
+)
+select item, ok from (
+  select 'PRE: rental_contracts exists' as item, 1 as ord,
+         (select count(*) from cols) > 0 as ok
+  union all
+  select 'PRE: a usable date window exists (018 needs it to backfill)', 2,
+         has_car and has_date from f
+  union all
+  select 'PRE: booking_blocks_car exists (017 was applied first)', 3,
+         exists (select 1 from pg_proc where proname = 'booking_blocks_car')
+  union all
+  select 'PRE: not already applied (a re-run is safe either way)', 4,
+         not already_precise from f
+) t
+order by ok, ord;
+
+-- How many rows 018 will backfill, and how many already violate the ordering the
+-- new CHECK constraint would impose. A non-zero bad_order only SKIPS the
+-- constraint; it never deletes a row.
+--
+-- Every reference is guarded: this runs BEFORE the columns exist, so naming
+-- start_at directly would abort the pre-flight rather than report it.
+select
+  (select count(*) from public.rental_contracts
+     where start_date is not null and end_date is not null) as rows_to_backfill,
+  (select count(*) from public.rental_contracts
+     where start_date is not null and end_date is not null and end_date < start_date) as bad_order;
+
+${sep}
+-- BEGIN 018_booking_time_precision.sql
+-- SHA-256 (body): ${h018}
+${sep}
+
+${b018}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only - proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'the time columns exist' as item,
+       (select count(*) from information_schema.columns
+         where table_schema='public' and table_name='rental_contracts'
+           and column_name in ('start_at','end_at','start_time','end_time')) = 4 as ok
+union all select 'the company-timezone helper exists',
+       exists (select 1 from pg_proc where proname = 'company_timezone') as ok
+union all select 'the race-safe trigger is installed (this is the guarantee)',
+       exists (select 1 from pg_trigger
+               where tgname = 'rental_contracts_no_double_booking' and not tgisinternal) as ok
+union all select 'the trigger derives the window from the wall-clock columns',
+       (select prosrc like '%new.start_at :=%'
+        from pg_proc where proname = 'prevent_car_double_booking') is true as ok
+union all select 'the trigger still takes the advisory lock (race safety kept)',
+       (select prosrc like '%pg_advisory_xact_lock%'
+        from pg_proc where proname = 'prevent_car_double_booking') is true as ok
+union all select 'every booking has a precise window (no NULL left)',
+       (select count(*) from public.rental_contracts where start_at is null) = 0 as ok
+union all select 'the helpers are not callable by a client',
+       (select count(*) from information_schema.routine_privileges
+        where routine_name in ('company_timezone','prevent_car_double_booking')
+          and grantee in ('anon','authenticated','PUBLIC')) = 0 as ok
+order by ok, item;
+
+-- Which guard is active at which precision.
+select
+  case when exists (select 1 from pg_constraint where conname = 'rental_contracts_no_car_overlap')
+         then 'exclusion constraint + advisory-lock trigger, at INSTANT precision (strongest)'
+       else 'advisory-lock trigger, at INSTANT precision (the trigger is the guarantee)'
+  end as active_guard;
+
+-- ============================================================================
+-- END OF PACKAGE (018)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_018, header018, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_018)}`);
+console.log(`  018 sha256 ${h018}`);

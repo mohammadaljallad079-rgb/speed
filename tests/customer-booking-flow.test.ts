@@ -249,7 +249,7 @@ describe("company isolation", () => {
         createBooking(
           db,
           { tenantId: TENANT_A, customerId: "cust-a" },
-          { carId: "b1", startDate: "2024-06-01", endDate: "2024-06-03", pickupLocation: "Manama", dropoffLocation: "Manama" },
+          { carId: "b1", startDate: "2024-06-01", startTime: "09:00", endDate: "2024-06-03", endTime: "09:00", pickupLocation: "Manama", dropoffLocation: "Manama" },
         ),
       (err: unknown) => err instanceof ApiError && err.status === 422,
     );
@@ -264,7 +264,9 @@ describe("company isolation", () => {
       {
         carId: "a1",
         startDate: "2024-06-01",
+        startTime: "09:00",
         endDate: "2024-06-03",
+        endTime: "09:00",
         pickupLocation: "Manama",
         dropoffLocation: "Manama",
         // A caller cannot smuggle a different tenant through the input.
@@ -280,7 +282,7 @@ describe("company isolation", () => {
 // Booking creation + double-booking
 // ---------------------------------------------------------------------------
 describe("booking creation", () => {
-  const input = { carId: "car-a1", startDate: "2024-06-01", endDate: "2024-06-03", pickupLocation: "Manama", dropoffLocation: "Airport" };
+  const input = { carId: "car-a1", startDate: "2024-06-01", startTime: "09:00", endDate: "2024-06-03", endTime: "09:00", pickupLocation: "Manama", dropoffLocation: "Airport" };
 
   test("a valid booking is created with a number, the session customer and computed total", async () => {
     const { db, state } = makeStub({ cars: [car()] });

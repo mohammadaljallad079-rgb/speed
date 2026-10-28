@@ -90,7 +90,9 @@ function stubDb(options: { contracts?: Row[]; insertError?: unknown } = {}) {
 const INPUT = {
   carId: "car-1",
   startDate: "2026-03-01",
+  startTime: "09:00",
   endDate: "2026-03-05",
+  endTime: "09:00",
   pickupLocation: "Manama",
   dropoffLocation: "Manama",
 };

@@ -28,6 +28,7 @@ const PKG_014 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_014.sql");
 const PKG_015 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_015.sql");
 const PKG_016 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_016.sql");
 const PKG_017 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_017.sql");
+const PKG_018 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_018.sql");
 
 const sha = (s: string) => createHash("sha256").update(s, "utf8").digest("hex");
 
@@ -530,6 +531,26 @@ const LATER_PACKAGES: Array<{
     // revoked from anon/authenticated, so it is not a client-reachable probe.
     allowsSecurityDefiner: true,
     definerFunctions: ["prevent_car_double_booking"],
+  },
+  {
+    n: "018",
+    file: "018_booking_time_precision.sql",
+    pkg: PKG_018,
+    migration: "018_booking_time_precision.sql",
+    rollback: "018_booking_time_precision_rollback.sql",
+    mustMention: [
+      /PRODUCTION_ACTIVATION_001_002_003\.sql/,
+      /017/,
+      /chlkmdobhvfnldqkgdji/,
+      /start_at/,
+      /company_timezone/,
+    ],
+    // `company_timezone` is SECURITY DEFINER so it can read `settings` without
+    // depending on the caller's RLS, and `prevent_car_double_booking` so it can
+    // see every booking of the car. Neither is a client-reachable probe: both are
+    // revoked from anon/authenticated and asserted so in the POST-FLIGHT.
+    allowsSecurityDefiner: true,
+    definerFunctions: ["company_timezone", "prevent_car_double_booking"],
   },
 ];
 

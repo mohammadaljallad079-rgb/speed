@@ -179,8 +179,16 @@ const TABLES = {
   ],
   // Exec 58 — the notification store and the rows the due-date scan reads.
   rental_contracts: [
+    // `rc1` is a LEGACY date-only row (no time, no instants) on purpose: the
+    // booking service must still derive a day window for it, so a pre-018 row
+    // keeps blocking the days it covers. `rc2` carries the precise form.
     { id: "rc1", contract_number: "RC-0001", customer_id: "c1", car_id: "car1", status: "active", start_date: "2026-10-01", end_date: "2026-10-20", tenant_id: TENANT_A },
-    { id: "rc2", contract_number: "RC-0002", customer_id: "c2", car_id: "car2", status: "active", start_date: "2026-10-10", end_date: "2027-01-10", tenant_id: TENANT_A },
+    {
+      id: "rc2", contract_number: "RC-0002", customer_id: "c2", car_id: "car2", status: "active",
+      start_date: "2026-10-10", end_date: "2027-01-10", start_time: "09:00", end_time: "11:00",
+      start_at: "2026-10-10T09:00:00+03:00", end_at: "2027-01-10T11:00:00+03:00",
+      tenant_id: TENANT_A,
+    },
   ],
   notifications: [],
 };

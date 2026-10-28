@@ -2546,3 +2546,13 @@ that applies the filters it is given and returns only affected rows.
   times AND the precise instants reach the database, that a legacy date-only row
   still blocks, and - the decisive one - that the SAME date is free at 07:00 and
   busy at 10:00, which a date-only guard cannot express.
+- **Running the DB harnesses when the sandbox has no PostgreSQL:** the 018
+  harnesses need a `psql` CLI and a server. When neither is installed and
+  `dockerd` cannot run (no root), an embedded server works and the SQL under test
+  is unchanged: `npm i @embedded-postgres/linux-x64` gives a real `initdb`/
+  `postgres` binary, and a thin `psql` shim over the `pg` client reproduces the
+  parts the harnesses use (unaligned output, `t`/`f` booleans, NOTICE on stdout
+  for the `raise notice` probes, `ON_ERROR_STOP`, and stripping psql
+  meta-commands like `\set`/`\echo` that the server would reject as SQL). With
+  that, 018 proves 25/25, the race 13/13 and the frozen package 6/6 here. The
+  harnesses themselves are untouched - only the client that feeds them changes.

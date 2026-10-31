@@ -2556,3 +2556,39 @@ that applies the filters it is given and returns only affected rows.
   meta-commands like `\set`/`\echo` that the server would reject as SQL). With
   that, 018 proves 25/25, the race 13/13 and the frozen package 6/6 here. The
   harnesses themselves are untouched - only the client that feeds them changes.
+
+## Execution 75 invariants (signup is all-or-nothing)
+
+- **Signup provisioning lives in `src/lib/saas/signup-service.ts`, not the route.**
+  `provisionSignup` creates the auth user, the tenant, the owner profile, the
+  financial year and the seven-day trial, and **checks the result of every step**.
+  `POST /api/saas/signup` returns `success: true` only after
+  `verifyProvisionedAccount` re-reads the tenant, profile, year and trial. Before
+  this, the route ignored the `financial_years` insert error and never checked
+  `trial.ok`, so a signup could answer success for an account that could not post
+  and had no trial — the exact defect Exec 75 fixes.
+- **Never re-inline provisioning into the route.** A second write path is how the
+  year/trial errors went unchecked. The route validates, calls the service,
+  verifies, audits and answers; it writes none of those rows itself.
+- **Compensation is reverse-order and scoped to what the call created.** A retry
+  that reuses an existing auth identity must never delete it — that identity is
+  the customer's account. `createdAuthUser` gates the `deleteUser`; a reused one
+  is left alone. `cleanupIncomplete` is reported and logged, never swallowed.
+- **Retry is idempotent.** `createUser` refuses a duplicate address, so a retry
+  after a partial failure finds the existing identity via `findAuthUserByEmail`
+  (bounded `listUsers`, ≤20 pages) and finishes. The trial is granted with
+  `restart: false`, so a retry cannot extend it.
+- **`financial_years.tenant_id` is migration-001-only.** The year insert tolerates
+  exactly the missing-column error (`42703`/`PGRST204`, via `isMissingColumn`) by
+  retrying without `tenant_id`; any other error fails the signup. Do not widen
+  this into a blanket "ignore insert errors".
+- **Production verification is `scripts/verify-saas-production.mjs`**, run by the
+  owner with real credentials. It creates two disposable tenants, checks
+  isolation (RLS/API/RPC/direct id), independence + owner correctness, and the
+  seven-day/server-side-expiry/authorised-activation rules, then deletes
+  everything it created. It never reads or modifies an existing customer and
+  never prints a key. A skipped check reports NOT VERIFIED, not PASS.
+- **The sandbox holds NO real Supabase credentials.** `.env.local` carries
+  placeholders (the API answers 401); the project resolves but cannot be
+  authenticated. Real-project verification therefore has to run where the
+  service-role key lives. Do not claim a live PASS from a unit test.

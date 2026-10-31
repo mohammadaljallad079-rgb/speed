@@ -14,6 +14,7 @@ import {
 const ROOT = process.cwd();
 const SIGNUP_ROUTE = path.join(ROOT, "src/app/api/saas/signup/route.ts");
 const ONBOARDING_ROUTE = path.join(ROOT, "src/app/api/saas/onboarding/route.ts");
+const SIGNUP_SERVICE = path.join(ROOT, "src/lib/saas/signup-service.ts");
 
 // ---------------------------------------------------------------------------
 // Signup validation
@@ -134,32 +135,47 @@ test("free plan advertises no inventory feature", () => {
 
 test("signup route always creates a NEW tenant and never trusts a client tenant_id", () => {
   const source = fs.readFileSync(SIGNUP_ROUTE, "utf8");
+  const service = fs.readFileSync(SIGNUP_SERVICE, "utf8");
 
-  // It creates a tenant of its own (server-generated id).
-  assert.match(source, /from\(\s*["'`]tenants["'`]\s*\)\s*\.insert/);
+  // The tenant is created server-side (the write moved into the provisioning
+  // service, where its result is checked).
+  assert.match(service, /from\(\s*["'`]tenants["'`]\s*\)\s*[\s\S]{0,40}\.insert/);
 
-  // Ownership columns are never read from the request body.
-  for (const field of ["tenant_id", "tenantId", "company_id", "companyId", "user_id", "userId"]) {
-    assert.doesNotMatch(
-      source,
-      new RegExp(`body\\s*\\[\\s*["'\`]${field}["'\`]\\s*\\]`),
-      `signup route must not read ${field} from the body`,
-    );
-    assert.doesNotMatch(source, new RegExp(`body\\.${field}\\b`), `signup route must not read ${field} from the body`);
+  // Ownership columns are never read from the request body, in either file.
+  for (const file of [source, service]) {
+    for (const field of ["tenant_id", "tenantId", "company_id", "companyId", "user_id", "userId"]) {
+      assert.doesNotMatch(
+        file,
+        new RegExp(`body\\s*\\[\\s*["'\`]${field}["'\`]\\s*\\]`),
+        `signup must not read ${field} from the body`,
+      );
+      assert.doesNotMatch(file, new RegExp(`body\\.${field}\\b`), `signup must not read ${field} from the body`);
+    }
   }
 
   // The role is a literal admin of the NEW tenant, never taken from the body.
-  assert.match(source, /role:\s*["'`]admin["'`]/);
-  assert.doesNotMatch(source, /role:\s*body/);
+  assert.match(service, /role:\s*["'`]admin["'`]/);
+  assert.doesNotMatch(service, /role:\s*body/);
 });
 
 test("signup route validates before it provisions and rolls back on failure", () => {
   const source = fs.readFileSync(SIGNUP_ROUTE, "utf8");
-  // Validation happens first.
+  const service = fs.readFileSync(SIGNUP_SERVICE, "utf8");
+
+  // Validation happens before provisioning is attempted.
   assert.match(source, /validateSignup/);
-  // Cleanup on partial failure (auth user and tenant are removed again).
-  assert.match(source, /auth\.admin\.deleteUser/);
-  assert.match(source, /\.delete\(\)\s*\.eq\(\s*["'`]id["'`]/);
+  assert.ok(
+    source.indexOf("validateSignup") < source.indexOf("provisionSignup"),
+    "validation must precede provisioning",
+  );
+
+  // Cleanup on partial failure: the auth user and the created rows are removed
+  // again. This now lives in the service, which is where the compensating order
+  // and the "never delete a reused identity" rule are enforced.
+  assert.match(service, /auth\.admin\.deleteUser/);
+  assert.match(service, /\.delete\(\)\s*\.eq\(\s*["'`]id["'`]/);
+  assert.match(service, /compensate\s*\(/);
+
   // Duplicate email is handled explicitly.
   assert.match(source, /email_taken/);
 });

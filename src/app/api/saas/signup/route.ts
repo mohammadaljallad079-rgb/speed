@@ -2,8 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { logAudit } from "@/lib/auth/audit";
-import { defaultFinancialYear, validateSignup } from "@/lib/saas/provisioning";
-import { grantTenantTrial } from "@/lib/saas/trial-store";
+import { validateSignup } from "@/lib/saas/provisioning";
+import {
+  provisionSignup,
+  verifyProvisionedAccount,
+  type SignupDb,
+} from "@/lib/saas/signup-service";
 import { TRIAL_DAYS } from "@/lib/saas/trial";
 import type { AuthContext } from "@/lib/auth/types";
 
@@ -18,19 +22,47 @@ import type { AuthContext } from "@/lib/auth/types";
  *     never read from the request body, so a visitor cannot join an existing
  *     tenant or grant themselves a role;
  *   - the new user becomes `admin` of a brand-new, empty tenant only;
- *   - the tenant is provisioned with a default financial year so posting works
- *     immediately;
- *   - every partial failure rolls back the auth user and the tenant, so a failed
- *     signup never leaves an orphaned account;
+ *   - every partial failure compensates what it created, so a failed signup never
+ *     leaves an orphaned account;
  *   - user-safe error messages only (no SQL, no keys).
+ *
+ * The provisioning rules live in `signup-service.ts`, not here, because they are
+ * the part that must be tested: the auth user, the tenant, the owner profile, the
+ * financial year AND the seven-day trial must all exist before this route answers
+ * `success: true`. An earlier version of this route ignored the financial-year
+ * error and never checked the trial, so it could report success for an account
+ * that could not post and had no trial.
  *
  * The service-role client is required because provisioning happens before the
  * user has a session (RLS would otherwise block the inserts). It is used only
  * after the payload is validated and only with server-generated ownership.
  */
 
-function isDuplicateEmail(message: string | undefined): boolean {
-  return /already|registered|exists/i.test(message ?? "");
+/** Maps a provisioning failure to a safe, user-facing response. */
+function failureResponse(reason: string, cleanupIncomplete?: boolean): NextResponse {
+  if (reason === "email_taken") {
+    return NextResponse.json(
+      { error: "This email is already registered. Please sign in.", code: "email_taken" },
+      { status: 409 },
+    );
+  }
+  if (reason === "auth_user_failed") {
+    return NextResponse.json(
+      { error: "Could not create the account", code: "signup_failed" },
+      { status: 400 },
+    );
+  }
+  // The remaining reasons are infrastructure failures. `cleanupIncomplete` means
+  // compensation could not remove everything, so the operator should be able to
+  // find it in the logs; the customer still gets a retryable message, because a
+  // retry reuses whatever exists rather than duplicating it.
+  if (cleanupIncomplete) {
+    console.error("[signup] compensation incomplete; an orphaned row may remain for", reason);
+  }
+  return NextResponse.json(
+    { error: "Could not complete signup. Please try again.", code: "internal_error" },
+    { status: 500 },
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -50,100 +82,34 @@ export async function POST(request: NextRequest) {
   }
 
   const { fullName, email, companyName, phone, password } = validation.data;
+  const db = supabaseAdmin as unknown as SignupDb;
 
-  // Reject a duplicate email before any auth user exists, so a visitor can never
-  // take over an existing account by "signing up" with its address.
-  const { data: existing, error: existingError } = await supabaseAdmin
-    .from("users")
-    .select("id")
-    .eq("email", email)
-    .maybeSingle();
+  const result = await provisionSignup(db, { fullName, email, password, companyName, phone });
 
-  if (existingError) {
-    return NextResponse.json({ error: "Could not complete signup", code: "internal_error" }, { status: 500 });
+  if (!result.ok) {
+    return failureResponse(result.reason, result.cleanupIncomplete);
   }
-  if (existing) {
+
+  const { account } = result;
+
+  // Do not claim success on the strength of "no exception was thrown". Re-read
+  // the rows the customer depends on; if any is missing, the signup did not
+  // happen and the caller must be told so.
+  const verified = await verifyProvisionedAccount(db, account);
+  if (!verified.ok) {
+    console.error("[signup] provisioning reported success but these rows are missing:", verified.missing);
     return NextResponse.json(
-      { error: "This email is already registered. Please sign in.", code: "email_taken" },
-      { status: 409 },
+      { error: "Could not complete signup. Please try again.", code: "internal_error" },
+      { status: 500 },
     );
   }
-
-  // 1. Auth user.
-  const created = await supabaseAdmin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: { full_name: fullName, company_name: companyName },
-  });
-
-  if (created.error || !created.data?.user) {
-    const duplicate = isDuplicateEmail(created.error?.message);
-    return NextResponse.json(
-      {
-        error: duplicate ? "This email is already registered. Please sign in." : "Could not create the account",
-        code: duplicate ? "email_taken" : "signup_failed",
-      },
-      { status: 400 },
-    );
-  }
-
-  const userId = created.data.user.id;
-
-  // 2. The tenant. Ownership is generated here; the browser never supplies it.
-  const { data: tenant, error: tenantError } = await supabaseAdmin
-    .from("tenants")
-    .insert({ name: companyName, name_en: companyName })
-    .select("id")
-    .single();
-
-  if (tenantError || !tenant) {
-    await supabaseAdmin.auth.admin.deleteUser(userId);
-    return NextResponse.json({ error: "Could not create the company", code: "internal_error" }, { status: 500 });
-  }
-
-  const tenantId = (tenant as { id: string }).id;
-
-  // 3. The application profile: owner/admin of THIS tenant only.
-  const { error: userError } = await supabaseAdmin.from("users").insert({
-    id: userId,
-    email,
-    full_name: fullName,
-    role: "admin",
-    tenant_id: tenantId,
-    phone,
-    is_active: true,
-  });
-
-  if (userError) {
-    await supabaseAdmin.from("tenants").delete().eq("id", tenantId);
-    await supabaseAdmin.auth.admin.deleteUser(userId);
-    return NextResponse.json({ error: "Could not create the account", code: "internal_error" }, { status: 500 });
-  }
-
-  // 4. Default financial year, so a posting has a valid year from day one.
-  const year = defaultFinancialYear();
-  await supabaseAdmin.from("financial_years").insert({
-    name: year.name,
-    start_date: year.start_date,
-    end_date: year.end_date,
-    is_current: true,
-    status: "open",
-    tenant_id: tenantId,
-  });
-
-  // 5. The free trial. Granted here, at provisioning time, so the window starts
-  //    when the account is created rather than on first sign-in (a customer who
-  //    signs up and returns a week later must not get a fresh seven days).
-  //    `restart` is left false: a retried request cannot extend the trial.
-  const trial = await grantTenantTrial(supabaseAdmin as never, tenantId, { restart: false });
 
   const context: AuthContext = {
-    authUserId: userId,
+    authUserId: account.userId,
     email,
     fullName,
     role: "admin",
-    tenantId,
+    tenantId: account.tenantId,
     customerId: null,
     branchIds: null,
     financialYearId: null,
@@ -154,13 +120,13 @@ export async function POST(request: NextRequest) {
   await logAudit(context, {
     action: "create",
     entity: "tenants",
-    entityId: tenantId,
+    entityId: account.tenantId,
     metadata: {
       event: "signup",
       company_name: companyName,
       trial_days: TRIAL_DAYS,
-      trial_ends_at: trial.record?.endsAt ?? null,
-      trial_granted: trial.ok,
+      trial_ends_at: account.trialEndsAt,
+      trial_granted: account.trialEndsAt !== null,
     },
   });
 
@@ -169,6 +135,6 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({
     success: true,
     email,
-    trial: { days: TRIAL_DAYS, endsAt: trial.record?.endsAt ?? null, granted: trial.ok },
+    trial: { days: TRIAL_DAYS, endsAt: account.trialEndsAt, granted: account.trialEndsAt !== null },
   });
 }

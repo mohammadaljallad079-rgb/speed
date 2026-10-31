@@ -261,12 +261,21 @@ test("loadTrialState resolves the stored end date against the clock", async () =
 // --- route wiring ------------------------------------------------------------
 
 test("signup grants the trial, at provisioning time, without restarting it", () => {
-  const src = read("src/app/api/saas/signup/route.ts");
-  assert.match(src, /grantTenantTrial\(/);
-  assert.match(src, /restart:\s*false/, "a retried signup must not extend the trial");
-  assert.match(src, /TRIAL_DAYS/);
+  // The grant moved into the provisioning service so its result can be checked
+  // (the route used to ignore it and answer success anyway). The guarantee is the
+  // same, so it is asserted where it now lives - plus the route no longer granting
+  // it itself, which is what let an ungranted trial pass as success.
+  const service = read("src/lib/saas/signup-service.ts");
+  assert.match(service, /grantTenantTrial\(/);
+  assert.match(service, /restart:\s*false/, "a retried signup must not extend the trial");
+  assert.match(service, /if\s*\(\s*!trial\.ok/, "an ungranted trial must fail the signup");
   // The window starts when the account is created, not on first sign-in.
-  assert.match(src, /trial_ends_at/);
+  assert.match(service, /trialEndsAt/);
+
+  const route = read("src/app/api/saas/signup/route.ts");
+  assert.match(route, /TRIAL_DAYS/);
+  assert.match(route, /trial_ends_at/);
+  assert.doesNotMatch(route, /grantTenantTrial\(/, "the route must not grant the trial itself");
 });
 
 test("signup never returns an internal identifier alongside the trial", () => {

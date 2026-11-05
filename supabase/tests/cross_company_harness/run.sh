@@ -84,6 +84,8 @@ MIGRATIONS=(
   015_strict_accounting_integrity
   016_customer_row_isolation
   017_booking_overlap_guard
+  018_booking_time_precision
+  019_null_tenant_isolation
 )
 
 echo "== recreating $DB =="
@@ -118,7 +120,7 @@ done
 "${PSQL[@]}" -d "$DB" -c "grant execute on all functions in schema public to authenticated;" >/dev/null
 
 echo "== idempotency: re-apply 002, 004 and 016 =="
-for m in 002_tenant_isolation_hardening 004_global_super_admin 016_customer_row_isolation; do
+for m in 002_tenant_isolation_hardening 004_global_super_admin 016_customer_row_isolation 019_null_tenant_isolation; do
   "${PSQL[@]}" -d "$DB" -f - < "$ROOT/supabase/migrations/$m.sql" >/dev/null 2>&1 || {
     echo " FAIL | re-applying $m was not idempotent"; fail=$((fail+1)); }
 done

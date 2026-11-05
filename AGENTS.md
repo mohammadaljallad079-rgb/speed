@@ -2621,3 +2621,69 @@ that applies the filters it is given and returns only affected rows.
   every `SUPABASE_*`/`DATABASE_URL` variable unset): 1704 tests / 1698 pass / 0 fail /
   6 skipped. A test that needs the service-role key is a boundary defect, not a
   configuration problem.
+
+## Execution 77 invariants (NULL-tenant isolation for SPEED rental customers)
+
+- **The defect: `can_read_tenant` was standing in for authorization.** 002/004
+  isolate every table by TENANT, and for a tenant-less caller
+  `can_read_tenant(tenant_id)` reduces to `tenant_id IS NULL`. A SPEED rental
+  customer is `role='client'` with `tenant_id IS NULL`, so it satisfied that
+  predicate for EVERY tenant-less row — and on this install most operational rows
+  are tenant-less. Reproduced by execution on PostgreSQL 17 with the 001→018
+  schema and real `authenticated` identities: another customer's invoices,
+  payments, contracts and PII were readable; the general ledger, chart of
+  accounts, suppliers, branches, employees and `settings` were readable; and
+  `cars` UPDATE/DELETE/INSERT, `journal_entries` DELETE, `accounts` DELETE and an
+  `invoices` INSERT for another customer were all permitted. 016 fixed the
+  customer-owned tables but not `invoices`/`payments`/the ERP tables, and it did
+  not restrict DELETE at all.
+- **Migration `019_null_tenant_isolation.sql` is the fix** and it is ADDITIVE: it
+  rewrites no row and re-owns no record. `is_client_only()` is the fail-closed
+  complement of 016's `is_erp_user()` (an unknown/NULL/invalid role is treated as
+  a restricted rental customer). Every policy it creates is **RESTRICTIVE**, so it
+  is ANDed with the permissive tenant policy and can only NARROW — an ERP user's
+  access is unchanged.
+- **RESTRICTIVE vs permissive is the whole safety argument.** A permissive
+  `using (false)` deny is a no-op (permissive policies are ORed); a RESTRICTIVE one
+  is ANDed with every permissive policy. Never add a permissive policy to close a
+  hole.
+- **Deletion is an authorization decision, not a consequence of "may read the
+  tenant".** 002's `_tenant_delete` used `can_read_tenant`, so a tenant-less
+  customer could delete the ledger. `_erp_delete` / `_erp_write` / `_erp_update`
+  give each destructive verb its own RESTRICTIVE gate.
+- **`cars` SELECT is deliberately NOT gated** — 016's tenant-scoped read is what
+  the booking catalog needs. Only INSERT/UPDATE/DELETE are ERP-only. Removing the
+  read would empty the customer portal's car list.
+- **A `NULL` `customer_id` is never an allow clause.** An office-created invoice
+  with no customer link belongs to no portal account; `or customer_id is null`
+  would hand it to every tenant-less customer.
+- **The identity guard must be a BEFORE trigger, not only a RLS policy.** A RLS
+  `with check` sees only the NEW row, so it cannot tell a changed `role` from an
+  unchanged one. `users_reserve_client_identity` compares `to_jsonb(old)`/`to_jsonb(new)`
+  for role/tenant/customer link/permissions/is_active, and stays exempt for the
+  provisioning path (`auth.uid() is null`) and administrators, so signup and user
+  administration keep working.
+- **019 does not depend on 016 having run.** `is_erp_user()`/`current_customer_id()`
+  are (re)created with identical definitions, and the revokes from `anon` are
+  stated in 019 rather than inherited. An operator-run migration with a silent
+  ordering trap is a security defect waiting to happen.
+- **Proof by execution:** `supabase/tests/exec77_harness/run.sh` — **93/93** on
+  PostgreSQL 17, with real `authenticated` identities and a rollback-wrapped
+  probe (a harness run never mutates the database it measures). It asserts the
+  BEFORE-019 leak, the AFTER-019 boundary, customer↔customer and
+  company↔company isolation, the intact booking catalog and 017 guard, anon
+  denial, idempotency, rollback and re-apply. `cross_company_harness` now applies
+  **001→019** (47/47) so a regression in 019 fails the whole-chain test;
+  `016_harness` 39/39, `isolation_harness` 17/17.
+- **Every migration needs a frozen activation package.**
+  `supabase/PRODUCTION_ACTIVATION_019.sql` is emitted by
+  `scripts/generate-activation-bundle.mjs` (never hand-edited) and
+  `tests/activation-package-integrity.test.ts` recomputes its SHA-256 banner
+  (88 assertions). Apply order is 001→…→018→019.
+- **The rollback restores the leak on purpose** — it is an emergency step. It
+  drops only the objects 019 created, and it must declare its loop variable
+  (`suffix text;`); a missing declaration aborts the DO block and silently drops
+  nothing, which is how the first draft failed.
+- **Still an operator step:** migrations 001–019 are NOT applied to the live
+  project (`chlkmdobhvfnldqkgdji`) and cannot be from this sandbox (no DDL path).
+  The harness proves the SQL, not the live database.

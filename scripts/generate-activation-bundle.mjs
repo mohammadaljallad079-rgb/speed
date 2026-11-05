@@ -1271,3 +1271,140 @@ select
 fs.writeFileSync(OUT_018, header018, "utf8");
 console.log(`wrote ${path.relative(ROOT, OUT_018)}`);
 console.log(`  018 sha256 ${h018}`);
+
+// ---------------------------------------------------------------------------
+// 019 - NULL-tenant isolation: a SPEED rental customer (`role='client'`,
+// `tenant_id IS NULL`) must reach only its own rows. Apply AFTER 018 (it
+// supersedes 016's coverage for invoices/payments and gates DELETE).
+// ---------------------------------------------------------------------------
+const b019 = read("019_null_tenant_isolation.sql");
+const h019 = sha(b019);
+const OUT_019 = path.join(ROOT, "supabase", "PRODUCTION_ACTIVATION_019.sql");
+
+const header019 = `-- ============================================================================
+-- SPEED ERP — PRODUCTION ACTIVATION PACKAGE (019)
+-- NULL-tenant isolation: a rental customer reaches only its own data.
+--
+-- Apply AFTER 018, as the last step of
+--   supabase/PRODUCTION_ACTIVATION_001_002_003.sql -> 004 -> 005_006 -> 007
+--   -> 008 -> ... -> 017 -> 018 -> 019
+-- on project chlkmdobhvfnldqkgdji.
+--
+-- WHY THIS IS URGENT: on the live database the anonymous key can still read and
+-- write every table (001/002 are not applied), and a signed-in SPEED rental
+-- customer - whose \`tenant_id\` is NULL - satisfies \`can_read_tenant(null)\` for
+-- every tenant-less row. The reproduction is in the migration header and in
+-- supabase/tests/exec77_harness/run.sh.
+--
+-- This file embeds migration 019 VERBATIM between a read-only PRE-FLIGHT and a
+-- read-only POST-FLIGHT. Do not edit the embedded body; edit
+-- supabase/migrations/019_null_tenant_isolation.sql and regenerate this file:
+--
+--     node scripts/generate-activation-bundle.mjs
+--
+-- The body is byte-identical to the migration (verified by
+-- tests/activation-package-integrity.test.ts, which recomputes this hash).
+--
+-- NOTE: this migration refuses nothing a rental customer legitimately does. It
+-- keeps the tenant-scoped car catalog (the booking flow) and its own invoices,
+-- payments, contracts and profile, and leaves every ERP user's access unchanged
+-- (its policies are RESTRICTIVE, so they only narrow the existing tenant ones).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- PRE-FLIGHT (read-only). Run this first and read the output.
+-- ----------------------------------------------------------------------------
+select item, ok from (
+  select 'PRE: public.users exists (the identity table)' as item, 1 as ord,
+         (to_regclass('public.users') is not null) as ok
+  union all
+  select 'PRE: users.customer_id exists (the Auth -> customer link)', 2,
+         exists (select 1 from information_schema.columns
+                 where table_schema='public' and table_name='users'
+                   and column_name='customer_id')
+  union all
+  select 'PRE: 016 was applied (is_erp_user exists)', 3,
+         exists (select 1 from pg_proc where proname = 'is_erp_user')
+  union all
+  select 'PRE: not already applied (a re-run is safe either way)', 4,
+         not exists (select 1 from pg_proc where proname = 'is_client_only')
+  union all
+  select 'PRE: invoices.customer_id exists (ownership is verifiable)', 5,
+         exists (select 1 from information_schema.columns
+                 where table_schema='public' and table_name='invoices'
+                   and column_name='customer_id')
+) t
+order by ok, ord;
+
+-- How many rental customers the migration will start restricting, and how many
+-- invoices/payments carry no customer link (those become office-only rows).
+-- Informational only - 019 changes no row.
+select
+  (select count(*) from public.users
+     where role = 'client' and tenant_id is null) as tenant_less_rental_customers,
+  (select count(*) from public.invoices where customer_id is null) as invoices_without_a_customer,
+  (select count(*) from public.payments where customer_id is null) as payments_without_a_customer;
+
+${sep}
+-- BEGIN 019_null_tenant_isolation.sql
+-- SHA-256 (body): ${h019}
+${sep}
+
+${b019}
+-- ============================================================================
+-- POST-FLIGHT VERIFICATION (read-only - proves the migration took effect)
+-- ============================================================================
+-- Every row below must read true.
+
+select 'the rental-customer predicate exists' as item,
+       exists (select 1 from pg_proc where proname = 'is_client_only') as ok
+union all select 'the ERP-user predicate exists',
+       exists (select 1 from pg_proc where proname = 'is_erp_user') as ok
+union all select 'the identity-reservation trigger is installed',
+       exists (select 1 from pg_trigger
+               where tgname = 'users_reserve_client_identity' and not tgisinternal) as ok
+union all select 'the ERP-only gate covers the platform settings',
+       exists (select 1 from pg_policies
+               where tablename = 'settings' and policyname = 'settings_erp_only'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'the ERP-only gate covers the general ledger',
+       exists (select 1 from pg_policies
+               where tablename = 'journal_entries' and policyname = 'journal_entries_erp_only'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'the chart of accounts is ERP-only',
+       exists (select 1 from pg_policies
+               where tablename = 'accounts' and policyname = 'accounts_erp_only'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'invoices are scoped to the caller customer',
+       exists (select 1 from pg_policies
+               where tablename = 'invoices' and policyname = 'invoices_client_own'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'payments are scoped to the caller customer',
+       exists (select 1 from pg_policies
+               where tablename = 'payments' and policyname = 'payments_client_own'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'DELETE on the ledger is ERP-only',
+       exists (select 1 from pg_policies
+               where tablename = 'journal_entries' and policyname = 'journal_entries_erp_delete'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'a rental customer may not modify the fleet',
+       exists (select 1 from pg_policies
+               where tablename = 'cars' and policyname = 'cars_erp_update'
+                 and permissive = 'RESTRICTIVE') as ok
+union all select 'the car catalog SELECT is NOT restricted (the booking flow works)',
+       not exists (select 1 from pg_policies
+                   where tablename = 'cars' and policyname = 'cars_erp_select') as ok
+union all select 'the predicates are not anon-callable',
+       (select count(*) from information_schema.routine_privileges
+        where routine_name in ('is_client_only','is_erp_user')
+          and grantee in ('anon','PUBLIC')) = 0 as ok
+order by ok, item;
+
+-- ============================================================================
+-- END OF PACKAGE (019)
+-- ============================================================================
+`;
+
+fs.writeFileSync(OUT_019, header019, "utf8");
+console.log(`wrote ${path.relative(ROOT, OUT_019)}`);
+console.log(`  019 sha256 ${h019}`);

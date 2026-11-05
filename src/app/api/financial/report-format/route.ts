@@ -328,7 +328,9 @@ export async function GET(request: Request) {
         .in("entity", ["report_format", "dynamic_report", "report_format_preview", "dynamic_report_preview", "report_definition", "report_format_template"])
         .order("created_at", { ascending: false })
         .limit(50);
-      if (context.tenantId) q = q.eq("tenant_id", context.tenantId);
+      // Fail-closed: a tenant-less caller reads the NULL-tenant rows, never
+      // every tenant's history.
+      q = context.tenantId ? q.eq("tenant_id", context.tenantId) : q.is("tenant_id", null);
       const { data, error } = await q;
       if (error) throw error;
       return NextResponse.json({ success: true, history: data ?? [] });

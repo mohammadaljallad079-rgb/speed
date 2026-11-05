@@ -399,7 +399,7 @@ describe("Exec58 — notifications route hygiene", () => {
   const route = read("src/app/api/notifications/route.ts");
 
   test("the route authenticates via requireContext and never trusts the body for identity", () => {
-    assert.match(route, /requireContext\(request\)/);
+    assert.match(route, /requireContext\(request, \{ requireErp: true \}\)/);
     assert.ok(!/body\.tenant_id/.test(route), "tenant_id must never come from the body");
     assert.ok(!/body\.role/.test(route), "role must never come from the body");
     assert.ok(!/body\.recipient/.test(route), "recipient must never come from the body");

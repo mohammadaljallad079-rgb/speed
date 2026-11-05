@@ -168,12 +168,39 @@ export async function resolveAuthContext(request: Request): Promise<AuthContext 
 }
 
 /**
+ * The client shape the financial-year lookup needs.
+ *
+ * Declared structurally, and taken as a parameter, so the lookup runs against the
+ * client its caller was given rather than the global service-role one. A service
+ * that is handed an injected client (every accounting service, and the tests that
+ * drive them) must not reach outside it: doing so makes the service unrunnable
+ * without real credentials and hides a database round-trip from the caller.
+ */
+export type FinancialYearQuery = PromiseLike<{ data: unknown }> & {
+  eq(column: string, value: string): FinancialYearQuery;
+  order(column: string, options: { ascending: boolean }): FinancialYearQuery;
+  limit(count: number): FinancialYearQuery;
+  maybeSingle(): Promise<{ data: unknown }>;
+};
+
+export type FinancialYearDb = {
+  from(table: string): { select(columns: string): FinancialYearQuery };
+};
+
+/**
  * Resolves the active financial year for the tenant. Returns `null` when the
  * tenant has no financial year configured, in which case date validation is
  * skipped so that existing installations keep working unchanged.
+ *
+ * `db` defaults to the service-role client so production callers are unchanged,
+ * but a caller that holds its own client passes it: the lookup then stays inside
+ * that client, which is what lets the sales services be tested offline.
  */
-export async function getActiveFinancialYear(tenantId: string | null): Promise<FinancialYear | null> {
-  let query = supabaseAdmin
+export async function getActiveFinancialYear(
+  tenantId: string | null,
+  db: FinancialYearDb = supabaseAdmin as unknown as FinancialYearDb,
+): Promise<FinancialYear | null> {
+  let query = db
     .from("financial_years")
     .select("id, name, start_date, end_date, is_current, status");
 

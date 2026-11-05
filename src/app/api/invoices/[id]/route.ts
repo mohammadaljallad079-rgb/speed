@@ -46,7 +46,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       .from("invoices")
       .select("*, customers(id, full_name, phone, email)")
       .eq("id", id);
-    if (context.tenantId) query = query.eq("tenant_id", context.tenantId);
+    // Fail-closed: a tenant-less caller is confined to the NULL-tenant rows, so
+    // an unresolved tenant cannot read another company's invoice by id.
+    query = context.tenantId
+      ? query.eq("tenant_id", context.tenantId)
+      : query.is("tenant_id", null);
 
     const { data, error } = await query.maybeSingle();
     if (error) throw error;
@@ -165,7 +169,9 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     const { id } = await params;
 
     let query = supabaseAdmin.from("invoices").select("id,invoice_number,tenant_id").eq("id", id);
-    if (context.tenantId) query = query.eq("tenant_id", context.tenantId);
+    query = context.tenantId
+      ? query.eq("tenant_id", context.tenantId)
+      : query.is("tenant_id", null);
     const { data: invoice, error } = await query.maybeSingle();
     if (error) throw error;
     if (!invoice) throw notFound("Invoice not found");

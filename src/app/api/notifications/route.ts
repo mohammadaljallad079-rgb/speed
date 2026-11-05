@@ -41,7 +41,7 @@ function today(): string {
 
 export async function GET(request: Request) {
   try {
-    const context = await requireContext(request);
+    const context = await requireContext(request, { requireErp: true });
     const url = new URL(request.url);
     const op = url.searchParams.get("op") ?? "list";
 
@@ -95,7 +95,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const context = await requireContext(request);
+    const context = await requireContext(request, { requireErp: true });
     const url = new URL(request.url);
     const op = url.searchParams.get("op") ?? "scan";
 

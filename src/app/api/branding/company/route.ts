@@ -51,7 +51,7 @@ const db = supabaseAdmin as unknown as AdminDb;
 
 export async function GET(request: Request) {
   try {
-    const context = await requireContext(request);
+    const context = await requireContext(request, { requireErp: true });
     const profile = await loadCompanyProfile(supabaseAdmin as never, context.tenantId);
     return NextResponse.json({ success: true, data: profile ?? null });
   } catch (error) {

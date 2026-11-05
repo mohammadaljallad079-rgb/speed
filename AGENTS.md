@@ -2186,3 +2186,504 @@ that applies the filters it is given and returns only affected rows.
   the production code makes.
 - Baseline after Exec 68: **1493 tests / 1487 pass / 6 skipped / 0 fail**;
   typecheck 0 errors; lint clean; production build green.
+
+## Execution 69 invariants (role-based access areas: customer vs ERP vs platform)
+
+- **One area map decides every access question.** `src/lib/auth/access-areas.ts`
+  is pure, import-free and Edge-safe (`areaForPath`, `decidePathAccess`,
+  `loginPathForArea`, `apiAccessForPath`, `roleMayReachArea`, `isPublicPath`,
+  `safeCustomerRedirect`). Pages and APIs both consult it, so they cannot drift
+  apart. Never re-implement the boundary in a route, a page or the middleware.
+- **The reported defect and its shape.** The middleware used to ask only "is
+  there a session?" — never "is this identity allowed here?" — so an
+  authenticated rental customer (`role: "client"`) was served the ERP shell at
+  `/dashboard`. A customer is now redirected to `/access-denied` on an ERP page
+  and gets `403 forbidden` from an ERP API. Regression-guarded by
+  `tests/exec69-customer-erp-access-boundary.test.ts` (30 cases, in `test:core`),
+  which is non-vacuous: restoring the fail-open fails 6 of them.
+- **Unknown roles grant nothing.** `src/lib/auth/session-role.ts` is the shared
+  strict resolver. It must never default an unknown/NULL role to `staff`; that
+  default *was* the fail-open. A missing `users` row, an unknown role, a NULL
+  role, an inactive account and an unreadable role all deny.
+- **Four areas, deliberately distinct:** `erp` (admin/staff), `customer`
+  (client), `platform` (super_admin, the tenant-less global operator) and public
+  (`null`). An ERP user is refused the customer API and the platform console; a
+  super admin is refused the company ERP workspace.
+- **Sign-in doors follow the area.** `loginPathForArea` sends `customer` to
+  `/customer-login` (which itself refuses a non-customer account), `platform` to
+  `/super-admin-login`, everything else to `/login`. Sending a customer to the
+  ERP `/login` authenticates them as a company identity and then bounces them.
+- **`/api/me` is reachable by every authenticated identity**, by design: both
+  login flows depend on it to learn their role. Do not gate it by area.
+- **Public paths are an explicit list, not a fallthrough.** `PUBLIC_PATH_PREFIXES`
+  plus `/`, `/fleet`, `/erp` (product-overview pages, NOT ERP surfaces) and
+  `/cars/[id]` (the public vehicle detail page, but never `/cars/new`). A test
+  asserts every top-level route on disk is either area-gated or explicitly
+  public, so a new page nobody classified fails rather than defaulting.
+- **`?redirect=` is caller input.** `safeCustomerRedirect` refuses an absolute or
+  protocol-relative URL, a backslash variant, an `/api/*` target, and any ERP or
+  platform path. A naive `startsWith("/")` check is not sufficient.
+- **Verification without production.** `scripts/dev/stub-supabase.mjs` is a
+  local, in-memory Supabase-compatible backend (GoTrue password grant +
+  `getUser`, PostgREST filters, `generate_document_number`) with a fake seeded
+  dataset. It is development tooling only — never imported by app code, never in
+  a production build — and is what makes real-browser verification possible
+  without touching the live project. Real screenshots of the fix and the Super
+  Admin console live in `docs/screenshots/exec69/`.
+- **Continuation-point correction.** The task brief named commit `c536858`
+  (Exec 41) as "last pushed". It is an **ancestor** of `origin/main`; the true
+  latest is `origin/main` @ `164b0b8` (Exec 68 merged via PR #4). Exec 69 is
+  branched from and pushed on top of that, not on the stale commit.
+- Baseline after Exec 69: **1519 tests / 1513 pass / 6 skipped / 0 fail**;
+  typecheck 0 errors; lint clean; production build green.
+
+## Execution 70 invariants (customer row isolation + fail-closed tenant scopes)
+
+- **Migration 016 is the intra-tenant isolation model.** 001/002 isolate by
+  TENANT, so every `authenticated` identity of a tenant satisfies the tenant
+  predicate for every row of that tenant - a rental customer could read another
+  customer's rentals, invoices and payments. `016_customer_row_isolation.sql`
+  adds two SECURITY DEFINER predicates with a pinned `search_path`
+  (`current_customer_id()`, `current_user_is_office()`), RESTRICTIVE policies on
+  the customer-owned tables, and a BEFORE trigger on `users` that refuses any
+  self-escalation of `role` (the second half of the reported defect). A NULL
+  `customer_id` means "no portal customer", so a tenant-less row is not a
+  cross-customer path. The office/ERP side is exempt, and `cars` stays
+  tenant-scoped (it is a catalogue, not customer-owned).
+- **`revoke execute ... from anon` on the predicate helpers.** A SECURITY DEFINER
+  predicate that `anon` may execute is a callable oracle; the 004 posture is the
+  model. The harness asserts anon is DENIED (privilege), not merely that it sees
+  0 rows - the stronger claim.
+- **`scopeToTenant` (and `scopeToCompany`) are fail-closed.** A caller whose
+  tenant could not be resolved is confined to `IS NULL`, never left unfiltered;
+  only a global super admin reads unfiltered. `scopeToTenant` delegates to
+  `scopeToTenantColumn` so there is ONE tenant predicate, not two that can
+  disagree - it was exported but unused, which is exactly why the next caller
+  would have inherited the hole.
+- **The fail-open shape is banned and scanned for.** `if (context.tenantId)
+  query = query.eq("tenant_id", ...)` leaves the query UNFILTERED when the tenant
+  is unresolved. It was an invoice IDOR in `/api/invoices/[id]` (GET and DELETE)
+  and `/api/invoices/[id]/reverse`, and a cross-tenant history read in
+  `/api/financial/report-format?what=history`. The correct shape is the
+  fail-closed ternary falling back to `.is("tenant_id", null)`.
+  `tests/security-tenant-isolation.test.ts` scans every `src/app/api/**/route.ts`
+  for the banned shape and fails on a new one.
+- **A tenant-owned row is stamped with the session tenant at creation.**
+  `/api/users` POST created the auth user and let the profile trigger create the
+  `users` row with no `tenant_id`, so the account landed in the NULL-tenant
+  bucket. `users` is tenant-owned (002's tenant table list). The stamp comes from
+  the session, never the body, and the auth user is rolled back if it fails. The
+  list endpoint is fail-closed too: only a global super admin enumerates every
+  account; an unresolved tenant yields no accounts.
+- **The capture tooling needs one session per area.** `capture-screenshots.mjs`
+  signed in as `super_admin` only and then visited ERP pages. Since Exec 69 the
+  area boundary is server-enforced, so those pages (correctly) redirect to
+  `/access-denied`. It now builds three contexts - anonymous, `platform`
+  (`super_admin`), `erp` (company `admin`) - and picks the session per shot from
+  the shot name. A masked failure before Exec 69; a real one now.
+- **Real browser evidence on the release commit:** `docs/screenshots/exec70/`
+  holds 82 screenshots (41 shots x desktop 1440x1000 / mobile 390x900) with
+  `MANIFEST.json`, captured against the local Supabase stub
+  (`scripts/dev/local-supabase-stub.mjs`) - never a live system. The capture
+  fails on a duplicate image so a blank frame cannot be committed as evidence.
+- Harnesses: `supabase/tests/016_harness/run.sh` (39/39) applies 016, re-applies
+  it idempotently, rolls it back, and asserts cross-customer denial plus anon
+  denial. Baseline after Exec 70: **1552 tests / 1546 pass / 6 skipped / 0 fail**;
+  typecheck 0 errors; lint clean; production build green.
+
+## Execution 72 invariants (cross-company isolation harness, free trial, booking race)
+
+- **Cross-company isolation is proved by execution, not by reading policies.**
+  `supabase/tests/cross_company_harness/run.sh` applies migrations `001 -> 017`
+  to a throwaway PostgreSQL 17, seeds two independent companies plus a
+  tenant-less row, and asserts 47 behaviours as real `authenticated` identities
+  (a GUC-driven `auth.uid()`, exactly as Supabase does). A **mutation control**
+  (J1/J2) turns RLS off and proves the suite CAN go red, so a green run is not
+  vacuous. Reuse this harness for any future isolation change.
+- **A trial is a stored window, not copy.** Before Exec 72 the repository had
+  signup, onboarding, a tenant plan and capability sets but **no trial at all** -
+  nothing stored an end date and nothing expired, so a "trial" would have been
+  open-ended. `src/lib/saas/trial.ts` (pure policy: window, exclusive boundary,
+  days left), `src/lib/saas/trial-store.ts` (tenant-scoped `settings` row,
+  idempotent grant - `restart: true` is the only way to extend) and
+  `src/lib/saas/effective-plan.ts` (`resolveEntitlements`, the ONE place the
+  server composes plan x trial). `/api/me`, `/api/import` and `/api/ai/repairs`
+  resolve entitlements; reading `loadTenantPlan` alone is the fail-open shape
+  that could never expire. Free-plan capabilities (exports) are deliberately NOT
+  revoked at expiry - locking a customer out of their own data is not an upsell.
+- **A booking must be race-proof at the database, not only in JavaScript.**
+  `createBooking` reads the car's blocking contracts, tests the overlap, then
+  inserts: a check-then-act where two simultaneous requests both read "free".
+  `supabase/migrations/017_booking_overlap_guard.sql` adds an EXCLUSION
+  constraint (`rental_contracts_no_car_overlap`, half-open
+  `daterange(start,end,'[)')`, `where booking_blocks_car(status)`) plus a
+  `prevent_car_double_booking` trigger fallback for a deployment without
+  `btree_gist`. The tenant is **coalesced to a sentinel UUID** because a GiST
+  index treats NULLs as distinct, so without it the tenant-less install would
+  have no guard at all. `isOverlapViolation` in the service translates the
+  database rejection into the SAME 409 the pre-check returns, so the customer who
+  lost the race sees "already booked", never a 500.
+- **`booking_blocks_car` is the one status list.** It mirrors `BLOCKING_STATUSES`
+  in `src/lib/rental/booking-service.ts`; a test asserts the two agree. An
+  unrecognised status is NOT blocking, so a new status cannot make the database
+  refuse a booking the UI offered.
+- **Apply order is now `001 -> 017`.** `017` is the last package:
+  `supabase/PRODUCTION_ACTIVATION_017.sql`, generated by
+  `scripts/generate-activation-bundle.mjs`, sha256 in its banner, byte-identity
+  enforced by `tests/activation-package-integrity.test.ts`. The embedded body is
+  followed by a **blank line** before the POST-FLIGHT separator - that blank line
+  is what keeps the body byte-identical (the extractor strips one separator and
+  one blank line).
+- **The definer check in the integrity test scans only the embedded body.** A
+  whole-file scan attributes `security definer` to whichever function is textually
+  nearest, which is how it once passed while pointing at the wrong function. Its
+  real property is "no UNDECLARED function is a definer function"; a plain
+  invoker helper beside a declared definer one is fine (`booking_blocks_car` is a
+  pure immutable predicate).
+- Local proof for 017: `bash supabase/tests/017_harness/run.sh` (31 assertions,
+  incl. the trigger standing alone with the constraint dropped) and
+  `bash supabase/tests/017_harness/verify_package.sh` (the frozen package applies
+  with all POST-FLIGHT rows green). Like 001-016, 017 is NOT applied to the live
+  database - DDL remains an operator step.
+- Baseline after Exec 72 (this commit): 1610 tests / 1604 pass / 0 fail / 6
+  skipped; typecheck 0 errors; lint clean.
+
+## Execution 72.1 invariants (017 race safety + booking precision)
+
+- **The first version of 017 did NOT close the race, and that is now pinned by a
+  test that proves it.** Its fallback trigger read `select ... from
+  rental_contracts` with no lock. Under READ COMMITTED that read uses the
+  statement snapshot, so it cannot see another transaction's uncommitted insert:
+  two sessions both read "no conflict" and both commit. A single-session harness
+  cannot observe this - which is how it shipped.
+- **The trigger now takes a transaction-level advisory lock keyed on
+  (tenant, car)**: `pg_advisory_xact_lock(hashtextextended(tenant||':'||car, 0))`.
+  The lock is taken BEFORE the conflict read, so the read-and-insert becomes
+  atomic for that car. It is released by the transaction, so a failed insert
+  releases it too. The tenant is coalesced to the sentinel UUID so the
+  tenant-less install locks on itself. A hash collision can only serialise two
+  unrelated cars - it can never let two conflicting inserts through.
+- **Concurrency is proved by execution, not by parsing:**
+  `python3 supabase/tests/017_harness/race.py` drives TWO real PostgreSQL sessions
+  and asserts, in order, (a) the ORIGINAL plain-SELECT trigger lets BOTH commit -
+  the bug, reproduced so the test cannot be vacuous; (b) the real migration with
+  the exclusion constraint dropped (isolating the trigger) lets exactly ONE
+  commit; (c) both guards let exactly ONE commit. 15/15 assertions.
+- **The window is built at the booking's real precision.** A calendar-date guard
+  is wrong once a pickup/return TIME exists (09:00-11:00 and 10:00-12:00 are
+  different bookings). 017 detects the columns and picks, highest first:
+  `start_at`/`end_at` (timestamptz -> `tstzrange`) > `start_ts`/`end_ts`
+  (`tsrange`) > `start_date`+`end_date`+`start_time`+`end_time` (`tsrange` on the
+  combined local timestamp; a null time is midnight) > `start_date`/`end_date`
+  (`tsrange` on midnight). Never a `daterange`. All windows are half-open `[)`,
+  matching `periodsOverlap`.
+- **Activation FAILS CLOSED.** A `rental_contracts` that exists but offers no
+  usable window is a hard `raise exception`, not the old silent `return` that
+  reported success while guarding nothing. A pre-existing overlap is still NOT a
+  hard error - the advisory-lock trigger is installed first and is race-safe, so
+  aborting would remove a working guard; it is a WARNING and the POST-FLIGHT
+  reports which guard is active.
+- **Read-only preflight:** `supabase/EXEC72_BOOKING_GUARD_PREFLIGHT.sql` reports
+  the detected precision, `btree_gist` availability and per-precision
+  pre-existing overlaps. It writes nothing (no temp table, no `set role`), which
+  `tests/exec72-migration-017-hardening.test.ts` enforces.
+- **Live schema verification without a DB connection:**
+  `node scripts/verify-live-schema.mjs` reads PostgREST's own OpenAPI document
+  (`/rest/v1/`) and reports, per migration, whether the required column exists and
+  at what precision. Exit 0 = satisfied, 1 = missing, **2 = NOT VERIFIED** (no
+  usable credentials). Exit 2 is deliberately not success: an unreadable schema is
+  never reported as a verified one.
+- **A tenant-LESS `rental_contracts` was a second, independent defect, and it
+  silently no-opped the whole migration.** The trigger's `update of` list, the
+  exclusion constraint and the duplicate-scan query all named `tenant_id`
+  unconditionally. On a schema without that column (which is the *live* shape
+  today, and the shape a fresh install gets) PostgreSQL raised
+  `column "tenant_id" ... does not exist`, so 017 applied **nothing** while the
+  package reported success. Fixing only the DDL was not enough: the function
+  *body* also referenced `new.tenant_id`, which creates a trigger that raises
+  `record "new" has no field "tenant_id"` the first time it fires. Every tenant
+  reference is now emitted through `format()` only when `v_tenant` is true - the
+  lock key becomes the bare sentinel and the conflict predicate's tenant equality
+  becomes empty. Harnesses all had a `tenant_id` column, which is exactly why
+  they missed it; both now cover the tenant-less shape explicitly
+  (`017_harness/run.sh` section 10, four assertions per variant; `race.py` races a
+  tenant-less table and asserts exactly one session commits).
+- **Lesson:** a migration harness that only models the tenanted schema cannot see
+  a defect that only appears without the column. Model the *live* shape too.
+- **The read-only preflight had the same tenant-less defect, twice over.** Its
+  overlap predicate named `a.tenant_id`/`b.tenant_id` unconditionally (failing on
+  the shape it exists to inspect), and it called `public.booking_blocks_car(...)`
+  - a helper that **017 creates**, so it does not exist before activation. It now
+  assembles the predicate with dynamic SQL (still a single read-only SELECT),
+  emits the tenant equality only when `v_ten`, and writes the blocking-status list
+  out inline. It reports the precision and whether `tenant_id` is present.
+- **`scripts/verify-live-schema.mjs` is proven on BOTH paths.** Fail-closed
+  (exit 2) was easy; the success path needed a stub. The tool now lets an
+  explicit environment variable win over `.env.local` (an operator pointing it at
+  another project must not be silently overridden by the file's placeholder),
+  which also makes the path testable: `tests/exec72-migration-017-hardening.test.ts`
+  serves a PostgREST-shaped OpenAPI document on a loopback port and asserts
+  exit 0 (satisfied), exit 1 (a named missing column) and exit 2 (no credentials).
+  The stub runs in-process, so the child must be spawned ASYNCHRONOUSLY - a
+  synchronous spawn blocks the event loop and the stub can never answer.
+- Baseline after Exec 72.3: 1618 tests / 1612 pass / 0 fail / 6 skipped; typecheck
+  0 errors; lint clean; all six harnesses pass (isolation 17, 004, 005 10, 007 15,
+  017 39, cross-company 47) plus the 19-assertion two-session race harness.
+
+## Execution 73 invariants (Book Now repair, Start Free proof, live-verification boundary)
+
+- **A customer-portal route is gated by ROLE, never by an ERP permission.**
+  `DEFAULT_ROLE_PERMISSIONS.client` is empty by design, so any
+  `module`/`action` guard on a `/api/customer/*` route is unsatisfiable for the
+  only role the route exists for. `PUT /api/customer/profile` demanded
+  `customers.edit` and therefore always returned 403; because the customer
+  dashboard treats a failed profile write as fatal, **every booking silently
+  failed** before `POST /api/customer/bookings` was reached. It now uses
+  `requireContext(request, { allowRoles: ["client"] })`, matching
+  `/api/customer/bookings` and `/api/customer/available-cars`. The write is
+  still confined to the caller's own customer row (the id comes from
+  `users.customer_id`, never the body), so the role is the whole authorisation.
+  Regression-guarded by `tests/exec73-book-now-path.test.ts`; reverting the gate
+  fails 2 of its 7 tests.
+- **The Book Now flow is verified in a real browser, not only at the route
+  level.** `scripts/dev/e2e-exec73-book-now.mjs` drives Chromium through the
+  public fleet page -> `?tab=booking&car=car3` deep link -> real sign-in ->
+  submit, and asserts the *saved* reservation names the selected vehicle and
+  window (18/18 checks). Screenshots are committed under
+  `docs/screenshots/exec73/`. It also asserts the flow's own limitation rather
+  than hiding it: the form has no time-of-day inputs and availability is
+  date-granular, so a same-day turnover cannot be expressed.
+- **The local Supabase stand-in serves the Auth admin API and a `client`
+  identity.** `scripts/dev/local-supabase-stub.mjs` links `customer@speed.local`
+  to customer `c1` and exposes a distinctive free car, so a booking can be driven
+  end to end and its exact vehicle named. The stand-in resolves the caller from
+  the session cookie's JWT `sub`; a non-JWT token makes it fall back to its
+  operator identity and every "customer" test silently becomes a super-admin
+  test.
+- **Item 1 (Start Free lifecycle) is proven server-side.** The suite composes the
+  real `resolveAuthContext` + effective-plan/trial functions instead of calling
+  `/api/me` (which needs Next's `cookies()` request scope). The session cookie is
+  `sb-<firstHostLabel>-auth-token`, and `access_token` must be JWT-shaped. A
+  fail-open mutation in `effective-plan.ts` fails 2 tests; an inclusive-boundary
+  mutation in `trial.ts` is caught too.
+- **Live RLS verification is BLOCKED, and the block is reported, not worked
+  around.** `.env.local` holds placeholder keys (20/23 chars, not JWTs), so
+  `scripts/verify-live-schema.mjs` reports `NOT VERIFIED` and exits 2 - it does
+  not crash and does not claim success. The live host is reachable (HTTP 401 in
+  ~0.24s), so the block is credentials, not connectivity. A real `anon`/service
+  key is an operator input.
+- **The isolation model is proven locally by execution, which is the strongest
+  evidence available in the sandbox.** On a throwaway PostgreSQL 17 (`docker`):
+  migrations 001->004 apply cleanly and re-apply idempotently; RLS is enabled on
+  all **64** public tables; `anon` holds **zero** table privileges; the repo's own
+  `isolation_harness` reports **17/17 PASS**. All eleven migration harnesses pass
+  (004, 005 10, 007 15, 008, 011 28, 013 15, 014 36, 015 43, 016 39, 017 39,
+  isolation 17 - ~242 assertions). This proves the SQL, not the live database.
+- **The `sudo` shim caveat:** the harnesses call `sudo -n -u postgres`; inside a
+  root-owned container a `/usr/local/bin/sudo` shim that drops the flags is
+  needed. That is a harness-environment detail, not a change to any migration.
+- Baseline after Exec 73: 1635 tests / 1629 pass / 0 fail / 6 skipped; typecheck
+  0 errors; lint clean.
+
+## Execution 74 invariants (booking time precision — a rental is an hour window)
+
+- **A booking is a TIME window, not a calendar day.** 09:00-11:00 and 10:00-12:00
+  on one date are different rentals, and a car returned at 09:00 may go out again
+  at 09:00. A date-only guard either refuses a legitimate booking or admits a
+  conflicting one, so the customer selects BOTH a date and a time for pickup and
+  return. Do not re-add a date-only booking form.
+- **`src/lib/rental/timezone.ts` is the only timezone arithmetic.** It is pure (no
+  clock, no I/O) and uses `Intl` rather than a date library. A wall-clock reading
+  is meaningless without its zone, so `zonedWallClockToInstant(date, time, zone)`
+  converts it to a true instant and `toZonedIso` renders it with an explicit
+  offset (`2026-03-01T09:00:00+03:00`). Storing a naive local timestamp instead
+  would silently reinterpret itself if the server's zone changed.
+- **The zone comes from the COMPANY, never the request.** `getCompanyTimezone`
+  (`src/lib/rental/company-timezone.ts`) reads the existing `settings` key/value
+  store (`company_timezone`, tenant-scoped) and fails closed to
+  `DEFAULT_COMPANY_TIMEZONE` (`Asia/Bahrain`). A client-supplied zone could shift
+  the window and defeat the guard. The availability route *returns* the zone so
+  the form can label its inputs; that is presentation, not a trust boundary.
+- **`resolveBookingWindow` REFUSES a window that does not move forward** rather
+  than defaulting to midnight. A silent `00:00` default would turn a 09:00 pickup
+  into a 15-hour rental and change the price. A missing or malformed time is a
+  `400` naming the field.
+- **`rentalDays` counts whole 24-hour periods of branch-local wall clock.** A
+  same-day rental is 1; 09:00 Monday -> 09:00 Tuesday is 1; -> 11:00 Tuesday is 2.
+  Measured on the wall clock, not elapsed milliseconds, so a DST change does not
+  silently add or remove a billable day. It floors at 1 - a 0 would make a rental
+  free and a negative would invert the price.
+- **The same-day trap (fixed here, regression-guarded).** `availabilityWindow`
+  used `end > start`, which is **false** when both dates are equal, so a same-day
+  selection fell through to "cars free from today forever" and OFFERED a car that
+  was already out for exactly that hour. A same-day window is now judged on its
+  times, and a same-day DATE-ONLY request means `[00:00, next 00:00)`.
+  `tests/exec74-booking-time-precision.test.ts` guards all three cases.
+- **The guard is at INSTANT precision.** Migration `018_booking_time_precision.sql`
+  adds `start_time`/`end_time` (time) and `start_at`/`end_at` (timestamptz),
+  backfills instants via `at time zone public.company_timezone(tenant_id)`,
+  re-creates `booking_blocks_car`, and derives the window in a BEFORE trigger that
+  still takes `pg_advisory_xact_lock(hashtextextended(tenant||car, 0))` and raises
+  `exclusion_violation` (23P01). The exclusion constraint uses
+  `tstzrange(start_at, end_at, '[)')`.
+- **Legacy rows keep their day precision.** A row written before 018 has no times,
+  so `windowOf` derives `[start_date 00:00, end_date 00:00)` and it still blocks
+  the days it covers. Ignoring it would let a new booking collide with an old one.
+- **The app runs before the migration.** `insertTolerant` drops only the columns
+  the live database lacks (`start_at`/`end_at`, then `start_time`/`end_time`), so
+  a pre-018 install degrades to the date-only shape instead of failing.
+- **Proven by execution, not by parsing:** `supabase/tests/018_harness/run.sh`
+  (25 assertions) applies 018 to a date-only schema and re-applies it;
+  `race.py` (13 assertions) shows the race is real without the guard (2 rows) and
+  impossible with it (1 row, the loser refused with 23P01, and the lock is per-car
+  not global); `verify_package.sh` applies the FROZEN
+  `supabase/PRODUCTION_ACTIVATION_018.sql` twice and requires an all-true
+  POST-FLIGHT. The package is generated by
+  `node scripts/generate-activation-bundle.mjs` and its SHA-256 banner is
+  recomputed by `tests/activation-package-integrity.test.ts`.
+- **Browser proof:** `scripts/dev/e2e-exec73-book-now.mjs` drives the real form
+  (28/28). It asserts the time inputs exist and default sensibly, that the chosen
+  times AND the precise instants reach the database, that a legacy date-only row
+  still blocks, and - the decisive one - that the SAME date is free at 07:00 and
+  busy at 10:00, which a date-only guard cannot express.
+- **Running the DB harnesses when the sandbox has no PostgreSQL:** the 018
+  harnesses need a `psql` CLI and a server. When neither is installed and
+  `dockerd` cannot run (no root), an embedded server works and the SQL under test
+  is unchanged: `npm i @embedded-postgres/linux-x64` gives a real `initdb`/
+  `postgres` binary, and a thin `psql` shim over the `pg` client reproduces the
+  parts the harnesses use (unaligned output, `t`/`f` booleans, NOTICE on stdout
+  for the `raise notice` probes, `ON_ERROR_STOP`, and stripping psql
+  meta-commands like `\set`/`\echo` that the server would reject as SQL). With
+  that, 018 proves 25/25, the race 13/13 and the frozen package 6/6 here. The
+  harnesses themselves are untouched - only the client that feeds them changes.
+
+## Execution 75 invariants (signup is all-or-nothing)
+
+- **Signup provisioning lives in `src/lib/saas/signup-service.ts`, not the route.**
+  `provisionSignup` creates the auth user, the tenant, the owner profile, the
+  financial year and the seven-day trial, and **checks the result of every step**.
+  `POST /api/saas/signup` returns `success: true` only after
+  `verifyProvisionedAccount` re-reads the tenant, profile, year and trial. Before
+  this, the route ignored the `financial_years` insert error and never checked
+  `trial.ok`, so a signup could answer success for an account that could not post
+  and had no trial — the exact defect Exec 75 fixes.
+- **Never re-inline provisioning into the route.** A second write path is how the
+  year/trial errors went unchecked. The route validates, calls the service,
+  verifies, audits and answers; it writes none of those rows itself.
+- **Compensation is reverse-order and scoped to what the call created.** A retry
+  that reuses an existing auth identity must never delete it — that identity is
+  the customer's account. `createdAuthUser` gates the `deleteUser`; a reused one
+  is left alone. `cleanupIncomplete` is reported and logged, never swallowed.
+- **Retry is idempotent.** `createUser` refuses a duplicate address, so a retry
+  after a partial failure finds the existing identity via `findAuthUserByEmail`
+  (bounded `listUsers`, ≤20 pages) and finishes. The trial is granted with
+  `restart: false`, so a retry cannot extend it.
+- **`financial_years.tenant_id` is migration-001-only.** The year insert tolerates
+  exactly the missing-column error (`42703`/`PGRST204`, via `isMissingColumn`) by
+  retrying without `tenant_id`; any other error fails the signup. Do not widen
+  this into a blanket "ignore insert errors".
+- **Production verification is `scripts/verify-saas-production.mjs`**, run by the
+  owner with real credentials. It creates two disposable tenants, checks
+  isolation (RLS/API/RPC/direct id), independence + owner correctness, and the
+  seven-day/server-side-expiry/authorised-activation rules, then deletes
+  everything it created. It never reads or modifies an existing customer and
+  never prints a key. A skipped check reports NOT VERIFIED, not PASS.
+- **The sandbox holds NO real Supabase credentials.** `.env.local` carries
+  placeholders (the API answers 401); the project resolves but cannot be
+  authenticated. Real-project verification therefore has to run where the
+  service-role key lives. Do not claim a live PASS from a unit test.
+
+## Execution 76 invariants (a service's dependencies stay inside its injected client)
+
+- **A service that takes an injected client must not reach outside it.** `createSalesReturn`
+  (`src/lib/sales/return-service.ts`) and `issueInvoice` (`src/lib/sales/service.ts`) both
+  take a `db` and route every other read/write through it, but two checks escaped:
+  `getActiveFinancialYear` read the global `supabaseAdmin`, and `issueInvoice`'s
+  `assertReferences` call omitted its (already supported) client argument. Both now use
+  the injected client. `tests/exec76-financial-year-client-injection.test.ts` asserts
+  neither file mentions `supabaseAdmin`, so the boundary cannot silently reopen.
+- **The escape was a correctness bug, not only a test bug.** `getActiveFinancialYear`
+  is now `(tenantId, db = supabaseAdmin)`: production callers are unchanged (the routes
+  pass `supabaseAdmin`, so the default *is* the injected client), but a caller holding
+  its own client keeps the lookup inside it. The tenant filter is unchanged
+  (`tenantId ? .eq("tenant_id", tenantId) : query`), so isolation is preserved.
+- **The old escape silently disabled the financial-year guard.** With placeholder
+  credentials the global lookup made a real network call that failed, returned `null`,
+  and `assertDateInOpenFinancialYear` then SKIPPED its check — the tests passed without
+  ever exercising the guard. `exec76` now drives a real `financial_years` row through the
+  stub and asserts a closed year and an out-of-year date are both refused, so the guard
+  is provably live. This is why the stub models `financial_years` rather than leaving the
+  table absent.
+- **The stub needs `order()`.** `getActiveFinancialYear` chains
+  `.order("is_current").order("start_date").limit(1).maybeSingle()`; a stub that omits
+  `order` fails with `query.order is not a function` instead of testing anything.
+- **`npm run test:core` now passes with NO Supabase credentials at all** (verified with
+  every `SUPABASE_*`/`DATABASE_URL` variable unset): 1704 tests / 1698 pass / 0 fail /
+  6 skipped. A test that needs the service-role key is a boundary defect, not a
+  configuration problem.
+
+## Execution 77 invariants (NULL-tenant isolation for SPEED rental customers)
+
+- **The defect: `can_read_tenant` was standing in for authorization.** 002/004
+  isolate every table by TENANT, and for a tenant-less caller
+  `can_read_tenant(tenant_id)` reduces to `tenant_id IS NULL`. A SPEED rental
+  customer is `role='client'` with `tenant_id IS NULL`, so it satisfied that
+  predicate for EVERY tenant-less row — and on this install most operational rows
+  are tenant-less. Reproduced by execution on PostgreSQL 17 with the 001→018
+  schema and real `authenticated` identities: another customer's invoices,
+  payments, contracts and PII were readable; the general ledger, chart of
+  accounts, suppliers, branches, employees and `settings` were readable; and
+  `cars` UPDATE/DELETE/INSERT, `journal_entries` DELETE, `accounts` DELETE and an
+  `invoices` INSERT for another customer were all permitted. 016 fixed the
+  customer-owned tables but not `invoices`/`payments`/the ERP tables, and it did
+  not restrict DELETE at all.
+- **Migration `019_null_tenant_isolation.sql` is the fix** and it is ADDITIVE: it
+  rewrites no row and re-owns no record. `is_client_only()` is the fail-closed
+  complement of 016's `is_erp_user()` (an unknown/NULL/invalid role is treated as
+  a restricted rental customer). Every policy it creates is **RESTRICTIVE**, so it
+  is ANDed with the permissive tenant policy and can only NARROW — an ERP user's
+  access is unchanged.
+- **RESTRICTIVE vs permissive is the whole safety argument.** A permissive
+  `using (false)` deny is a no-op (permissive policies are ORed); a RESTRICTIVE one
+  is ANDed with every permissive policy. Never add a permissive policy to close a
+  hole.
+- **Deletion is an authorization decision, not a consequence of "may read the
+  tenant".** 002's `_tenant_delete` used `can_read_tenant`, so a tenant-less
+  customer could delete the ledger. `_erp_delete` / `_erp_write` / `_erp_update`
+  give each destructive verb its own RESTRICTIVE gate.
+- **`cars` SELECT is deliberately NOT gated** — 016's tenant-scoped read is what
+  the booking catalog needs. Only INSERT/UPDATE/DELETE are ERP-only. Removing the
+  read would empty the customer portal's car list.
+- **A `NULL` `customer_id` is never an allow clause.** An office-created invoice
+  with no customer link belongs to no portal account; `or customer_id is null`
+  would hand it to every tenant-less customer.
+- **The identity guard must be a BEFORE trigger, not only a RLS policy.** A RLS
+  `with check` sees only the NEW row, so it cannot tell a changed `role` from an
+  unchanged one. `users_reserve_client_identity` compares `to_jsonb(old)`/`to_jsonb(new)`
+  for role/tenant/customer link/permissions/is_active, and stays exempt for the
+  provisioning path (`auth.uid() is null`) and administrators, so signup and user
+  administration keep working.
+- **019 does not depend on 016 having run.** `is_erp_user()`/`current_customer_id()`
+  are (re)created with identical definitions, and the revokes from `anon` are
+  stated in 019 rather than inherited. An operator-run migration with a silent
+  ordering trap is a security defect waiting to happen.
+- **Proof by execution:** `supabase/tests/exec77_harness/run.sh` — **93/93** on
+  PostgreSQL 17, with real `authenticated` identities and a rollback-wrapped
+  probe (a harness run never mutates the database it measures). It asserts the
+  BEFORE-019 leak, the AFTER-019 boundary, customer↔customer and
+  company↔company isolation, the intact booking catalog and 017 guard, anon
+  denial, idempotency, rollback and re-apply. `cross_company_harness` now applies
+  **001→019** (47/47) so a regression in 019 fails the whole-chain test;
+  `016_harness` 39/39, `isolation_harness` 17/17.
+- **Every migration needs a frozen activation package.**
+  `supabase/PRODUCTION_ACTIVATION_019.sql` is emitted by
+  `scripts/generate-activation-bundle.mjs` (never hand-edited) and
+  `tests/activation-package-integrity.test.ts` recomputes its SHA-256 banner
+  (88 assertions). Apply order is 001→…→018→019.
+- **The rollback restores the leak on purpose** — it is an emergency step. It
+  drops only the objects 019 created, and it must declare its loop variable
+  (`suffix text;`); a missing declaration aborts the DO block and silently drops
+  nothing, which is how the first draft failed.
+- **Still an operator step:** migrations 001–019 are NOT applied to the live
+  project (`chlkmdobhvfnldqkgdji`) and cannot be from this sandbox (no DDL path).
+  The harness proves the SQL, not the live database.

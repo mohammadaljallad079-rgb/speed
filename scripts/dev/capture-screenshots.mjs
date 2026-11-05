@@ -23,6 +23,24 @@ const OUT = process.argv[3] ?? "docs/screenshots";
 const SUPER_ADMIN_EMAIL = "admin@system.local";
 const SUPER_ADMIN_PASSWORD = "local-dev-password";
 
+/**
+ * The ERP identity. The Exec 69 area boundary is enforced server-side, so a
+ * `super_admin` is refused an ERP page (correctly: the platform operator is not
+ * a company user). Capturing the ERP screens therefore needs a real company
+ * session, not the operator's. This was masked before Exec 69 because the
+ * middleware only asked "is there a session?".
+ */
+const ERP_EMAIL = "speedadmin@speed.local";
+const ERP_PASSWORD = "local-dev-password";
+
+/**
+ * Which session a shot needs.
+ *  - `platform`: the global operator console (`/super-admin*`)
+ *  - `erp`:      the company workspace (everything else behind the ERP gate)
+ *  - `none`:     a public page, captured anonymously
+ */
+const PLATFORM_SHOTS = /^super-admin-/;
+
 /** Pages to capture. `auth: false` pages are public. */
 const SHOTS = [
   { name: "super-admin-login", path: "/super-admin-login", auth: false },
@@ -160,16 +178,30 @@ async function warmUp(page, base) {
   }
 }
 
-async function main() {
-  fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch({
-    executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+/** Sign in through a real sign-in form and wait for the caller to be routed. */
+async function signIn(page, base, email, password, expectPath) {
+  await page.goto(`${base}${expectPath === "/super-admin" ? "/super-admin-login" : "/login"}`, {
+    waitUntil: "networkidle",
   });
-  const captured = [];
-  const skipped = [];
+  await page.fill("#email", email);
+  await page.fill("#password", password);
+  await Promise.all([
+    page.waitForURL(`**${expectPath}`, { timeout: 30000 }).catch(() => {}),
+    page.click('button[type="submit"]'),
+  ]);
+  await page.waitForTimeout(2500);
+}
 
-  for (const viewport of VIEWPORTS) {
+/**
+ * Build the three sessions a capture run needs.
+ *
+ * A single context cannot hold two identities: the Supabase session lives in a
+ * cookie. Since Exec 69 the area boundary is server-enforced, so the operator
+ * and the company admin are genuinely different surfaces and each needs its own
+ * context. Public shots get an anonymous one.
+ */
+async function buildSessions(browser, viewport, base) {
+  const mk = async () => {
     const context = await browser.newContext({
       viewport: { width: viewport.width, height: viewport.height },
       deviceScaleFactor: 1,
@@ -185,23 +217,56 @@ async function main() {
         /* storage disabled: the app falls back to its own default */
       }
     });
-    const page = await context.newPage();
+    return context;
+  };
 
-    // Authenticate once per viewport through the real sign-in form.
-    await page.goto(`${BASE}/super-admin-login`, { waitUntil: "networkidle" });
-    await page.fill("#email", SUPER_ADMIN_EMAIL);
-    await page.fill("#password", SUPER_ADMIN_PASSWORD);
-    await Promise.all([
-      page.waitForURL("**/super-admin", { timeout: 30000 }).catch(() => {}),
-      page.click('button[type="submit"]'),
-    ]);
-    await page.waitForTimeout(2500);
+  const anon = await mk();
+  const platform = await mk();
+  const erp = await mk();
 
+  await signIn(await platform.newPage(), base, SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD, "/super-admin");
+  await signIn(await erp.newPage(), base, ERP_EMAIL, ERP_PASSWORD, "/dashboard");
+
+  return { anon, platform, erp };
+}
+
+/** Compile every route up front so a shot never catches a half-built page. */
+async function warmUpAll(sessions, base) {
+  const seen = new Set();
+  for (const shot of SHOTS) {
+    const key = shot.auth === false ? "anon" : PLATFORM_SHOTS.test(shot.name) ? "platform" : "erp";
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await warmUp(await sessions[key].newPage(), base);
+  }
+}
+
+async function main() {
+  fs.mkdirSync(OUT, { recursive: true });
+  const browser = await chromium.launch({
+    executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  });
+  const captured = [];
+  const skipped = [];
+
+  for (const viewport of VIEWPORTS) {
+    const sessions = await buildSessions(browser, viewport, BASE);
     // Compile every route up front; otherwise the first request for a route
     // returns a partially-built page and the screenshot catches a blank frame.
-    await warmUp(page, BASE);
+    await warmUpAll(sessions, BASE);
+
+    // One long-lived page per session; navigating it reuses the cookie.
+    const pages = {
+      anon: await sessions.anon.newPage(),
+      platform: await sessions.platform.newPage(),
+      erp: await sessions.erp.newPage(),
+    };
 
     for (const shot of SHOTS) {
+      const sessionKey =
+        shot.auth === false ? "anon" : PLATFORM_SHOTS.test(shot.name) ? "platform" : "erp";
+      const page = pages[sessionKey];
       const file = path.join(OUT, `${shot.name}-${viewport.label}.png`);
       const label = `${shot.name}-${viewport.label}`;
 
@@ -319,7 +384,7 @@ async function main() {
       console.log(`[capture] ${file}`);
     }
 
-    await context.close();
+    for (const c of [sessions.anon, sessions.platform, sessions.erp]) await c.close();
   }
 
   await browser.close();

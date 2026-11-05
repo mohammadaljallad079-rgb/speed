@@ -30,7 +30,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const { id } = await params;
 
     let query = supabaseAdmin.from("invoices").select("*").eq("id", id);
-    if (context.tenantId) query = query.eq("tenant_id", context.tenantId);
+    query = context.tenantId
+
+      ? query.eq("tenant_id", context.tenantId)
+
+      : query.is("tenant_id", null);
     const { data: invoice, error } = await query.maybeSingle();
     if (error) throw error;
     if (!invoice) throw notFound("Invoice not found");

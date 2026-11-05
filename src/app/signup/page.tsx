@@ -36,6 +36,9 @@ function SignupContent() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  // The trial length the SERVER granted, echoed back on success so the copy
+  // cannot drift from the real policy.
+  const [trialDays, setTrialDays] = useState<number | null>(null)
 
   const set = (key: keyof FormState) => (event: React.ChangeEvent<HTMLInputElement>) =>
     setForm((prev) => ({ ...prev, [key]: event.target.value }))
@@ -74,6 +77,10 @@ function SignupContent() {
         email: form.email,
         password: form.password,
       })
+
+      // The trial length comes from the SERVER response, so the copy can never
+      // drift from what was actually granted.
+      if (typeof payload?.trial?.days === "number") setTrialDays(payload.trial.days)
 
       if (signInError) {
         // Account exists; the visitor can simply log in.
@@ -127,7 +134,13 @@ function SignupContent() {
                 {isRTL ? "تم إنشاء حسابك" : "Your account is ready"}
               </h1>
               <p className="mb-6 text-sm text-slate-500">
-                {isRTL ? "يمكنك الآن تسجيل الدخول والبدء." : "You can now sign in and get started."}
+                {trialDays
+                  ? isRTL
+                    ? `تجربتك المجانية لمدة ${trialDays} أيام تبدأ الآن. يمكنك تسجيل الدخول والبدء.`
+                    : `Your ${trialDays}-day free trial starts now. Sign in and get started.`
+                  : isRTL
+                    ? "يمكنك الآن تسجيل الدخول والبدء."
+                    : "You can now sign in and get started."}
               </p>
               <Link
                 href="/login"
@@ -142,7 +155,9 @@ function SignupContent() {
                 {isRTL ? "أنشئ حسابك المجاني" : "Create your free account"}
               </h1>
               <p className="mt-1.5 text-sm text-slate-500">
-                {isRTL ? "ابدأ إدارة أعمالك خلال دقائق. لا حاجة لبطاقة دفع." : "Start managing your business in minutes. No payment method required."}
+                {isRTL
+                  ? "ابدأ إدارة أعمالك خلال دقائق. تجربة مجانية 7 أيام، ولا حاجة لبطاقة دفع."
+                  : "Start managing your business in minutes. 7-day free trial, no payment method required."}
               </p>
 
               <form className="mt-6 space-y-4" onSubmit={submit}>

@@ -21,6 +21,18 @@ export type GuardOptions = {
    * features; a company administrator is rejected with 403.
    */
   requireSuperAdmin?: boolean;
+  /**
+   * When true the caller must be an ERP identity (`admin`, `staff` or the
+   * global `super_admin`). A rental customer (`client`) is rejected even though
+   * it is authenticated.
+   *
+   * The middleware already confines a `client` to the customer area, so this is
+   * defence in depth: a route that belongs to the ERP must say so itself rather
+   * than depend on the area map being exhaustive. Use it for cross-cutting ERP
+   * endpoints (notifications, branding, import) that have no single permission
+   * module of their own.
+   */
+  requireErp?: boolean;
   /** Set to false for endpoints that must be reachable without a session. */
   requireAuth?: boolean;
 };
@@ -31,6 +43,9 @@ function assertRole(context: AuthContext, options: GuardOptions): void {
     throw forbidden("Global administrator access required");
   }
   if (options.requireAdmin && !context.isAdmin) throw forbidden("Administrator access required");
+  if (options.requireErp && context.role === "client") {
+    throw forbidden("ERP access required");
+  }
   if (options.allowRoles && !options.allowRoles.includes(context.role) && !context.isAdmin) {
     throw forbidden();
   }

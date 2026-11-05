@@ -3,8 +3,7 @@ import { NextResponse } from "next/server";
 import { resolveAuthContext } from "@/lib/auth/context";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { capabilitiesFor } from "@/lib/saas/entitlements";
-import { loadTenantPlan } from "@/lib/saas/tenant-plan";
+import { resolveEntitlements } from "@/lib/saas/effective-plan";
 
 export const dynamic = "force-dynamic";
 
@@ -49,12 +48,16 @@ export async function GET(request: Request) {
     );
   }
 
-  // The subscription package's capabilities, so a client surface can hide a
-  // control the server would refuse (exports, imports, the AI agent). This is
-  // presentation only: every route re-checks the capability server-side, so a
-  // tampered response cannot grant anything. A super admin operates the
-  // platform and holds every capability.
-  const plan = context.isSuperAdmin ? "enterprise" : await loadTenantPlan(supabaseAdmin as never, context.tenantId);
+  // The capabilities IN FORCE right now, so a client surface can hide a control
+  // the server would refuse (exports, imports, the AI agent). Resolving the plan
+  // and the trial together is what lets a seven-day trial actually end: a route
+  // that read the package alone would keep granting it forever. This is
+  // presentation only - every route re-checks server-side, so a tampered
+  // response cannot grant anything. A super admin operates the platform and
+  // holds every capability.
+  const entitlements = await resolveEntitlements(supabaseAdmin as never, context.tenantId, {
+    isSuperAdmin: context.isSuperAdmin,
+  });
 
   return NextResponse.json({
     authUserId: context.authUserId,
@@ -64,7 +67,11 @@ export async function GET(request: Request) {
     tenantId: context.tenantId,
     isAdmin: context.isAdmin,
     isSuperAdmin: context.isSuperAdmin,
-    plan,
-    capabilities: capabilitiesFor(plan),
+    plan: entitlements.plan,
+    capabilities: entitlements.capabilities,
+    // The trial's own state, so the UI can show "4 days left" or an upgrade
+    // prompt. `status` is derived server-side from the stored end timestamp.
+    trial: entitlements.trial,
+    onTrial: entitlements.onTrial,
   });
 }

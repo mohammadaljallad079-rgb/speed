@@ -19,6 +19,7 @@ import {
   canAccessBranch,
   sanitizeMetadata,
   scopeToCompany,
+  scopeToTenant,
 } from "../src/lib/auth/policy.ts";
 import { nextDocumentNumber } from "../src/lib/numbering.ts";
 import type { AuthContext, FinancialYear } from "../src/lib/auth/types.ts";
@@ -230,6 +231,36 @@ describe("company scope is fail-closed", () => {
     const q = recordingQuery();
     scopeToCompany(q, context({ tenantId: null, isSuperAdmin: true }));
     assert.equal(q.calls.length, 0);
+  });
+
+  // `scopeToTenant` is the older sibling of `scopeToCompany` and had the exact
+  // fail-open shape this block exists to prevent: it returned the query
+  // unfiltered for a tenant-less caller. It is unused by routes today, which is
+  // precisely why it is a landmine - the next caller would inherit the hole.
+  test("scopeToTenant is fail-closed too (it used to return the query unfiltered)", () => {
+    const q = recordingQuery();
+    scopeToTenant(q, context({ tenantId: null }));
+    assert.deepEqual(q.calls, [["is", "tenant_id", null]]);
+  });
+
+  test("scopeToTenant scopes a tenanted caller to its own tenant", () => {
+    const q = recordingQuery();
+    scopeToTenant(q, context({ tenantId: TENANT_A }));
+    assert.deepEqual(q.calls, [["eq", "tenant_id", TENANT_A]]);
+  });
+
+  test("scopeToTenant leaves only a super admin unfiltered", () => {
+    const q = recordingQuery();
+    scopeToTenant(q, context({ tenantId: null, isSuperAdmin: true }));
+    assert.equal(q.calls.length, 0);
+  });
+
+  test("no tenant helper returns an unfiltered query for a tenant-less caller", () => {
+    // A source-level guard: neither helper may contain `return query` behind a
+    // falsy-tenant check.
+    const src = fs.readFileSync(path.join(ROOT, "src/lib/auth/policy.ts"), "utf8");
+    assert.doesNotMatch(src, /if \(!context\.tenantId\)\s*return query;/);
+    assert.doesNotMatch(src, /if \(!tenantId\)\s*return query;/);
   });
 });
 

@@ -6,8 +6,7 @@ import { parseSheet } from "@/lib/import/parse";
 import { buildPreview, commitImport, type ImportDb, type ImportWriter } from "@/lib/import/engine";
 import { buildTemplateWorkbook } from "@/lib/import/template";
 import type { PermissionModule } from "@/lib/auth/permissions";
-import { planGrants } from "@/lib/saas/entitlements";
-import { loadTenantPlan } from "@/lib/saas/tenant-plan";
+import { entitlementGrants, resolveEntitlements } from "@/lib/saas/effective-plan";
 
 /**
  * Universal Excel data import (privileged, service-role).
@@ -37,15 +36,24 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
     if (url.searchParams.get("modules") === "1") {
-      const context = await requireContext(request);
+      const context = await requireContext(request, { requireErp: true });
       // The package gates the capability before the per-module permission: a
       // free package gets no import surface at all, so the UI never offers a
       // control the server will refuse.
-      const plan = context.isSuperAdmin ? "enterprise" : await loadTenantPlan(supabaseAdmin as never, context.tenantId);
-      const available = planGrants(plan, "imports")
+      const entitlements = await resolveEntitlements(supabaseAdmin as never, context.tenantId, {
+        isSuperAdmin: context.isSuperAdmin,
+      });
+      const allowed = entitlementGrants(entitlements, "imports");
+      const available = allowed
         ? importableModuleKeys().filter((k) => can(context, getImportModule(k)!.module, "create"))
         : [];
-      return NextResponse.json({ modules: available, importsAllowed: planGrants(plan, "imports"), plan });
+      return NextResponse.json({
+        modules: available,
+        importsAllowed: allowed,
+        plan: entitlements.plan,
+        trial: entitlements.trial,
+        onTrial: entitlements.onTrial,
+      });
     }
     const key = url.searchParams.get("module");
     if (!key) {
@@ -56,10 +64,17 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "unknown module", code: "bad_request" }, { status: 400 });
     }
     const context = await requireContext(request, { module: spec.module, action: "create" });
-    const plan = context.isSuperAdmin ? "enterprise" : await loadTenantPlan(supabaseAdmin as never, context.tenantId);
-    if (!planGrants(plan, "imports")) {
+    const entitlements = await resolveEntitlements(supabaseAdmin as never, context.tenantId, {
+      isSuperAdmin: context.isSuperAdmin,
+    });
+    if (!entitlementGrants(entitlements, "imports")) {
       return NextResponse.json(
-        { error: "Your subscription package does not include data import", code: "plan_upgrade_required", plan },
+        {
+          error: "Your subscription package does not include data import",
+          code: "plan_upgrade_required",
+          plan: entitlements.plan,
+          trial: entitlements.trial,
+        },
         { status: 403 },
       );
     }
@@ -94,10 +109,17 @@ export async function POST(request: Request) {
 
     // Import is a package capability, enforced server-side so a direct call
     // cannot bypass it. A super admin operates the platform and is not gated.
-    const plan = context.isSuperAdmin ? "enterprise" : await loadTenantPlan(supabaseAdmin as never, context.tenantId);
-    if (!planGrants(plan, "imports")) {
+    const entitlements = await resolveEntitlements(supabaseAdmin as never, context.tenantId, {
+      isSuperAdmin: context.isSuperAdmin,
+    });
+    if (!entitlementGrants(entitlements, "imports")) {
       return NextResponse.json(
-        { error: "Your subscription package does not include data import", code: "plan_upgrade_required", plan },
+        {
+          error: "Your subscription package does not include data import",
+          code: "plan_upgrade_required",
+          plan: entitlements.plan,
+          trial: entitlements.trial,
+        },
         { status: 403 },
       );
     }

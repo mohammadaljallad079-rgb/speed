@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useLanguage } from '@/lib/LanguageContext'
 import { supabase } from '@/lib/supabase'
+import { safeCustomerRedirect } from '@/lib/auth/access-areas'
 import { Car as CarIcon, Mail, Lock, LogIn, Eye, EyeOff, ArrowRight } from 'lucide-react'
 
 function CustomerLoginContent() {
@@ -39,8 +40,10 @@ function CustomerLoginContent() {
       return
     }
 
-    const redirectTo = searchParams.get('redirect')
-    router.replace(redirectTo || '/customer-dashboard')
+    // The redirect target is caller input, so it is sanitised before use: only
+    // a same-origin customer/public path is honoured (no open redirect).
+    const redirectTo = safeCustomerRedirect(searchParams.get('redirect'))
+    router.replace(redirectTo)
   }
 
   return (

@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { companyToday, rentalDays } from '@/lib/rental/timezone'
 
 interface CustomerProfile {
   id: string; full_name: string | null; email: string | null; phone: string | null
@@ -43,29 +44,45 @@ export interface SelectedCarInfo {
   available: boolean
   car: CarOption | null
   reason: 'not_found' | 'not_rentable' | 'busy' | null
-  conflict?: { startDate: string | null; endDate: string | null } | null
+  conflict?: {
+    startDate: string | null
+    endDate: string | null
+    startTime: string | null
+    endTime: string | null
+    label: string
+  } | null
 }
 
 async function fetchAvailableCars(
   start?: string,
+  startTime?: string,
   end?: string,
+  endTime?: string,
   carId?: string,
-): Promise<{ cars: CarOption[]; selected: SelectedCarInfo | null; error: string | null }> {
+): Promise<{
+  cars: CarOption[]
+  selected: SelectedCarInfo | null
+  error: string | null
+  timeZone: string | null
+}> {
   try {
     const qs = new URLSearchParams()
     if (start) qs.set('start', start)
+    if (startTime) qs.set('start_time', startTime)
     if (end) qs.set('end', end)
+    if (endTime) qs.set('end_time', endTime)
     if (carId) qs.set('car', carId)
     const res = await fetch(`/api/customer/available-cars${qs.toString() ? `?${qs}` : ''}`, { cache: 'no-store' })
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) return { cars: [], selected: null, error: data?.error || 'Failed to load cars' }
+    if (!res.ok) return { cars: [], selected: null, error: data?.error || 'Failed to load cars', timeZone: null }
     return {
       cars: (data?.cars ?? []) as CarOption[],
       selected: (data?.selected ?? null) as SelectedCarInfo | null,
       error: null,
+      timeZone: typeof data?.timeZone === 'string' ? data.timeZone : null,
     }
   } catch {
-    return { cars: [], selected: null, error: 'Failed to load cars' }
+    return { cars: [], selected: null, error: 'Failed to load cars', timeZone: null }
   }
 }
 
@@ -181,7 +198,13 @@ function DashboardContent() {
   const [pickup, setPickup] = useState('')
   const [dropoff, setDropoff] = useState('')
   const [startDate, setStartDate] = useState('')
+  const [startTime, setStartTime] = useState('09:00')
   const [endDate, setEndDate] = useState('')
+  const [endTime, setEndTime] = useState('09:00')
+  // The company's timezone. The times above are WALL-CLOCK readings in it, so the
+  // form must show which zone it means rather than letting the customer assume
+  // their own. It is informational only: the server resolves the zone itself.
+  const [companyTz, setCompanyTz] = useState('')
 const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily')
   const [notes, setNotes] = useState('')
   const [cprNumber, setCprNumber] = useState('')
@@ -197,25 +220,42 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
 
   const activeRentals = useMemo(() => rentals.filter(r => r.status !== 'completed'), [rentals])
 
+  // The company's "today", so the form's minimum matches the branch's calendar
+  // rather than the visitor's device (a customer a day behind would otherwise be
+  // offered a date the branch considers past).
+  const today = useMemo(() => companyToday(companyTz || undefined), [companyTz])
+
+  // Rental days, counted on the company's wall clock. A same-day 09:00-11:00 is
+  // one day; 09:00 Monday to 09:00 Tuesday is one day, not two. Counting raw
+  // elapsed hours would price a late-evening pickup as two days.
   const estimatedDays = useMemo(() => {
-    if (!startDate || !endDate) return 0
-    const diff = new Date(endDate).getTime() - new Date(startDate).getTime()
-    const days = Math.max(1, Math.ceil(diff / 86400000))
-    return days
-  }, [startDate, endDate])
-  
+    if (!startDate || !endDate || !startTime || !endTime) return 0
+    if (`${endDate}T${endTime}` <= `${startDate}T${startTime}`) return 0
+    try {
+      return rentalDays(
+        `${startDate}T${startTime}:00`,
+        `${endDate}T${endTime}:00`,
+        companyTz || undefined,
+      )
+    } catch {
+      return 0
+    }
+  }, [startDate, startTime, endDate, endTime, companyTz])
+
   const dateError = useMemo(() => {
-    if (!startDate || !endDate) return ''
-    if (new Date(endDate) <= new Date(startDate)) return isRTL ? 'تاريخ النهاية يجب أن يكون بعد تاريخ البداية' : 'End date must be after start date'
+    if (!startDate || !endDate || !startTime || !endTime) return ''
+    if (`${endDate}T${endTime}` <= `${startDate}T${startTime}`) {
+      return isRTL ? 'وقت الإرجاع يجب أن يكون بعد وقت الاستلام' : 'The return time must be after the pickup time'
+    }
     return ''
-  }, [startDate, endDate, isRTL])
+  }, [startDate, startTime, endDate, endTime, isRTL])
 
   const priceBreakdown = useMemo(() => {
     // Prefer the deep-linked car the server resolved: a car that is busy for the
     // window is absent from `cars`, and without this the price block would
     // vanish even though the form is showing the customer their selection.
     const carData = cars.find(c => c.id === selectedCar) ?? (deepLinkCar?.car?.id === selectedCar ? deepLinkCar.car : undefined)
-    if (!carData || !startDate || !endDate) return null
+    if (!carData || !startDate || !endDate || !startTime || !endTime || estimatedDays < 1) return null
     const days = estimatedDays
     
     if (rentalType === 'weekly' && carData.weekly_rate && carData.weekly_rate > 0) {
@@ -248,7 +288,7 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
       total: (carData.daily_rate ?? 0) * days,
       dailyRate: carData.daily_rate ?? 0
     }
-  }, [cars, selectedCar, estimatedDays, rentalType, startDate, endDate, isRTL, deepLinkCar])
+  }, [cars, selectedCar, estimatedDays, rentalType, startDate, startTime, endDate, endTime, isRTL, deepLinkCar])
   
   const estimatedTotal = priceBreakdown?.total ?? 0
 
@@ -274,7 +314,9 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
     }
     if (deepLinkCar.reason === 'busy') {
       const w = deepLinkCar.conflict
-      const range = w?.startDate && w?.endDate ? ` (${w.startDate} → ${w.endDate})` : ''
+      const range = w?.startDate && w?.endDate
+        ? ` (${w.startDate} ${w.startTime ?? ''} → ${w.endDate} ${w.endTime ?? ''})`
+        : ''
       return isRTL
         ? `هذه السيارة محجوزة للفترة المطلوبة${range}. اختر سيارة أخرى أو غيّر التواريخ.`
         : `This vehicle is booked for the requested period${range}. Choose another vehicle or change the dates.`
@@ -309,13 +351,16 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
   // requested window is deliberately absent, and `<select value>` with no
   // matching option renders the placeholder — which looked like the form had
   // thrown the customer's choice away.
-  const loadCars = async (start?: string, end?: string) => {
+  const loadCars = async (start?: string, startTime?: string, end?: string, endTime?: string) => {
     setLoadingCars(true); setCarsError('')
     const requested = searchParams.get('car') || ''
-    const { cars: list, selected, error } = await fetchAvailableCars(start, end, requested || undefined)
+    const { cars: list, selected, error, timeZone } = await fetchAvailableCars(
+      start, startTime, end, endTime, requested || undefined,
+    )
     setCars(list)
     setCarsError(error ?? '')
     setDeepLinkCar(selected)
+    if (timeZone) setCompanyTz(timeZone)
     setLoadingCars(false)
   }
 
@@ -324,9 +369,11 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
   // (Re)load the available cars whenever the customer opens the booking tab or
   // changes the requested dates, so a car booked for that window disappears.
   useEffect(() => {
-    if (tab === 'booking') loadCars(startDate || undefined, endDate || undefined)
+    if (tab === 'booking') {
+      loadCars(startDate || undefined, startTime || undefined, endDate || undefined, endTime || undefined)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, startDate, endDate])
+  }, [tab, startDate, startTime, endDate, endTime])
 
   const uploadFile = async (file: File, folder: string) => {
     const ext = file.name.split('.').pop()
@@ -338,8 +385,18 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
 
   const handleBooking = async () => {
     setSubmitting(true); setError(''); setSuccess('')
-    if (!selectedCar || !startDate || !endDate || !pickup || !dropoff) { setError(isRTL ? 'يرجى تعبئة جميع الحقول' : 'Fill all required fields'); setSubmitting(false); return }
-    if (new Date(endDate) <= new Date(startDate)) { setError(isRTL ? 'تاريخ النهاية يجب أن يكون بعد تاريخ البداية' : 'End date must be after start date'); setSubmitting(false); return }
+    if (!selectedCar || !startDate || !startTime || !endDate || !endTime || !pickup || !dropoff) {
+      setError(isRTL ? 'يرجى تعبئة جميع الحقول' : 'Fill all required fields')
+      setSubmitting(false); return
+    }
+    // Compare the real window, not just the dates: 09:00-11:00 is a valid rental
+    // and 11:00-09:00 is not, even though both are "the same day".
+    if (`${endDate}T${endTime}` <= `${startDate}T${startTime}`) {
+      setError(isRTL
+        ? 'وقت الإرجاع يجب أن يكون بعد وقت الاستلام'
+        : 'The return time must be after the pickup time')
+      setSubmitting(false); return
+    }
 
     // Persist the identity documents on the caller's own customer row (RLS-scoped).
     const upd: any = { cpr_number: cprNumber, driver_license: license }
@@ -370,7 +427,9 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
         body: JSON.stringify({
           car_id: selectedCar,
           start_date: startDate,
+          start_time: startTime,
           end_date: endDate,
+          end_time: endTime,
           pickup_location: pickup,
           dropoff_location: dropoff,
           notes: notes || null,
@@ -577,17 +636,29 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
                 </div>
 
                 <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 space-y-6">
-                  {/* Dates - First */}
+                  {/* Pickup / return: a DATE and a TIME each. A rental is an hour
+                      window, so a date alone cannot express "back by 11:00". */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-black text-gray-700 mb-2">{isRTL ? 'تاريخ البداية' : 'Start Date'} <span className="text-red-500">*</span></label>
-                      <Input type="date" value={startDate} min={new Date().toISOString().split('T')[0]} onChange={e => setStartDate(e.target.value)} className="h-12 rounded-xl border-gray-200 text-sm" />
+                      <label className="block text-sm font-black text-gray-700 mb-2">{isRTL ? 'تاريخ ووقت الاستلام' : 'Pickup Date & Time'} <span className="text-red-500">*</span></label>
+                      <div className="flex gap-2">
+                        <Input type="date" value={startDate} min={today} onChange={e => setStartDate(e.target.value)} className="h-12 rounded-xl border-gray-200 text-sm flex-1" />
+                        <Input type="time" value={startTime} onChange={e => setStartTime(e.target.value)} className="h-12 rounded-xl border-gray-200 text-sm w-[7.5rem]" />
+                      </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-black text-gray-700 mb-2">{isRTL ? 'تاريخ الانتهاء' : 'End Date'} <span className="text-red-500">*</span></label>
-                      <Input type="date" value={endDate} min={startDate || new Date().toISOString().split('T')[0]} onChange={e => setEndDate(e.target.value)} className="h-12 rounded-xl border-gray-200 text-sm" />
+                      <label className="block text-sm font-black text-gray-700 mb-2">{isRTL ? 'تاريخ ووقت الإرجاع' : 'Return Date & Time'} <span className="text-red-500">*</span></label>
+                      <div className="flex gap-2">
+                        <Input type="date" value={endDate} min={startDate || today} onChange={e => setEndDate(e.target.value)} className="h-12 rounded-xl border-gray-200 text-sm flex-1" />
+                        <Input type="time" value={endTime} onChange={e => setEndTime(e.target.value)} className="h-12 rounded-xl border-gray-200 text-sm w-[7.5rem]" />
+                      </div>
                     </div>
                   </div>
+                  {companyTz && (
+                    <p className="-mt-3 text-xs text-gray-500" data-testid="booking-timezone">
+                      {isRTL ? 'بتوقيت' : 'Times are in'} <span className="font-bold text-gray-700">{companyTz}</span>
+                    </p>
+                  )}
 
                   {/* Car select */}
                   <div>
@@ -595,7 +666,7 @@ const [rentalType, setRentalType] = useState<'daily'|'weekly'|'monthly'>('daily'
                     {carsError ? (
                       <div className="flex items-center justify-between gap-3 bg-red-50 border border-red-200 rounded-xl p-3">
                         <p className="text-red-700 text-sm font-bold">{carsError}</p>
-                        <button type="button" onClick={() => loadCars(startDate || undefined, endDate || undefined)} className="text-sm font-bold text-red-600 hover:underline">{isRTL ? 'إعادة المحاولة' : 'Retry'}</button>
+                        <button type="button" onClick={() => loadCars(startDate || undefined, startTime || undefined, endDate || undefined, endTime || undefined)} className="text-sm font-bold text-red-600 hover:underline">{isRTL ? 'إعادة المحاولة' : 'Retry'}</button>
                       </div>
                     ) : loadingCars ? (
                       <div className="h-12 rounded-xl border border-gray-200 px-4 flex items-center text-gray-400 text-sm font-semibold">{isRTL ? 'جاري تحميل السيارات...' : 'Loading cars...'}</div>

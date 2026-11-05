@@ -1,4 +1,4 @@
-import type { AuthContext } from "@/lib/auth/types";
+import type { AuthContext, FinancialYear } from "@/lib/auth/types";
 import {
   assertDateInOpenFinancialYear,
   assertReference,
@@ -37,6 +37,24 @@ import { postSalesReturn } from "@/lib/accounting/sales-return-posting";
 
 export interface SalesReturnDb {
   from(table: string): any;
+}
+
+/**
+ * The two checks that reach the database outside the injected client's tables.
+ * Both are injectable so the workflow can be exercised against a stub — the same
+ * dependency-injection rule the rest of the accounting services follow.
+ */
+export interface SalesReturnDeps {
+  /**
+   * The caller's active financial year, or null when none is configured.
+   *
+   * Defaults to `getActiveFinancialYear`, which is given the SAME client the
+   * service was called with. It previously used the global service-role client,
+   * so a test holding its own stub could not run this service without real
+   * Supabase credentials — and in production the year was read on a different
+   * connection from every other read in the same transaction.
+   */
+  getYear?: (tenantId: string | null, db: unknown) => Promise<FinancialYear | null>;
 }
 
 export type CreateSalesReturnInput = {
@@ -91,6 +109,7 @@ export async function createSalesReturn(
   db: SalesReturnDb,
   context: AuthContext,
   input: CreateSalesReturnInput,
+  deps: SalesReturnDeps = {},
 ): Promise<CreateSalesReturnResult> {
   const invoiceId = input.invoice_id;
   if (!invoiceId || typeof invoiceId !== "string") {
@@ -125,7 +144,11 @@ export async function createSalesReturn(
   const customerId = invoice.customer_id ?? null;
 
   const tenantId = assertWritableTenant(context, input.tenant_id);
-  const year = await getActiveFinancialYear(context.tenantId);
+  // The year is resolved through THIS client, never the global service-role one:
+  // the service must be runnable against whatever client it was handed.
+  const getYear = deps.getYear ?? ((tid: string | null, client: unknown) =>
+    getActiveFinancialYear(tid, client as never));
+  const year = await getYear(context.tenantId, db);
   assertDateInOpenFinancialYear(year, returnDate, "return date");
 
   const returnNumber =

@@ -1,4 +1,4 @@
-import type { AuthContext } from "@/lib/auth/types";
+import type { AuthContext, FinancialYear } from "@/lib/auth/types";
 import {
   assertDateInOpenFinancialYear,
   assertReferences,
@@ -27,6 +27,23 @@ import { postSaleInvoice, SALE_ACCOUNT_CODES, type SaleAmounts } from "@/lib/acc
 
 export interface SalesDb {
   from(table: string): any;
+}
+
+/**
+ * The checks that reach the database outside the injected client's tables. Kept
+ * injectable so the workflow can be exercised against a stub — the same rule the
+ * other accounting services follow.
+ */
+export interface SalesDeps {
+  /**
+   * The caller's active financial year, or null when none is configured.
+   *
+   * Defaults to `getActiveFinancialYear`, which receives the SAME client this
+   * service was called with. It previously used the global service-role client,
+   * so the year was read on a different connection from every other read here —
+   * and the service could not be run without real credentials.
+   */
+  getYear?: (tenantId: string | null, db: unknown) => Promise<FinancialYear | null>;
 }
 
 export type IssueInvoiceInput = {
@@ -86,6 +103,7 @@ export async function issueInvoice(
   db: SalesDb,
   context: AuthContext,
   input: IssueInvoiceInput,
+  deps: SalesDeps = {},
 ): Promise<IssueInvoiceResult> {
   const customerId = input.customer_id;
   if (!customerId || typeof customerId !== "string") {
@@ -114,6 +132,10 @@ export async function issueInvoice(
     [REF_CUSTOMER, REF_RENTAL_CONTRACT],
     { customer_id: customerId, rental_contract_id: input.rental_contract_id ?? undefined },
     context,
+    // The reference checks run against THIS client, like every other read here.
+    // They previously used the global service-role client, so a caller holding its
+    // own client (and a test holding a stub) could not run this service at all.
+    db as never,
   );
 
   // A contract may be invoiced exactly once as a rental: a retry (double click,
@@ -140,7 +162,11 @@ export async function issueInvoice(
   }
 
   const tenantId = assertWritableTenant(context, input.tenant_id);
-  const year = await getActiveFinancialYear(context.tenantId);
+  // Resolved through THIS client, never the global service-role one, so the
+  // service runs against whatever client it was handed.
+  const getYear = deps.getYear ?? ((tid: string | null, client: unknown) =>
+    getActiveFinancialYear(tid, client as never));
+  const year = await getYear(context.tenantId, db);
   assertDateInOpenFinancialYear(year, invoiceDate, "invoice date");
 
   const invoiceNumber =

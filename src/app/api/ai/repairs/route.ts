@@ -14,7 +14,7 @@ import {
 } from "@/lib/ai/repair-catalog";
 import { createResilientRepairStore, createSupabaseRepairStore, type SupabaseClientLike } from "@/lib/ai/repair-store";
 import { createSupabaseFinancePort } from "@/lib/ai/finance-port";
-import { loadTenantPlan } from "@/lib/saas/tenant-plan";
+import { effectivePlanId, resolveEntitlements } from "@/lib/saas/effective-plan";
 import { planAllowsEffect } from "@/lib/saas/entitlements";
 import { DOCUMENT_KINDS, DOCUMENT_LABELS } from "@/lib/templates/document-templates";
 import {
@@ -62,12 +62,15 @@ function buildDeps(context: { tenantId: string | null }): RepairDeps {
 }
 
 /**
- * The tenant's package, read server-side from the session tenant. A super admin
- * is the platform operator and is never gated by a company package.
+ * The package IN FORCE, read server-side from the session tenant. A super admin
+ * is the platform operator and is never gated by a company package. The trial is
+ * resolved with the package, so an expired trial stops granting AI capabilities.
  */
 async function resolvePlan(context: { tenantId: string | null; isSuperAdmin?: boolean }): Promise<string> {
-  if (context.isSuperAdmin) return "enterprise";
-  return loadTenantPlan(supabaseAdmin as never, context.tenantId);
+  const entitlements = await resolveEntitlements(supabaseAdmin as never, context.tenantId, {
+    isSuperAdmin: context.isSuperAdmin,
+  });
+  return effectivePlanId(entitlements);
 }
 
 export async function POST(request: Request) {

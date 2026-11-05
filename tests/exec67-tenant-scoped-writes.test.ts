@@ -617,7 +617,7 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
   const INVOICE = "inv-0001";
 
   /** A stub holding one invoice, the chart, and the journals it is asked to write. */
-  function makeDb(opts: { paid?: number; failJournal?: boolean } = {}) {
+  function makeDb(opts: { paid?: number; failJournal?: boolean; year?: unknown; noYear?: boolean } = {}) {
     const paid = opts.paid ?? 99;
     const invoice: any = {
       id: INVOICE,
@@ -636,6 +636,19 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
       { id: "acct-41002", code: "41002", tenant_id: T, is_active: true, is_postable: true },
       { id: "acct-24000", code: "24000", tenant_id: T, is_active: true, is_postable: true },
     ];
+    // The financial year is a real fixture, not an absent table: the return date
+    // must be checked against a year that exists, so the guard is genuinely
+    // exercised. `noYear` removes it to prove an install without one still works.
+    const year = opts.year ?? {
+      id: "fy-2026",
+      name: "2026",
+      start_date: "2026-01-01",
+      end_date: "2026-12-31",
+      is_current: true,
+      status: "open",
+      tenant_id: T,
+    };
+    const yearRows: any[] = opts.noYear ? [] : [year];
     let seq = 0;
 
     class Q {
@@ -669,6 +682,11 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
         return this;
       }
       limit() {
+        return this;
+      }
+      order() {
+        // Ordering is applied by the server; the stub holds at most one row per
+        // lookup, so returning the builder is a faithful stand-in.
         return this;
       }
       insert(r: any) {
@@ -710,6 +728,10 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
           if (this.table === "invoices") return { data: invoice, error: null };
           if (this.table === "sales_returns") {
             const found = returns.filter((r) => this._match(r));
+            return { data: found.length ? found : null, error: null };
+          }
+          if (this.table === "financial_years") {
+            const found = yearRows.filter((y) => this._match(y));
             return { data: found.length ? found : null, error: null };
           }
           if (this.table === "journal_entries") {
@@ -787,7 +809,7 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
       return { data: null, error: { message: `unknown rpc ${fn}` } };
     };
 
-    return { client: { from: (t: string) => new Q(t), rpc }, invoice, returns, entries, lines };
+    return { client: { from: (t: string) => new Q(t), rpc }, invoice, returns, entries, lines, year };
   }
 
   function ctx(tenantId: string | null) {
@@ -865,6 +887,97 @@ describe("exec67 createSalesReturn writes the row, the settlement and the journa
     assert.equal(second.idempotent, true, "a retry must not create a second return");
     assert.equal(db.returns.length, 1);
     assert.equal(db.entries.length, 1, "a retry must not post a second journal");
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression: the financial year is resolved through the INJECTED client.
+  //
+  // `getActiveFinancialYear` used to read the global service-role client, so this
+  // service could not run without real Supabase credentials. The tests below fail
+  // if that boundary is reopened: with no credentials the service would throw
+  // "Missing Supabase service role configuration" instead of reaching the stub,
+  // and the guard assertions would never see a year.
+  // -------------------------------------------------------------------------
+
+  test("the year guard is genuinely live: a CLOSED year refuses the return", async () => {
+    // Proves the year is read and consulted. If the lookup silently returned null
+    // (the fail-open the old escape hatch produced without credentials), this
+    // would succeed instead of throwing.
+    const db = makeDb({ year: { ...makeDb().year, status: "closed" } });
+    await assert.rejects(
+      () => createSalesReturn(db.client as never, ctx(T), { invoice_id: INVOICE, amount: 10 }),
+      /closed/i,
+      "a return into a closed financial year must be refused",
+    );
+    assert.equal(db.returns.length, 0, "nothing may be written when the year is closed");
+  });
+
+  test("the year guard is genuinely live: a date OUTSIDE the year is refused", async () => {
+    const db = makeDb();
+    await assert.rejects(
+      () =>
+        createSalesReturn(db.client as never, ctx(T), {
+          invoice_id: INVOICE,
+          return_number: "SR-OUT",
+          return_date: "2027-05-01",
+          amount: 10,
+        }),
+      /outside the active financial year/i,
+      "a return dated outside the year must be refused",
+    );
+    assert.equal(db.returns.length, 0);
+  });
+
+  test("a return dated INSIDE the year is accepted (the guard is not over-strict)", async () => {
+    const db = makeDb();
+    const result = await createSalesReturn(db.client as never, ctx(T), {
+      invoice_id: INVOICE,
+      return_number: "SR-IN",
+      return_date: "2026-03-10",
+      amount: 10,
+    });
+    assert.equal(result.idempotent, false);
+    assert.equal(db.returns.length, 1);
+  });
+
+  test("an install with NO financial year still records a return", async () => {
+    // Backward compatibility: a tenant without a configured year skips date
+    // validation rather than failing. This is the documented behaviour, and it
+    // must survive the injection change.
+    const db = makeDb({ noYear: true });
+    const result = await createSalesReturn(db.client as never, ctx(T), {
+      invoice_id: INVOICE,
+      return_number: "SR-NOYEAR",
+      return_date: "2026-03-10",
+      amount: 10,
+    });
+    assert.equal(result.idempotent, false);
+    assert.equal(db.returns.length, 1);
+  });
+
+  test("the year lookup is injected, so the service never reaches the global client", () => {
+    const src = read("src/lib/sales/return-service.ts");
+    // The service must not touch the global service-role client at all.
+    assert.doesNotMatch(
+      src,
+      /supabaseAdmin/,
+      "the service must resolve the year through its injected client, not the global one",
+    );
+    // It passes the client it was given into the lookup.
+    assert.match(src, /getActiveFinancialYear\(\s*tid,\s*client/, "the injected client must be threaded into the lookup");
+    // And the dependency stays overridable for callers that need to stub it.
+    assert.match(src, /deps\.getYear/);
+  });
+
+  test("the year lookup uses the client it is given, not the global one", () => {
+    const src = read("src/lib/auth/context.ts");
+    const fn = /export async function getActiveFinancialYear\(([\s\S]*?)\n\}/.exec(src);
+    assert.ok(fn, "getActiveFinancialYear must exist");
+    // The client is a parameter with the global one only as a DEFAULT, so a caller
+    // holding its own client keeps the lookup inside it.
+    assert.match(fn![1], /db:\s*FinancialYearDb\s*=\s*supabaseAdmin/, "the client must be an injectable parameter");
+    assert.match(fn![1], /db\s*\n?\s*\.from\("financial_years"\)|db\s*\.from\("financial_years"\)/, "the query must use the parameter");
+    assert.doesNotMatch(fn![1], /^\s*supabaseAdmin\s*$/m, "the body must not use the global client directly");
   });
 });
 

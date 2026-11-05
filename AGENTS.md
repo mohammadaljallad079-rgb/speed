@@ -2592,3 +2592,32 @@ that applies the filters it is given and returns only affected rows.
   placeholders (the API answers 401); the project resolves but cannot be
   authenticated. Real-project verification therefore has to run where the
   service-role key lives. Do not claim a live PASS from a unit test.
+
+## Execution 76 invariants (a service's dependencies stay inside its injected client)
+
+- **A service that takes an injected client must not reach outside it.** `createSalesReturn`
+  (`src/lib/sales/return-service.ts`) and `issueInvoice` (`src/lib/sales/service.ts`) both
+  take a `db` and route every other read/write through it, but two checks escaped:
+  `getActiveFinancialYear` read the global `supabaseAdmin`, and `issueInvoice`'s
+  `assertReferences` call omitted its (already supported) client argument. Both now use
+  the injected client. `tests/exec76-financial-year-client-injection.test.ts` asserts
+  neither file mentions `supabaseAdmin`, so the boundary cannot silently reopen.
+- **The escape was a correctness bug, not only a test bug.** `getActiveFinancialYear`
+  is now `(tenantId, db = supabaseAdmin)`: production callers are unchanged (the routes
+  pass `supabaseAdmin`, so the default *is* the injected client), but a caller holding
+  its own client keeps the lookup inside it. The tenant filter is unchanged
+  (`tenantId ? .eq("tenant_id", tenantId) : query`), so isolation is preserved.
+- **The old escape silently disabled the financial-year guard.** With placeholder
+  credentials the global lookup made a real network call that failed, returned `null`,
+  and `assertDateInOpenFinancialYear` then SKIPPED its check — the tests passed without
+  ever exercising the guard. `exec76` now drives a real `financial_years` row through the
+  stub and asserts a closed year and an out-of-year date are both refused, so the guard
+  is provably live. This is why the stub models `financial_years` rather than leaving the
+  table absent.
+- **The stub needs `order()`.** `getActiveFinancialYear` chains
+  `.order("is_current").order("start_date").limit(1).maybeSingle()`; a stub that omits
+  `order` fails with `query.order is not a function` instead of testing anything.
+- **`npm run test:core` now passes with NO Supabase credentials at all** (verified with
+  every `SUPABASE_*`/`DATABASE_URL` variable unset): 1704 tests / 1698 pass / 0 fail /
+  6 skipped. A test that needs the service-role key is a boundary defect, not a
+  configuration problem.
